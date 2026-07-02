@@ -1,0 +1,36 @@
+name: Soroban Budget Check
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  budget-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        target: wasm32-unknown-unknown
+        
+    - name: Install Stellar CLI
+      run: cargo install --locked stellar-cli --features opt
+
+    - name: Build Contracts
+      run: cargo build --release --target wasm32-unknown-unknown
+
+    - name: Run Budget Macros Test (Tier A)
+      run: cargo test
+
+    - name: Run Budget Report (Tier B)
+      run: |
+        # Optionally, this uses budget.toml to populate fields instead of args
+        # Ensure your repository has budget.toml configured for this to work
+        # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
+        # cargo run --bin cargo-budget-report -- budget-report --json
+        echo "Budget reporting step ready! (Skipping actual testnet deploy to save secret)"

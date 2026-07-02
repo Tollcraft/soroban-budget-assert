@@ -1,0 +1,6 @@
+network = "testnet"
+source = "alice"
+
+# Function-specific arguments for automated discovery simulation
+[functions.do_expensive_work]
+args = ["--n", "10000"]

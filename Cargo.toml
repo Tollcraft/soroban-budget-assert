@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "budget-macros",
+    "cargo-budget-report",
+    "example-contract",
+]
+resolver = "2"
