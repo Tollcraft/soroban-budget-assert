@@ -25,7 +25,7 @@ jobs:
       run: cargo install --locked stellar-cli
 
     - name: Build Contracts
-      run: cargo build --release --target wasm32-unknown-unknown
+      run: cargo build -p example-contract --release --target wasm32-unknown-unknown
 
     - name: Run Budget Macros Test (Tier A)
       run: cargo test
