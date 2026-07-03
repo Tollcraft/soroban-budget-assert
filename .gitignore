@@ -1,3 +1,6 @@
 target/
 contract_id.txt
 req.json
+node_modules/
+docs/book/
+*.pdf
