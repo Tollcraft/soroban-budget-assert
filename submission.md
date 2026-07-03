@@ -14,7 +14,7 @@ We have scoped genuine ongoing work organized into three primary areas:
 
 ## 4. Required Links
 - **Live Repository URL**: https://github.com/Tollcraft/soroban-budget-assert
-- **Documentation Site**: [INSERT URL ONCE HOSTED, e.g., GitHub Pages]
+- **Documentation Site**: https://tollcraft.github.io/soroban-budget-assert/
 - **On-chain Contract Verification**: N/A (Developer Tool, not a deployed contract protocol)
 - **Demo Video**: [INSERT URL ONCE RECORDED]
 
