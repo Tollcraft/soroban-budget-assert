@@ -1,6 +1,5 @@
 [book]
 authors = ["Tollcraft"]
 language = "en"
-multilingual = false
 src = "src"
 title = "Soroban Budget Assert Docs"
