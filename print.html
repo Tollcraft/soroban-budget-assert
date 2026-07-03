@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
+            window.path_to_searchindex_js = "searchindex-28f75438.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -176,29 +176,35 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p><code>soroban-budget-assert</code> solves a specific problem in the Stellar ecosystem: the gap between local resource estimates and real network costs.</p>
-<p>During Milestone 1 research, we found that local WASM-mode estimates underestimate real testnet costs by ~8%, and raw Rust local estimates underestimate by ~83% (measured at 143,887 CPU instructions locally vs 832,006 on testnet).</p>
-<p>If developers deploy contracts based solely on local estimates, transactions will fail on the public network when budgets are exhausted. This tool measures and asserts that gap during CI, preventing failed deployments.</p>
+<p><code>soroban-budget-assert</code> solves a specific problem in the Stellar ecosystem: local resource estimates do not match real network costs, and the error can point in either direction.</p>
+<p>Measured on this repo’s example contract (<code>do_expensive_work(10_000)</code>, testnet ground truth 756,678 CPU instructions):</p>
+<ul>
+<li>Raw Rust test estimates ran <strong>~81% under</strong> the network cost (143,887 locally).</li>
+<li>WASM-mode estimates depend on the build profile: with Cargo’s default release profile they ran ~8% <em>under</em> the network cost of that build (767,049 vs 832,006), and with the standard Soroban size-optimization profile they run <strong>~19% over</strong> (901,816 vs 756,678).</li>
+</ul>
+<p>A developer who trusts local numbers either deploys a contract that exhausts its budget on the public network, or over-provisions against costs that aren’t real. Both mistakes come from the same root cause: the only trustworthy number is a network simulation of the exact WASM you deploy.</p>
+<p>This tool provides both halves of the fix: <code>cargo budget-report</code> measures real simulated network costs across a whole workspace, and the <code>budget_macros</code> assertions pin measured costs into <code>cargo test</code> so a cost regression fails CI before it fails on-chain.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="protocol-mechanics"><a class="header" href="#protocol-mechanics">Protocol Mechanics</a></h1>
 <h2 id="the-measured-gap"><a class="header" href="#the-measured-gap">The measured gap</a></h2>
-<p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally. Measured on the example contract’s <code>do_expensive_work(10_000)</code>:</p>
+<p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally — and the error can point in either direction. Measured on the example contract’s <code>do_expensive_work(10_000)</code>, built with the standard Soroban release profile (<code>opt-level = "z"</code>, LTO):</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Execution mode</th><th>CPU instructions</th><th>Gap vs. testnet</th></tr>
 </thead>
 <tbody>
-<tr><td>Raw Rust (native test)</td><td>143,887</td><td>underestimates by ~83%</td></tr>
-<tr><td>Local WASM (<code>register_contract_wasm</code>)</td><td>767,049</td><td>underestimates by ~8%</td></tr>
-<tr><td>Testnet simulation (<code>simulateTransaction</code>)</td><td>832,006</td><td>ground truth</td></tr>
+<tr><td>Raw Rust (native test)</td><td>143,887</td><td>underestimates by ~81%</td></tr>
+<tr><td>Local WASM (<code>register_contract_wasm</code>)</td><td>901,816</td><td>overestimates by ~19%</td></tr>
+<tr><td>Testnet simulation (<code>simulateTransaction</code>)</td><td>756,678</td><td>ground truth</td></tr>
 </tbody>
 </table>
 </div>
+<p>The direction of the WASM gap is not stable. The same contract built with Cargo’s <em>default</em> release profile measured 767,049 locally vs 832,006 on testnet — ~8% <em>under</em>. Applying the size-optimization profile flipped it to ~19% <em>over</em>: the smaller binary executes more instructions locally, while the network’s cost model priced it lower.</p>
 <p>Two conclusions drive the tool’s design:</p>
 <ol>
 <li>Raw Rust estimates are useless for budget decisions. Tests must run the compiled WASM.</li>
-<li>Even WASM-mode local estimates run ~8% under real network cost. Assertions need headroom above the local number.</li>
+<li>Even WASM-mode local estimates can miss real network cost by double-digit percentages, in either direction depending on the build profile. The only trustworthy number is a network simulation of the exact WASM you deploy.</li>
 </ol>
 <h2 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local fast fail (<code>budget-macros</code>)</a></h2>
 <p><code>#[budget_cpu_lt(N)]</code> and <code>#[budget_mem_lt(N)]</code> are procedural attribute macros. Each one rewrites the test function’s body: the original statements run first, then the macro appends a cost check against the test’s local <code>env</code> variable:</p>
@@ -222,7 +228,7 @@ assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_
 </ol>
 <p>Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.</p>
 <h2 id="how-the-tiers-work-together"><a class="header" href="#how-the-tiers-work-together">How the tiers work together</a></h2>
-<p>Tier B tells you what a function really costs. Tier A pins that number (plus margin) into your test suite, so a regression that blows the budget fails CI before it fails on the network. The example contract’s gated test uses exactly this pattern: measured testnet cost ~832,006, asserted limit 850,000.</p>
+<p>Tier B tells you what a function really costs on the network. Tier A pins the <em>local</em> estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract’s gated test uses exactly this pattern: local WASM estimate 901,816, asserted limit 950,000, real testnet cost 756,678 known from Tier B.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="tool-reference"><a class="header" href="#tool-reference">Tool Reference</a></h1>
 <h2 id="macros-budget_macros"><a class="header" href="#macros-budget_macros">Macros: <code>budget_macros</code></a></h2>
@@ -250,9 +256,9 @@ fn test_expensive_function() {
 <h3 id="requirements-and-caveats"><a class="header" href="#requirements-and-caveats">Requirements and caveats</a></h3>
 <ul>
 <li>The variable must be named <code>env</code>. The macro resolves the identifier by name.</li>
-<li>Run the contract as WASM (<code>env.register_contract_wasm</code>) inside the test, not as raw Rust — raw Rust estimates run ~83% under real cost and make the assertion meaningless.</li>
+<li>Run the contract as WASM (<code>env.register_contract_wasm</code>) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.</li>
 <li>Call <code>env.cost_estimate().budget().reset_unlimited()</code> before invoking the contract so measurement isn’t cut short by the default test budget.</li>
-<li>Set <code>N</code> from a measured Tier B number plus margin (see the End-User Guide), not a guess.</li>
+<li>The macro checks the <em>local</em> estimate, which can sit above or below the real network cost depending on the build profile. Set <code>N</code> a few percent above the measured local number to catch regressions, and use <code>cargo budget-report</code> for the network ground truth (see the End-User Guide).</li>
 </ul>
 <h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo budget-report</code></a></h2>
 <pre><code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]
@@ -292,7 +298,7 @@ args = ["--n", "10000"]
     "package": "example-contract",
     "function": "do_expensive_work",
     "metric": "CPU Instructions",
-    "value": 832006
+    "value": 756678
   }
 ]
 </code></pre>
@@ -328,14 +334,14 @@ args = ["--n", "10000"]
 </code></pre>
 <p>The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use <code>--json</code> if you want to feed the numbers to a script.</p>
 <h2 id="step-4-pin-the-costs-into-tests"><a class="header" href="#step-4-pin-the-costs-into-tests">Step 4: Pin the costs into tests</a></h2>
-<p>Add the macro crate to your contract’s dev-dependencies, then gate a test with the measured number plus margin. Local WASM estimates run ~8% under real testnet cost, so a ~10% cushion over the <em>measured testnet</em> value is a sound default:</p>
+<p>Add the macro crate to your contract’s dev-dependencies, then gate a test. The macro asserts the <em>local</em> WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use budget_macros::budget_cpu_lt;
 use soroban_sdk::Env;
 
 #[test]
-#[budget_cpu_lt(850000)] // measured ~832,006 on testnet
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
 fn test_expensive_function_budget() {
     let env = Env::default();
 
@@ -351,9 +357,10 @@ fn test_expensive_function_budget() {
 <span class="boring">}</span></code></pre>
 <p>Two details matter:</p>
 <ul>
-<li><strong>Run the WASM, not raw Rust.</strong> Raw Rust estimates are ~83% below real cost; a limit asserted against them protects nothing.</li>
+<li><strong>Run the WASM, not raw Rust.</strong> Raw Rust estimates ran ~81% below real network cost in our measurements; a limit asserted against them protects nothing.</li>
 <li><strong><code>reset_unlimited()</code> before the call</strong>, so the default test budget doesn’t cap the measurement.</li>
 </ul>
+<p>Re-measure (Steps 3–4) whenever you change the release profile or bump the SDK — both shift local and network costs, and not by the same amount.</p>
 <h2 id="step-5-block-regressions-in-ci"><a class="header" href="#step-5-block-regressions-in-ci">Step 5: Block regressions in CI</a></h2>
 <p>Build the WASM, then run the tests, on every push and pull request:</p>
 <pre><code class="language-yaml">- name: Build contracts
@@ -394,8 +401,8 @@ cargo test
 </code></pre>
 <p><code>example-contract/tests/budget_test.rs</code> contains four tests:</p>
 <ul>
-<li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the ~83% / ~8% gap figures).</li>
-<li><code>test_budget_macro_gated</code> — a passing assertion at the 850,000 CPU limit.</li>
+<li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).</li>
+<li><code>test_budget_macro_gated</code> — a passing assertion at the 950,000 CPU limit.</li>
 <li><code>test_budget_macro_deliberate_regression</code> — asserts an intentionally low limit (600,000) and expects the macro’s panic, proving the gate fires.</li>
 </ul>
 <p>To exercise the CLI end-to-end against testnet (requires the funded <code>alice</code> identity):</p>

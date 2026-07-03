@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
+            window.path_to_searchindex_js = "searchindex-28f75438.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -176,23 +176,24 @@
                     <main>
                         <h1 id="protocol-mechanics"><a class="header" href="#protocol-mechanics">Protocol Mechanics</a></h1>
 <h2 id="the-measured-gap"><a class="header" href="#the-measured-gap">The measured gap</a></h2>
-<p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally. Measured on the example contract’s <code>do_expensive_work(10_000)</code>:</p>
+<p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally — and the error can point in either direction. Measured on the example contract’s <code>do_expensive_work(10_000)</code>, built with the standard Soroban release profile (<code>opt-level = "z"</code>, LTO):</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Execution mode</th><th>CPU instructions</th><th>Gap vs. testnet</th></tr>
 </thead>
 <tbody>
-<tr><td>Raw Rust (native test)</td><td>143,887</td><td>underestimates by ~83%</td></tr>
-<tr><td>Local WASM (<code>register_contract_wasm</code>)</td><td>767,049</td><td>underestimates by ~8%</td></tr>
-<tr><td>Testnet simulation (<code>simulateTransaction</code>)</td><td>832,006</td><td>ground truth</td></tr>
+<tr><td>Raw Rust (native test)</td><td>143,887</td><td>underestimates by ~81%</td></tr>
+<tr><td>Local WASM (<code>register_contract_wasm</code>)</td><td>901,816</td><td>overestimates by ~19%</td></tr>
+<tr><td>Testnet simulation (<code>simulateTransaction</code>)</td><td>756,678</td><td>ground truth</td></tr>
 </tbody>
 </table>
 </div>
+<p>The direction of the WASM gap is not stable. The same contract built with Cargo’s <em>default</em> release profile measured 767,049 locally vs 832,006 on testnet — ~8% <em>under</em>. Applying the size-optimization profile flipped it to ~19% <em>over</em>: the smaller binary executes more instructions locally, while the network’s cost model priced it lower.</p>
 <p>Two conclusions drive the tool’s design:</p>
 <ol>
 <li>Raw Rust estimates are useless for budget decisions. Tests must run the compiled WASM.</li>
-<li>Even WASM-mode local estimates run ~8% under real network cost. Assertions need headroom above the local number.</li>
+<li>Even WASM-mode local estimates can miss real network cost by double-digit percentages, in either direction depending on the build profile. The only trustworthy number is a network simulation of the exact WASM you deploy.</li>
 </ol>
 <h2 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local fast fail (<code>budget-macros</code>)</a></h2>
 <p><code>#[budget_cpu_lt(N)]</code> and <code>#[budget_mem_lt(N)]</code> are procedural attribute macros. Each one rewrites the test function’s body: the original statements run first, then the macro appends a cost check against the test’s local <code>env</code> variable:</p>
@@ -216,7 +217,7 @@ assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_
 </ol>
 <p>Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.</p>
 <h2 id="how-the-tiers-work-together"><a class="header" href="#how-the-tiers-work-together">How the tiers work together</a></h2>
-<p>Tier B tells you what a function really costs. Tier A pins that number (plus margin) into your test suite, so a regression that blows the budget fails CI before it fails on the network. The example contract’s gated test uses exactly this pattern: measured testnet cost ~832,006, asserted limit 850,000.</p>
+<p>Tier B tells you what a function really costs on the network. Tier A pins the <em>local</em> estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract’s gated test uses exactly this pattern: local WASM estimate 901,816, asserted limit 950,000, real testnet cost 756,678 known from Tier B.</p>
 
                     </main>
 

@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
+            window.path_to_searchindex_js = "searchindex-28f75438.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -200,9 +200,9 @@ fn test_expensive_function() {
 <h3 id="requirements-and-caveats"><a class="header" href="#requirements-and-caveats">Requirements and caveats</a></h3>
 <ul>
 <li>The variable must be named <code>env</code>. The macro resolves the identifier by name.</li>
-<li>Run the contract as WASM (<code>env.register_contract_wasm</code>) inside the test, not as raw Rust — raw Rust estimates run ~83% under real cost and make the assertion meaningless.</li>
+<li>Run the contract as WASM (<code>env.register_contract_wasm</code>) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.</li>
 <li>Call <code>env.cost_estimate().budget().reset_unlimited()</code> before invoking the contract so measurement isn’t cut short by the default test budget.</li>
-<li>Set <code>N</code> from a measured Tier B number plus margin (see the End-User Guide), not a guess.</li>
+<li>The macro checks the <em>local</em> estimate, which can sit above or below the real network cost depending on the build profile. Set <code>N</code> a few percent above the measured local number to catch regressions, and use <code>cargo budget-report</code> for the network ground truth (see the End-User Guide).</li>
 </ul>
 <h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo budget-report</code></a></h2>
 <pre><code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]
@@ -242,7 +242,7 @@ args = ["--n", "10000"]
     "package": "example-contract",
     "function": "do_expensive_work",
     "metric": "CPU Instructions",
-    "value": 832006
+    "value": 756678
   }
 ]
 </code></pre>

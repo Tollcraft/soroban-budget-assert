@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
+            window.path_to_searchindex_js = "searchindex-28f75438.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -199,14 +199,14 @@ args = ["--n", "10000"]
 </code></pre>
 <p>The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use <code>--json</code> if you want to feed the numbers to a script.</p>
 <h2 id="step-4-pin-the-costs-into-tests"><a class="header" href="#step-4-pin-the-costs-into-tests">Step 4: Pin the costs into tests</a></h2>
-<p>Add the macro crate to your contract’s dev-dependencies, then gate a test with the measured number plus margin. Local WASM estimates run ~8% under real testnet cost, so a ~10% cushion over the <em>measured testnet</em> value is a sound default:</p>
+<p>Add the macro crate to your contract’s dev-dependencies, then gate a test. The macro asserts the <em>local</em> WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use budget_macros::budget_cpu_lt;
 use soroban_sdk::Env;
 
 #[test]
-#[budget_cpu_lt(850000)] // measured ~832,006 on testnet
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
 fn test_expensive_function_budget() {
     let env = Env::default();
 
@@ -222,9 +222,10 @@ fn test_expensive_function_budget() {
 <span class="boring">}</span></code></pre>
 <p>Two details matter:</p>
 <ul>
-<li><strong>Run the WASM, not raw Rust.</strong> Raw Rust estimates are ~83% below real cost; a limit asserted against them protects nothing.</li>
+<li><strong>Run the WASM, not raw Rust.</strong> Raw Rust estimates ran ~81% below real network cost in our measurements; a limit asserted against them protects nothing.</li>
 <li><strong><code>reset_unlimited()</code> before the call</strong>, so the default test budget doesn’t cap the measurement.</li>
 </ul>
+<p>Re-measure (Steps 3–4) whenever you change the release profile or bump the SDK — both shift local and network costs, and not by the same amount.</p>
 <h2 id="step-5-block-regressions-in-ci"><a class="header" href="#step-5-block-regressions-in-ci">Step 5: Block regressions in CI</a></h2>
 <p>Build the WASM, then run the tests, on every push and pull request:</p>
 <pre><code class="language-yaml">- name: Build contracts

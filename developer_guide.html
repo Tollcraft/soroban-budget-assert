@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
+            window.path_to_searchindex_js = "searchindex-28f75438.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -204,8 +204,8 @@ cargo test
 </code></pre>
 <p><code>example-contract/tests/budget_test.rs</code> contains four tests:</p>
 <ul>
-<li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the ~83% / ~8% gap figures).</li>
-<li><code>test_budget_macro_gated</code> — a passing assertion at the 850,000 CPU limit.</li>
+<li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).</li>
+<li><code>test_budget_macro_gated</code> — a passing assertion at the 950,000 CPU limit.</li>
 <li><code>test_budget_macro_deliberate_regression</code> — asserts an intentionally low limit (600,000) and expects the macro’s panic, proving the gate fires.</li>
 </ul>
 <p>To exercise the CLI end-to-end against testnet (requires the funded <code>alice</code> identity):</p>

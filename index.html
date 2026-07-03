@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
+            window.path_to_searchindex_js = "searchindex-28f75438.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -175,9 +175,14 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
-<p><code>soroban-budget-assert</code> solves a specific problem in the Stellar ecosystem: the gap between local resource estimates and real network costs.</p>
-<p>During Milestone 1 research, we found that local WASM-mode estimates underestimate real testnet costs by ~8%, and raw Rust local estimates underestimate by ~83% (measured at 143,887 CPU instructions locally vs 832,006 on testnet).</p>
-<p>If developers deploy contracts based solely on local estimates, transactions will fail on the public network when budgets are exhausted. This tool measures and asserts that gap during CI, preventing failed deployments.</p>
+<p><code>soroban-budget-assert</code> solves a specific problem in the Stellar ecosystem: local resource estimates do not match real network costs, and the error can point in either direction.</p>
+<p>Measured on this repo’s example contract (<code>do_expensive_work(10_000)</code>, testnet ground truth 756,678 CPU instructions):</p>
+<ul>
+<li>Raw Rust test estimates ran <strong>~81% under</strong> the network cost (143,887 locally).</li>
+<li>WASM-mode estimates depend on the build profile: with Cargo’s default release profile they ran ~8% <em>under</em> the network cost of that build (767,049 vs 832,006), and with the standard Soroban size-optimization profile they run <strong>~19% over</strong> (901,816 vs 756,678).</li>
+</ul>
+<p>A developer who trusts local numbers either deploys a contract that exhausts its budget on the public network, or over-provisions against costs that aren’t real. Both mistakes come from the same root cause: the only trustworthy number is a network simulation of the exact WASM you deploy.</p>
+<p>This tool provides both halves of the fix: <code>cargo budget-report</code> measures real simulated network costs across a whole workspace, and the <code>budget_macros</code> assertions pin measured costs into <code>cargo test</code> so a cost regression fails CI before it fails on-chain.</p>
 
                     </main>
 
