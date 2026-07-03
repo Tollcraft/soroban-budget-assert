@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-57b7c65d.js";
+            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -175,11 +175,48 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="protocol-mechanics"><a class="header" href="#protocol-mechanics">Protocol Mechanics</a></h1>
-<p>The tool operates on two tiers to provide accurate budget assertions.</p>
-<h3 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local Fast Fail (<code>budget-macros</code>)</a></h3>
-<p>The macro injects cost-checking logic directly into standard <code>#[test]</code> functions. It calls <code>env.cost_estimate().budget().cpu_instruction_cost()</code> and asserts it strictly against the developer’s provided limit. If the local estimate exceeds the limit, the test fails, blocking CI.</p>
-<h3 id="tier-b-network-simulation-cargo-budget-report"><a class="header" href="#tier-b-network-simulation-cargo-budget-report">Tier B: Network Simulation (<code>cargo-budget-report</code>)</a></h3>
-<p>The CLI compiles the workspace to <code>wasm32-unknown-unknown</code>, parses the WASM binary to discover exported functions, and fires <code>simulateTransaction</code> RPC requests to a live Soroban RPC node (e.g., testnet). It extracts <code>instructions</code>, <code>disk_read_bytes</code>, and <code>write_bytes</code> from the XDR response and outputs an aggregated table.</p>
+<h2 id="the-measured-gap"><a class="header" href="#the-measured-gap">The measured gap</a></h2>
+<p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally. Measured on the example contract’s <code>do_expensive_work(10_000)</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Execution mode</th><th>CPU instructions</th><th>Gap vs. testnet</th></tr>
+</thead>
+<tbody>
+<tr><td>Raw Rust (native test)</td><td>143,887</td><td>underestimates by ~83%</td></tr>
+<tr><td>Local WASM (<code>register_contract_wasm</code>)</td><td>767,049</td><td>underestimates by ~8%</td></tr>
+<tr><td>Testnet simulation (<code>simulateTransaction</code>)</td><td>832,006</td><td>ground truth</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two conclusions drive the tool’s design:</p>
+<ol>
+<li>Raw Rust estimates are useless for budget decisions. Tests must run the compiled WASM.</li>
+<li>Even WASM-mode local estimates run ~8% under real network cost. Assertions need headroom above the local number.</li>
+</ol>
+<h2 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local fast fail (<code>budget-macros</code>)</a></h2>
+<p><code>#[budget_cpu_lt(N)]</code> and <code>#[budget_mem_lt(N)]</code> are procedural attribute macros. Each one rewrites the test function’s body: the original statements run first, then the macro appends a cost check against the test’s local <code>env</code> variable:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let budget = env.cost_estimate().budget();
+let cpu_cost = budget.cpu_instruction_cost();
+assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cost, N);
+<span class="boring">}</span></code></pre>
+<p>The assertion is strict (<code>&lt;</code>). If the local estimate reaches the limit, the test panics and <code>cargo test</code> fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.</p>
+<h2 id="tier-b-network-simulation-cargo-budget-report"><a class="header" href="#tier-b-network-simulation-cargo-budget-report">Tier B: Network simulation (<code>cargo-budget-report</code>)</a></h2>
+<p>The CLI measures ground truth. One invocation walks this pipeline:</p>
+<ol>
+<li><strong>Discover</strong> — runs <code>cargo metadata</code> and selects every workspace package with a <code>cdylib</code> target (i.e., every Soroban contract).</li>
+<li><strong>Build</strong> — compiles each contract with <code>cargo build --target wasm32-unknown-unknown --release</code>.</li>
+<li><strong>Scan exports</strong> — parses the <code>.wasm</code> binary with <code>wasmparser</code> and collects every exported function, skipping internals (names starting with <code>_</code>, and <code>memory</code>).</li>
+<li><strong>Deploy</strong> — deploys the WASM to the configured network with <code>stellar contract deploy</code>.</li>
+<li><strong>Simulate</strong> — for each exported function, builds an unsigned transaction (<code>stellar contract invoke --build-only</code>, with per-function arguments from <code>budget.toml</code>), then POSTs it to the Soroban RPC <code>simulateTransaction</code> endpoint.</li>
+<li><strong>Decode</strong> — decodes the returned <code>SorobanTransactionData</code> XDR (<code>stellar xdr decode</code>) and extracts <code>resources.instructions</code>, <code>resources.disk_read_bytes</code>, and <code>resources.write_bytes</code>.</li>
+<li><strong>Report</strong> — aggregates every package/function pair into one table, or JSON with <code>--json</code>.</li>
+</ol>
+<p>Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.</p>
+<h2 id="how-the-tiers-work-together"><a class="header" href="#how-the-tiers-work-together">How the tiers work together</a></h2>
+<p>Tier B tells you what a function really costs. Tier A pins that number (plus margin) into your test suite, so a regression that blows the budget fails CI before it fails on the network. The example contract’s gated test uses exactly this pattern: measured testnet cost ~832,006, asserted limit 850,000.</p>
 
                     </main>
 

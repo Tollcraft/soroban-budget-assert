@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-57b7c65d.js";
+            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -175,19 +175,83 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="tool-reference"><a class="header" href="#tool-reference">Tool Reference</a></h1>
-<h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo-budget-report</code></a></h2>
-<p>Usage: <code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]</code></p>
-<p><strong>Parameters</strong>:</p>
-<ul>
-<li><code>--network</code>: Network to simulate against (e.g., <code>testnet</code>).</li>
-<li><code>--source</code>: Source account used for simulation fees.</li>
-<li><code>--json</code>: Output raw JSON for CI/CD integration instead of a human-readable table.</li>
-</ul>
 <h2 id="macros-budget_macros"><a class="header" href="#macros-budget_macros">Macros: <code>budget_macros</code></a></h2>
+<p>Both macros are attribute macros for test functions. They require a local variable named <code>env</code> (a <code>soroban_sdk::Env</code>) in the function body — the injected check reads <code>env.cost_estimate().budget()</code> after the original test statements run.</p>
 <h3 id="budget_cpu_ltn"><a class="header" href="#budget_cpu_ltn"><code>#[budget_cpu_lt(N)]</code></a></h3>
-<p>Asserts that the CPU instructions used by the test’s <code>env</code> are strictly less than <code>N</code>.</p>
+<p>Asserts that the CPU instruction cost measured by the test’s <code>env</code> is strictly less than <code>N</code>.</p>
+<ul>
+<li><code>N</code> is an integer literal (e.g., <code>850000</code>).</li>
+<li>On failure the test panics with:
+<code>CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost</code></li>
+</ul>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use budget_macros::budget_cpu_lt;
+
+#[test]
+#[budget_cpu_lt(850000)]
+fn test_expensive_function() {
+    let env = Env::default();
+    // ... register contract as WASM, call client ...
+}
+<span class="boring">}</span></code></pre>
 <h3 id="budget_mem_ltn"><a class="header" href="#budget_mem_ltn"><code>#[budget_mem_lt(N)]</code></a></h3>
-<p>Asserts that the memory bytes used by the test’s <code>env</code> are strictly less than <code>N</code>.</p>
+<p>Same shape; asserts <code>memory_bytes_cost() &lt; N</code>.</p>
+<h3 id="requirements-and-caveats"><a class="header" href="#requirements-and-caveats">Requirements and caveats</a></h3>
+<ul>
+<li>The variable must be named <code>env</code>. The macro resolves the identifier by name.</li>
+<li>Run the contract as WASM (<code>env.register_contract_wasm</code>) inside the test, not as raw Rust — raw Rust estimates run ~83% under real cost and make the assertion meaningless.</li>
+<li>Call <code>env.cost_estimate().budget().reset_unlimited()</code> before invoking the contract so measurement isn’t cut short by the default test budget.</li>
+<li>Set <code>N</code> from a measured Tier B number plus margin (see the End-User Guide), not a guess.</li>
+</ul>
+<h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo budget-report</code></a></h2>
+<pre><code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]
+</code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Required</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--network</code></td><td>yes (flag or <code>budget.toml</code>)</td><td>Network to deploy and simulate against, e.g. <code>testnet</code></td></tr>
+<tr><td><code>--source</code></td><td>yes (flag or <code>budget.toml</code>)</td><td>Funded identity used for deploy fees and as the simulation source</td></tr>
+<tr><td><code>--json</code></td><td>no</td><td>Emit the report as pretty-printed JSON instead of a table</td></tr>
+</tbody>
+</table>
+</div>
+<p>Configuration precedence: a CLI flag overrides the <code>budget.toml</code> value. If neither provides <code>network</code>/<code>source</code>, the command exits with an error naming the missing field.</p>
+<p>External requirements: the <code>stellar</code> CLI on <code>PATH</code>, a funded source identity on the target network, and the <code>wasm32-unknown-unknown</code> Rust target installed.</p>
+<h2 id="configuration-budgettoml"><a class="header" href="#configuration-budgettoml">Configuration: <code>budget.toml</code></a></h2>
+<p>Read from the directory the command runs in (the workspace root):</p>
+<pre><code class="language-toml">network = "testnet"
+source = "alice"
+
+# Per-function invoke arguments, passed to `stellar contract invoke -- &lt;fn&gt; &lt;args&gt;`
+[functions.do_expensive_work]
+args = ["--n", "10000"]
+</code></pre>
+<ul>
+<li><code>network</code>, <code>source</code> — defaults for the corresponding CLI flags.</li>
+<li><code>[functions.&lt;name&gt;].args</code> — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped (the run continues).</li>
+</ul>
+<h2 id="output"><a class="header" href="#output">Output</a></h2>
+<p>Each simulated function produces three rows (or three JSON objects): <code>CPU Instructions</code>, <code>Read Bytes</code>, and <code>Write Bytes</code>.</p>
+<p>Table output ends with a note that values are testnet simulations and vary slightly with ledger state. JSON output (<code>--json</code>) is an array suited to CI:</p>
+<pre><code class="language-json">[
+  {
+    "package": "example-contract",
+    "function": "do_expensive_work",
+    "metric": "CPU Instructions",
+    "value": 832006
+  }
+]
+</code></pre>
+<h2 id="failure-behavior"><a class="header" href="#failure-behavior">Failure behavior</a></h2>
+<ul>
+<li>Build failure, deploy failure, or an unparsable RPC response aborts the run with a contextual error (via <code>anyhow</code>) — e.g., a deploy failure reports that the source account may be unfunded.</li>
+<li>A failed simulation of a single function prints a warning and skips it; the report still prints for the functions that succeeded.</li>
+<li>If nothing simulates successfully, the CLI prints <code>No successful simulations to report.</code> and exits 0.</li>
+</ul>
 
                     </main>
 

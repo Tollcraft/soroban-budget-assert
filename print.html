@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-57b7c65d.js";
+            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -181,68 +181,232 @@
 <p>If developers deploy contracts based solely on local estimates, transactions will fail on the public network when budgets are exhausted. This tool measures and asserts that gap during CI, preventing failed deployments.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="protocol-mechanics"><a class="header" href="#protocol-mechanics">Protocol Mechanics</a></h1>
-<p>The tool operates on two tiers to provide accurate budget assertions.</p>
-<h3 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local Fast Fail (<code>budget-macros</code>)</a></h3>
-<p>The macro injects cost-checking logic directly into standard <code>#[test]</code> functions. It calls <code>env.cost_estimate().budget().cpu_instruction_cost()</code> and asserts it strictly against the developer’s provided limit. If the local estimate exceeds the limit, the test fails, blocking CI.</p>
-<h3 id="tier-b-network-simulation-cargo-budget-report"><a class="header" href="#tier-b-network-simulation-cargo-budget-report">Tier B: Network Simulation (<code>cargo-budget-report</code>)</a></h3>
-<p>The CLI compiles the workspace to <code>wasm32-unknown-unknown</code>, parses the WASM binary to discover exported functions, and fires <code>simulateTransaction</code> RPC requests to a live Soroban RPC node (e.g., testnet). It extracts <code>instructions</code>, <code>disk_read_bytes</code>, and <code>write_bytes</code> from the XDR response and outputs an aggregated table.</p>
+<h2 id="the-measured-gap"><a class="header" href="#the-measured-gap">The measured gap</a></h2>
+<p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally. Measured on the example contract’s <code>do_expensive_work(10_000)</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Execution mode</th><th>CPU instructions</th><th>Gap vs. testnet</th></tr>
+</thead>
+<tbody>
+<tr><td>Raw Rust (native test)</td><td>143,887</td><td>underestimates by ~83%</td></tr>
+<tr><td>Local WASM (<code>register_contract_wasm</code>)</td><td>767,049</td><td>underestimates by ~8%</td></tr>
+<tr><td>Testnet simulation (<code>simulateTransaction</code>)</td><td>832,006</td><td>ground truth</td></tr>
+</tbody>
+</table>
+</div>
+<p>Two conclusions drive the tool’s design:</p>
+<ol>
+<li>Raw Rust estimates are useless for budget decisions. Tests must run the compiled WASM.</li>
+<li>Even WASM-mode local estimates run ~8% under real network cost. Assertions need headroom above the local number.</li>
+</ol>
+<h2 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local fast fail (<code>budget-macros</code>)</a></h2>
+<p><code>#[budget_cpu_lt(N)]</code> and <code>#[budget_mem_lt(N)]</code> are procedural attribute macros. Each one rewrites the test function’s body: the original statements run first, then the macro appends a cost check against the test’s local <code>env</code> variable:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let budget = env.cost_estimate().budget();
+let cpu_cost = budget.cpu_instruction_cost();
+assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cost, N);
+<span class="boring">}</span></code></pre>
+<p>The assertion is strict (<code>&lt;</code>). If the local estimate reaches the limit, the test panics and <code>cargo test</code> fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.</p>
+<h2 id="tier-b-network-simulation-cargo-budget-report"><a class="header" href="#tier-b-network-simulation-cargo-budget-report">Tier B: Network simulation (<code>cargo-budget-report</code>)</a></h2>
+<p>The CLI measures ground truth. One invocation walks this pipeline:</p>
+<ol>
+<li><strong>Discover</strong> — runs <code>cargo metadata</code> and selects every workspace package with a <code>cdylib</code> target (i.e., every Soroban contract).</li>
+<li><strong>Build</strong> — compiles each contract with <code>cargo build --target wasm32-unknown-unknown --release</code>.</li>
+<li><strong>Scan exports</strong> — parses the <code>.wasm</code> binary with <code>wasmparser</code> and collects every exported function, skipping internals (names starting with <code>_</code>, and <code>memory</code>).</li>
+<li><strong>Deploy</strong> — deploys the WASM to the configured network with <code>stellar contract deploy</code>.</li>
+<li><strong>Simulate</strong> — for each exported function, builds an unsigned transaction (<code>stellar contract invoke --build-only</code>, with per-function arguments from <code>budget.toml</code>), then POSTs it to the Soroban RPC <code>simulateTransaction</code> endpoint.</li>
+<li><strong>Decode</strong> — decodes the returned <code>SorobanTransactionData</code> XDR (<code>stellar xdr decode</code>) and extracts <code>resources.instructions</code>, <code>resources.disk_read_bytes</code>, and <code>resources.write_bytes</code>.</li>
+<li><strong>Report</strong> — aggregates every package/function pair into one table, or JSON with <code>--json</code>.</li>
+</ol>
+<p>Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.</p>
+<h2 id="how-the-tiers-work-together"><a class="header" href="#how-the-tiers-work-together">How the tiers work together</a></h2>
+<p>Tier B tells you what a function really costs. Tier A pins that number (plus margin) into your test suite, so a regression that blows the budget fails CI before it fails on the network. The example contract’s gated test uses exactly this pattern: measured testnet cost ~832,006, asserted limit 850,000.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="tool-reference"><a class="header" href="#tool-reference">Tool Reference</a></h1>
-<h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo-budget-report</code></a></h2>
-<p>Usage: <code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]</code></p>
-<p><strong>Parameters</strong>:</p>
-<ul>
-<li><code>--network</code>: Network to simulate against (e.g., <code>testnet</code>).</li>
-<li><code>--source</code>: Source account used for simulation fees.</li>
-<li><code>--json</code>: Output raw JSON for CI/CD integration instead of a human-readable table.</li>
-</ul>
 <h2 id="macros-budget_macros"><a class="header" href="#macros-budget_macros">Macros: <code>budget_macros</code></a></h2>
+<p>Both macros are attribute macros for test functions. They require a local variable named <code>env</code> (a <code>soroban_sdk::Env</code>) in the function body — the injected check reads <code>env.cost_estimate().budget()</code> after the original test statements run.</p>
 <h3 id="budget_cpu_ltn"><a class="header" href="#budget_cpu_ltn"><code>#[budget_cpu_lt(N)]</code></a></h3>
-<p>Asserts that the CPU instructions used by the test’s <code>env</code> are strictly less than <code>N</code>.</p>
+<p>Asserts that the CPU instruction cost measured by the test’s <code>env</code> is strictly less than <code>N</code>.</p>
+<ul>
+<li><code>N</code> is an integer literal (e.g., <code>850000</code>).</li>
+<li>On failure the test panics with:
+<code>CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost</code></li>
+</ul>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use budget_macros::budget_cpu_lt;
+
+#[test]
+#[budget_cpu_lt(850000)]
+fn test_expensive_function() {
+    let env = Env::default();
+    // ... register contract as WASM, call client ...
+}
+<span class="boring">}</span></code></pre>
 <h3 id="budget_mem_ltn"><a class="header" href="#budget_mem_ltn"><code>#[budget_mem_lt(N)]</code></a></h3>
-<p>Asserts that the memory bytes used by the test’s <code>env</code> are strictly less than <code>N</code>.</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="end-user-guide"><a class="header" href="#end-user-guide">End-User Guide</a></h1>
-<p>This guide is for Soroban developers who want to integrate budget assertions into their existing smart contracts.</p>
-<h3 id="step-1-install-the-cli"><a class="header" href="#step-1-install-the-cli">Step 1: Install the CLI</a></h3>
-<p>Install the report generator from the project root:</p>
-<pre><code class="language-bash">cargo install --path cargo-budget-report
+<p>Same shape; asserts <code>memory_bytes_cost() &lt; N</code>.</p>
+<h3 id="requirements-and-caveats"><a class="header" href="#requirements-and-caveats">Requirements and caveats</a></h3>
+<ul>
+<li>The variable must be named <code>env</code>. The macro resolves the identifier by name.</li>
+<li>Run the contract as WASM (<code>env.register_contract_wasm</code>) inside the test, not as raw Rust — raw Rust estimates run ~83% under real cost and make the assertion meaningless.</li>
+<li>Call <code>env.cost_estimate().budget().reset_unlimited()</code> before invoking the contract so measurement isn’t cut short by the default test budget.</li>
+<li>Set <code>N</code> from a measured Tier B number plus margin (see the End-User Guide), not a guess.</li>
+</ul>
+<h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo budget-report</code></a></h2>
+<pre><code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]
 </code></pre>
-<h3 id="step-2-configure-workspace"><a class="header" href="#step-2-configure-workspace">Step 2: Configure Workspace</a></h3>
-<p>Create a <code>budget.toml</code> file in the root of your workspace:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Required</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--network</code></td><td>yes (flag or <code>budget.toml</code>)</td><td>Network to deploy and simulate against, e.g. <code>testnet</code></td></tr>
+<tr><td><code>--source</code></td><td>yes (flag or <code>budget.toml</code>)</td><td>Funded identity used for deploy fees and as the simulation source</td></tr>
+<tr><td><code>--json</code></td><td>no</td><td>Emit the report as pretty-printed JSON instead of a table</td></tr>
+</tbody>
+</table>
+</div>
+<p>Configuration precedence: a CLI flag overrides the <code>budget.toml</code> value. If neither provides <code>network</code>/<code>source</code>, the command exits with an error naming the missing field.</p>
+<p>External requirements: the <code>stellar</code> CLI on <code>PATH</code>, a funded source identity on the target network, and the <code>wasm32-unknown-unknown</code> Rust target installed.</p>
+<h2 id="configuration-budgettoml"><a class="header" href="#configuration-budgettoml">Configuration: <code>budget.toml</code></a></h2>
+<p>Read from the directory the command runs in (the workspace root):</p>
 <pre><code class="language-toml">network = "testnet"
 source = "alice"
 
-[functions.my_function]
-args = ["--arg1", "value"]
+# Per-function invoke arguments, passed to `stellar contract invoke -- &lt;fn&gt; &lt;args&gt;`
+[functions.do_expensive_work]
+args = ["--n", "10000"]
 </code></pre>
-<h3 id="step-3-run-the-report"><a class="header" href="#step-3-run-the-report">Step 3: Run the Report</a></h3>
-<p>Execute the report generator to simulate all functions in your workspace against the testnet:</p>
+<ul>
+<li><code>network</code>, <code>source</code> — defaults for the corresponding CLI flags.</li>
+<li><code>[functions.&lt;name&gt;].args</code> — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped (the run continues).</li>
+</ul>
+<h2 id="output"><a class="header" href="#output">Output</a></h2>
+<p>Each simulated function produces three rows (or three JSON objects): <code>CPU Instructions</code>, <code>Read Bytes</code>, and <code>Write Bytes</code>.</p>
+<p>Table output ends with a note that values are testnet simulations and vary slightly with ledger state. JSON output (<code>--json</code>) is an array suited to CI:</p>
+<pre><code class="language-json">[
+  {
+    "package": "example-contract",
+    "function": "do_expensive_work",
+    "metric": "CPU Instructions",
+    "value": 832006
+  }
+]
+</code></pre>
+<h2 id="failure-behavior"><a class="header" href="#failure-behavior">Failure behavior</a></h2>
+<ul>
+<li>Build failure, deploy failure, or an unparsable RPC response aborts the run with a contextual error (via <code>anyhow</code>) — e.g., a deploy failure reports that the source account may be unfunded.</li>
+<li>A failed simulation of a single function prints a warning and skips it; the report still prints for the functions that succeeded.</li>
+<li>If nothing simulates successfully, the CLI prints <code>No successful simulations to report.</code> and exits 0.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="end-user-guide"><a class="header" href="#end-user-guide">End-User Guide</a></h1>
+<p>This guide is for Soroban developers who want budget assertions in an existing contract workspace. The workflow: measure real costs once (Tier B), then pin them into tests that run on every CI push (Tier A).</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li>Rust with the <code>wasm32-unknown-unknown</code> target (<code>rustup target add wasm32-unknown-unknown</code>)</li>
+<li>The <code>stellar</code> CLI</li>
+<li>A funded testnet identity: <code>stellar keys generate alice --network testnet --fund</code></li>
+</ul>
+<h2 id="step-1-install-the-cli"><a class="header" href="#step-1-install-the-cli">Step 1: Install the CLI</a></h2>
+<p>From this repository’s root:</p>
+<pre><code class="language-bash">cargo install --path cargo-budget-report
+</code></pre>
+<h2 id="step-2-configure-your-workspace"><a class="header" href="#step-2-configure-your-workspace">Step 2: Configure your workspace</a></h2>
+<p>Create <code>budget.toml</code> in your workspace root. Supply arguments for any contract function that requires them — functions are discovered and simulated automatically, but the tool can’t invent argument values:</p>
+<pre><code class="language-toml">network = "testnet"
+source = "alice"
+
+[functions.do_expensive_work]
+args = ["--n", "10000"]
+</code></pre>
+<h2 id="step-3-measure-real-costs"><a class="header" href="#step-3-measure-real-costs">Step 3: Measure real costs</a></h2>
 <pre><code class="language-bash">cargo budget-report
 </code></pre>
-<p>Review the table. Identify functions that approach the network limit.</p>
+<p>The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use <code>--json</code> if you want to feed the numbers to a script.</p>
+<h2 id="step-4-pin-the-costs-into-tests"><a class="header" href="#step-4-pin-the-costs-into-tests">Step 4: Pin the costs into tests</a></h2>
+<p>Add the macro crate to your contract’s dev-dependencies, then gate a test with the measured number plus margin. Local WASM estimates run ~8% under real testnet cost, so a ~10% cushion over the <em>measured testnet</em> value is a sound default:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use budget_macros::budget_cpu_lt;
+use soroban_sdk::Env;
+
+#[test]
+#[budget_cpu_lt(850000)] // measured ~832,006 on testnet
+fn test_expensive_function_budget() {
+    let env = Env::default();
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&amp;env, &amp;contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&amp;10_000);
+}
+<span class="boring">}</span></code></pre>
+<p>Two details matter:</p>
+<ul>
+<li><strong>Run the WASM, not raw Rust.</strong> Raw Rust estimates are ~83% below real cost; a limit asserted against them protects nothing.</li>
+<li><strong><code>reset_unlimited()</code> before the call</strong>, so the default test budget doesn’t cap the measurement.</li>
+</ul>
+<h2 id="step-5-block-regressions-in-ci"><a class="header" href="#step-5-block-regressions-in-ci">Step 5: Block regressions in CI</a></h2>
+<p>Build the WASM, then run the tests, on every push and pull request:</p>
+<pre><code class="language-yaml">- name: Build contracts
+  run: cargo build -p my-contract --release --target wasm32-unknown-unknown
+
+- name: Budget assertions
+  run: cargo test
+</code></pre>
+<p>If a change pushes a function past its asserted budget, the test fails with the actual cost and the limit in the message. Re-run <code>cargo budget-report</code> to re-measure, then either optimize the function or consciously raise the limit.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="developer-guide"><a class="header" href="#developer-guide">Developer Guide</a></h1>
-<p>This guide is for developers who want to modify or extend <code>soroban-budget-assert</code>.</p>
-<h3 id="local-setup"><a class="header" href="#local-setup">Local Setup</a></h3>
+<p>This guide is for developers modifying or extending <code>soroban-budget-assert</code> itself.</p>
+<h2 id="local-setup"><a class="header" href="#local-setup">Local setup</a></h2>
 <ol>
 <li>Clone the repository.</li>
-<li>Install Rust and the <code>stellar</code> CLI.</li>
-<li>Configure a testnet identity named <code>alice</code> via <code>stellar keys generate alice --network testnet</code>.</li>
+<li>Install Rust with the WASM target: <code>rustup target add wasm32-unknown-unknown</code>.</li>
+<li>Install the Stellar CLI: <code>cargo install --locked stellar-cli</code> (on Debian/Ubuntu, first <code>sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev</code>).</li>
+<li>Create and fund a testnet identity: <code>stellar keys generate alice --network testnet --fund</code>.</li>
 </ol>
-<h3 id="workspace-structure"><a class="header" href="#workspace-structure">Workspace Structure</a></h3>
+<h2 id="workspace-structure"><a class="header" href="#workspace-structure">Workspace structure</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Role</th></tr>
+</thead>
+<tbody>
+<tr><td><code>budget-macros</code></td><td>Proc-macro crate. <code>budget_cpu_lt</code> / <code>budget_mem_lt</code> rewrite a test function’s block to append a budget assertion against its <code>env</code> variable.</td></tr>
+<tr><td><code>cargo-budget-report</code></td><td>The CLI (<code>cargo budget-report</code> subcommand). Uses <code>cargo_metadata</code> for workspace discovery, <code>wasmparser</code> for export scanning, shells out to <code>stellar</code> for deploy/invoke/XDR decode, and <code>tabled</code>/<code>serde_json</code> for output.</td></tr>
+<tr><td><code>example-contract</code></td><td>Reference contract (<code>do_expensive_work</code>) plus the integration tests that double as the research measurements.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>budget.toml</code> at the root configures the CLI for the example contract, and <code>.github/workflows/budget.yml</code> runs the Tier A tests in CI.</p>
+<h2 id="testing"><a class="header" href="#testing">Testing</a></h2>
+<p>The macro tests execute the compiled WASM, so build it first:</p>
+<pre><code class="language-bash">cargo build -p example-contract --release --target wasm32-unknown-unknown
+cargo test
+</code></pre>
+<p><code>example-contract/tests/budget_test.rs</code> contains four tests:</p>
 <ul>
-<li><code>budget-macros</code>: Contains the procedural macros parsing the AST to inject budget assertions.</li>
-<li><code>cargo-budget-report</code>: The CLI application utilizing <code>cargo_metadata</code> and <code>wasmparser</code>.</li>
-<li><code>example-contract</code>: A sample Soroban contract used for integration testing.</li>
+<li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the ~83% / ~8% gap figures).</li>
+<li><code>test_budget_macro_gated</code> — a passing assertion at the 850,000 CPU limit.</li>
+<li><code>test_budget_macro_deliberate_regression</code> — asserts an intentionally low limit (600,000) and expects the macro’s panic, proving the gate fires.</li>
 </ul>
-<h3 id="testing"><a class="header" href="#testing">Testing</a></h3>
-<p>To test the macros, run:</p>
-<pre><code class="language-bash">cargo test
+<p>To exercise the CLI end-to-end against testnet (requires the funded <code>alice</code> identity):</p>
+<pre><code class="language-bash">cargo run -p cargo-budget-report -- budget-report
 </code></pre>
-<p>To test the CLI modifications, run:</p>
-<pre><code class="language-bash">cargo run --bin cargo-budget-report
-</code></pre>
+<h2 id="extending"><a class="header" href="#extending">Extending</a></h2>
+<ul>
+<li><strong>New assertion metrics</strong> — follow the pattern in <code>budget-macros/src/lib.rs</code>: parse the limit literal, append a check on <code>env.cost_estimate().budget()</code>, keep the failure message explicit. Add a passing test and a <code>#[should_panic]</code> regression test in <code>example-contract</code>.</li>
+<li><strong>CLI changes</strong> — no panics; return <code>anyhow::Result</code> with <code>.context()</code> on every external call (network, <code>stellar</code> invocations, file I/O). Any new output must also work under <code>--json</code>.</li>
+<li><strong>Docs</strong> — this site is mdBook (<code>docs/</code>); CI deploys it to GitHub Pages on push to <code>main</code>. Add pages to <code>docs/src/SUMMARY.md</code>.</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="contributing-guide"><a class="header" href="#contributing-guide">Contributing Guide</a></h1>
 <p>We welcome contributions to <code>soroban-budget-assert</code>.</p>

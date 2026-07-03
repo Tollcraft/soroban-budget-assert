@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-57b7c65d.js";
+            window.path_to_searchindex_js = "searchindex-6e257ea5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-15f7e7c8.js"></script>
@@ -175,26 +175,48 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="developer-guide"><a class="header" href="#developer-guide">Developer Guide</a></h1>
-<p>This guide is for developers who want to modify or extend <code>soroban-budget-assert</code>.</p>
-<h3 id="local-setup"><a class="header" href="#local-setup">Local Setup</a></h3>
+<p>This guide is for developers modifying or extending <code>soroban-budget-assert</code> itself.</p>
+<h2 id="local-setup"><a class="header" href="#local-setup">Local setup</a></h2>
 <ol>
 <li>Clone the repository.</li>
-<li>Install Rust and the <code>stellar</code> CLI.</li>
-<li>Configure a testnet identity named <code>alice</code> via <code>stellar keys generate alice --network testnet</code>.</li>
+<li>Install Rust with the WASM target: <code>rustup target add wasm32-unknown-unknown</code>.</li>
+<li>Install the Stellar CLI: <code>cargo install --locked stellar-cli</code> (on Debian/Ubuntu, first <code>sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev</code>).</li>
+<li>Create and fund a testnet identity: <code>stellar keys generate alice --network testnet --fund</code>.</li>
 </ol>
-<h3 id="workspace-structure"><a class="header" href="#workspace-structure">Workspace Structure</a></h3>
+<h2 id="workspace-structure"><a class="header" href="#workspace-structure">Workspace structure</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Role</th></tr>
+</thead>
+<tbody>
+<tr><td><code>budget-macros</code></td><td>Proc-macro crate. <code>budget_cpu_lt</code> / <code>budget_mem_lt</code> rewrite a test function’s block to append a budget assertion against its <code>env</code> variable.</td></tr>
+<tr><td><code>cargo-budget-report</code></td><td>The CLI (<code>cargo budget-report</code> subcommand). Uses <code>cargo_metadata</code> for workspace discovery, <code>wasmparser</code> for export scanning, shells out to <code>stellar</code> for deploy/invoke/XDR decode, and <code>tabled</code>/<code>serde_json</code> for output.</td></tr>
+<tr><td><code>example-contract</code></td><td>Reference contract (<code>do_expensive_work</code>) plus the integration tests that double as the research measurements.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>budget.toml</code> at the root configures the CLI for the example contract, and <code>.github/workflows/budget.yml</code> runs the Tier A tests in CI.</p>
+<h2 id="testing"><a class="header" href="#testing">Testing</a></h2>
+<p>The macro tests execute the compiled WASM, so build it first:</p>
+<pre><code class="language-bash">cargo build -p example-contract --release --target wasm32-unknown-unknown
+cargo test
+</code></pre>
+<p><code>example-contract/tests/budget_test.rs</code> contains four tests:</p>
 <ul>
-<li><code>budget-macros</code>: Contains the procedural macros parsing the AST to inject budget assertions.</li>
-<li><code>cargo-budget-report</code>: The CLI application utilizing <code>cargo_metadata</code> and <code>wasmparser</code>.</li>
-<li><code>example-contract</code>: A sample Soroban contract used for integration testing.</li>
+<li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the ~83% / ~8% gap figures).</li>
+<li><code>test_budget_macro_gated</code> — a passing assertion at the 850,000 CPU limit.</li>
+<li><code>test_budget_macro_deliberate_regression</code> — asserts an intentionally low limit (600,000) and expects the macro’s panic, proving the gate fires.</li>
 </ul>
-<h3 id="testing"><a class="header" href="#testing">Testing</a></h3>
-<p>To test the macros, run:</p>
-<pre><code class="language-bash">cargo test
+<p>To exercise the CLI end-to-end against testnet (requires the funded <code>alice</code> identity):</p>
+<pre><code class="language-bash">cargo run -p cargo-budget-report -- budget-report
 </code></pre>
-<p>To test the CLI modifications, run:</p>
-<pre><code class="language-bash">cargo run --bin cargo-budget-report
-</code></pre>
+<h2 id="extending"><a class="header" href="#extending">Extending</a></h2>
+<ul>
+<li><strong>New assertion metrics</strong> — follow the pattern in <code>budget-macros/src/lib.rs</code>: parse the limit literal, append a check on <code>env.cost_estimate().budget()</code>, keep the failure message explicit. Add a passing test and a <code>#[should_panic]</code> regression test in <code>example-contract</code>.</li>
+<li><strong>CLI changes</strong> — no panics; return <code>anyhow::Result</code> with <code>.context()</code> on every external call (network, <code>stellar</code> invocations, file I/O). Any new output must also work under <code>--json</code>.</li>
+<li><strong>Docs</strong> — this site is mdBook (<code>docs/</code>); CI deploys it to GitHub Pages on push to <code>main</code>. Add pages to <code>docs/src/SUMMARY.md</code>.</li>
+</ul>
 
                     </main>
 
