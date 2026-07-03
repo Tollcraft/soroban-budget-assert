@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{Env, testutils::budget::Budget};
+use soroban_sdk::Env;
 use example_contract::{ExpensiveContract, ExpensiveContractClient};
 use budget_macros::budget_cpu_lt;
 
