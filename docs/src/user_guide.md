@@ -38,14 +38,14 @@ The CLI finds every contract in the workspace, builds it to WASM, deploys to tes
 
 ## Step 4: Pin the costs into tests
 
-Add the macro crate to your contract's dev-dependencies, then gate a test with the measured number plus margin. Local WASM estimates run ~8% under real testnet cost, so a ~10% cushion over the *measured testnet* value is a sound default:
+Add the macro crate to your contract's dev-dependencies, then gate a test. The macro asserts the *local* WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:
 
 ```rust
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::Env;
 
 #[test]
-#[budget_cpu_lt(850000)] // measured ~832,006 on testnet
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
 fn test_expensive_function_budget() {
     let env = Env::default();
 
@@ -62,8 +62,10 @@ fn test_expensive_function_budget() {
 
 Two details matter:
 
-- **Run the WASM, not raw Rust.** Raw Rust estimates are ~83% below real cost; a limit asserted against them protects nothing.
+- **Run the WASM, not raw Rust.** Raw Rust estimates ran ~81% below real network cost in our measurements; a limit asserted against them protects nothing.
 - **`reset_unlimited()` before the call**, so the default test budget doesn't cap the measurement.
+
+Re-measure (Steps 3–4) whenever you change the release profile or bump the SDK — both shift local and network costs, and not by the same amount.
 
 ## Step 5: Block regressions in CI
 

@@ -2,18 +2,20 @@
 
 ## The measured gap
 
-Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on *how* the contract executes locally. Measured on the example contract's `do_expensive_work(10_000)`:
+Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on *how* the contract executes locally — and the error can point in either direction. Measured on the example contract's `do_expensive_work(10_000)`, built with the standard Soroban release profile (`opt-level = "z"`, LTO):
 
 | Execution mode | CPU instructions | Gap vs. testnet |
 |---|---|---|
-| Raw Rust (native test) | 143,887 | underestimates by ~83% |
-| Local WASM (`register_contract_wasm`) | 767,049 | underestimates by ~8% |
-| Testnet simulation (`simulateTransaction`) | 832,006 | ground truth |
+| Raw Rust (native test) | 143,887 | underestimates by ~81% |
+| Local WASM (`register_contract_wasm`) | 901,816 | overestimates by ~19% |
+| Testnet simulation (`simulateTransaction`) | 756,678 | ground truth |
+
+The direction of the WASM gap is not stable. The same contract built with Cargo's *default* release profile measured 767,049 locally vs 832,006 on testnet — ~8% *under*. Applying the size-optimization profile flipped it to ~19% *over*: the smaller binary executes more instructions locally, while the network's cost model priced it lower.
 
 Two conclusions drive the tool's design:
 
 1. Raw Rust estimates are useless for budget decisions. Tests must run the compiled WASM.
-2. Even WASM-mode local estimates run ~8% under real network cost. Assertions need headroom above the local number.
+2. Even WASM-mode local estimates can miss real network cost by double-digit percentages, in either direction depending on the build profile. The only trustworthy number is a network simulation of the exact WASM you deploy.
 
 ## Tier A: Local fast fail (`budget-macros`)
 
@@ -43,4 +45,4 @@ Simulated numbers vary slightly with ledger state, but they are the numbers the 
 
 ## How the tiers work together
 
-Tier B tells you what a function really costs. Tier A pins that number (plus margin) into your test suite, so a regression that blows the budget fails CI before it fails on the network. The example contract's gated test uses exactly this pattern: measured testnet cost ~832,006, asserted limit 850,000.
+Tier B tells you what a function really costs on the network. Tier A pins the *local* estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract's gated test uses exactly this pattern: local WASM estimate 901,816, asserted limit 950,000, real testnet cost 756,678 known from Tier B.
