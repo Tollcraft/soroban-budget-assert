@@ -1,26 +1,80 @@
 # End-User Guide
 
-This guide is for Soroban developers who want to integrate budget assertions into their existing smart contracts.
+This guide is for Soroban developers who want budget assertions in an existing contract workspace. The workflow: measure real costs once (Tier B), then pin them into tests that run on every CI push (Tier A).
 
-### Step 1: Install the CLI
-Install the report generator from the project root:
+## Prerequisites
+
+- Rust with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
+- The `stellar` CLI
+- A funded testnet identity: `stellar keys generate alice --network testnet --fund`
+
+## Step 1: Install the CLI
+
+From this repository's root:
+
 ```bash
 cargo install --path cargo-budget-report
 ```
 
-### Step 2: Configure Workspace
-Create a `budget.toml` file in the root of your workspace:
+## Step 2: Configure your workspace
+
+Create `budget.toml` in your workspace root. Supply arguments for any contract function that requires them — functions are discovered and simulated automatically, but the tool can't invent argument values:
+
 ```toml
 network = "testnet"
 source = "alice"
 
-[functions.my_function]
-args = ["--arg1", "value"]
+[functions.do_expensive_work]
+args = ["--n", "10000"]
 ```
 
-### Step 3: Run the Report
-Execute the report generator to simulate all functions in your workspace against the testnet:
+## Step 3: Measure real costs
+
 ```bash
 cargo budget-report
 ```
-Review the table. Identify functions that approach the network limit.
+
+The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use `--json` if you want to feed the numbers to a script.
+
+## Step 4: Pin the costs into tests
+
+Add the macro crate to your contract's dev-dependencies, then gate a test with the measured number plus margin. Local WASM estimates run ~8% under real testnet cost, so a ~10% cushion over the *measured testnet* value is a sound default:
+
+```rust
+use budget_macros::budget_cpu_lt;
+use soroban_sdk::Env;
+
+#[test]
+#[budget_cpu_lt(850000)] // measured ~832,006 on testnet
+fn test_expensive_function_budget() {
+    let env = Env::default();
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+}
+```
+
+Two details matter:
+
+- **Run the WASM, not raw Rust.** Raw Rust estimates are ~83% below real cost; a limit asserted against them protects nothing.
+- **`reset_unlimited()` before the call**, so the default test budget doesn't cap the measurement.
+
+## Step 5: Block regressions in CI
+
+Build the WASM, then run the tests, on every push and pull request:
+
+```yaml
+- name: Build contracts
+  run: cargo build -p my-contract --release --target wasm32-unknown-unknown
+
+- name: Budget assertions
+  run: cargo test
+```
+
+If a change pushes a function past its asserted budget, the test fails with the actual cost and the limit in the message. Re-run `cargo budget-report` to re-measure, then either optimize the function or consciously raise the limit.
