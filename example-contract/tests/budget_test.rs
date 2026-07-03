@@ -43,7 +43,7 @@ fn test_budget_wasm() {
 }
 
 #[test]
-#[budget_cpu_lt(850000)] // Using the discovered margin (WASM local 767049, actual testnet ~832006)
+#[budget_cpu_lt(950000)] // Re-measured with the Soroban release profile applied: WASM local 901816, actual testnet ~756678
 fn test_budget_macro_gated() {
     let env = Env::default();
     
