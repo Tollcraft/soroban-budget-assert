@@ -30,9 +30,9 @@ Same shape; asserts `memory_bytes_cost() < N`.
 ### Requirements and caveats
 
 - The variable must be named `env`. The macro resolves the identifier by name.
-- Run the contract as WASM (`env.register_contract_wasm`) inside the test, not as raw Rust — raw Rust estimates run ~83% under real cost and make the assertion meaningless.
+- Run the contract as WASM (`env.register_contract_wasm`) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.
 - Call `env.cost_estimate().budget().reset_unlimited()` before invoking the contract so measurement isn't cut short by the default test budget.
-- Set `N` from a measured Tier B number plus margin (see the End-User Guide), not a guess.
+- The macro checks the *local* estimate, which can sit above or below the real network cost depending on the build profile. Set `N` a few percent above the measured local number to catch regressions, and use `cargo budget-report` for the network ground truth (see the End-User Guide).
 
 ## CLI: `cargo budget-report`
 
@@ -78,7 +78,7 @@ Table output ends with a note that values are testnet simulations and vary sligh
     "package": "example-contract",
     "function": "do_expensive_work",
     "metric": "CPU Instructions",
-    "value": 832006
+    "value": 756678
   }
 ]
 ```

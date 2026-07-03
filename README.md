@@ -18,7 +18,7 @@ The tool is split into two primary components:
 
 1. **`budget-macros` (Tier A - Local, Fast, CI-Blocking)**
    - Rust macros (`#[budget_cpu_lt(N)]`, `#[budget_mem_lt(N)]`) applied directly to your test functions.
-   - Throws explicit test failures if your local estimate underestimates real network cost.
+   - Fails the test the moment measured cost crosses your pinned limit, so cost regressions are caught in CI instead of on the network.
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
    - A CLI tool that automatically discovers all contracts in your workspace.

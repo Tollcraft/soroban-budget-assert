@@ -30,8 +30,8 @@ cargo test
 
 `example-contract/tests/budget_test.rs` contains four tests:
 
-- `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the ~83% / ~8% gap figures).
-- `test_budget_macro_gated` — a passing assertion at the 850,000 CPU limit.
+- `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
+- `test_budget_macro_gated` — a passing assertion at the 950,000 CPU limit.
 - `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (600,000) and expects the macro's panic, proving the gate fires.
 
 To exercise the CLI end-to-end against testnet (requires the funded `alice` identity):
