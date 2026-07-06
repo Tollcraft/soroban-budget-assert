@@ -76,3 +76,37 @@ fn test_budget_macro_deliberate_regression() {
 
     client.do_expensive_work(&10_000); 
 }
+
+#[test]
+#[budget_cpu_lt(env = "TEST_MAX_CPU")]
+fn test_budget_macro_dynamic_env() {
+    std::env::set_var("TEST_MAX_CPU", "950000");
+    let env = Env::default();
+    
+    let wasm_path = "../target/wasm32-unknown-unknown/release/example_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    #[allow(deprecated)]
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = ExpensiveContractClient::new(&env, &contract_id);
+    
+    env.cost_estimate().budget().reset_unlimited();
+
+    client.do_expensive_work(&10_000);
+}
+
+#[test]
+#[budget_cpu_lt(env = "TEST_MAX_CPU_FALLBACK")]
+fn test_budget_macro_dynamic_env_fallback() {
+    std::env::remove_var("TEST_MAX_CPU_FALLBACK");
+    let env = Env::default();
+    
+    let wasm_path = "../target/wasm32-unknown-unknown/release/example_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    #[allow(deprecated)]
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = ExpensiveContractClient::new(&env, &contract_id);
+    
+    env.cost_estimate().budget().reset_unlimited();
+
+    client.do_expensive_work(&10_000);
+}
