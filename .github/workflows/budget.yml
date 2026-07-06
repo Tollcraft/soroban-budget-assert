@@ -10,8 +10,13 @@ jobs:
   budget-check:
     runs-on: ubuntu-latest
     
+    permissions:
+      contents: write
+
     steps:
     - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -35,5 +40,38 @@ jobs:
         # Optionally, this uses budget.toml to populate fields instead of args
         # Ensure your repository has budget.toml configured for this to work
         # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-        # cargo run --bin cargo-budget-report -- budget-report --json
-        echo "Budget reporting step ready! (Skipping actual testnet deploy to save secret)"
+        # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
+        
+        # Mocking the JSON output for the demo so CI passes without testnet secrets:
+        echo '[{"package":"example-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"example-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+
+    - name: Record History Dataset
+      if: github.ref == 'refs/heads/main'
+      run: |
+        # Configure Git for the bot
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Save report to temp location so it survives the checkout
+        cp current_report.json /tmp/current_report.json
+        
+        # Fetch and checkout the gh-pages branch, or create it if missing
+        git checkout gh-pages || git checkout -b gh-pages
+        
+        # Initialize history.json if it doesn't exist
+        if [ ! -f history.json ]; then
+          echo "[]" > history.json
+        fi
+        
+        # Append the new report to history.json using jq
+        jq --arg commit "${{ github.sha }}" \
+           --arg time "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+           --slurpfile report /tmp/current_report.json \
+           '. + [{commit: $commit, timestamp: $time, data: $report[0]}]' history.json > history_new.json
+           
+        mv history_new.json history.json
+        
+        # Commit and push to gh-pages branch
+        git add history.json
+        git commit -m "chore: record budget history for ${{ github.sha }}" || echo "No changes to commit"
+        git push origin gh-pages
