@@ -20,6 +20,7 @@ cargo install --path cargo-budget-report
 
 Create `budget.toml` in your workspace root. Supply arguments for any contract function that requires them — functions are discovered and simulated automatically, but the tool can't invent argument values:
 
+{% code title="budget.toml" %}
 ```toml
 network = "testnet"
 source = "alice"
@@ -27,6 +28,7 @@ source = "alice"
 [functions.do_expensive_work]
 args = ["--n", "10000"]
 ```
+{% endcode %}
 
 ## Step 3: Measure real costs
 
@@ -62,8 +64,10 @@ fn test_expensive_function_budget() {
 
 Two details matter:
 
+{% hint style="warning" %}
 - **Run the WASM, not raw Rust.** Raw Rust estimates ran ~81% below real network cost in our measurements; a limit asserted against them protects nothing.
 - **`reset_unlimited()` before the call**, so the default test budget doesn't cap the measurement.
+{% endhint %}
 
 Re-measure (Steps 3–4) whenever you change the release profile or bump the SDK — both shift local and network costs, and not by the same amount.
 

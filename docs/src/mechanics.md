@@ -10,7 +10,9 @@ Every Soroban transaction runs against a resource budget. If the budget is exhau
 | Local WASM (`register_contract_wasm`) | 901,816 | overestimates by ~19% |
 | Testnet simulation (`simulateTransaction`) | 756,678 | ground truth |
 
+{% hint style="info" %}
 The direction of the WASM gap is not stable. The same contract built with Cargo's *default* release profile measured 767,049 locally vs 832,006 on testnet — ~8% *under*. Applying the size-optimization profile flipped it to ~19% *over*: the smaller binary executes more instructions locally, while the network's cost model priced it lower.
+{% endhint %}
 
 Two conclusions drive the tool's design:
 
@@ -21,11 +23,13 @@ Two conclusions drive the tool's design:
 
 `#[budget_cpu_lt(N)]` and `#[budget_mem_lt(N)]` are procedural attribute macros. Each one rewrites the test function's body: the original statements run first, then the macro appends a cost check against the test's local `env` variable:
 
+{% code title="appended by #[budget_cpu_lt(N)]" %}
 ```rust
 let budget = env.cost_estimate().budget();
 let cpu_cost = budget.cpu_instruction_cost();
 assert!(cpu_cost < N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cost, N);
 ```
+{% endcode %}
 
 The assertion is strict (`<`). If the local estimate reaches the limit, the test panics and `cargo test` fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.
 

@@ -29,10 +29,12 @@ Same shape; asserts `memory_bytes_cost() < N`.
 
 ### Requirements and caveats
 
+{% hint style="warning" %}
 - The variable must be named `env`. The macro resolves the identifier by name.
 - Run the contract as WASM (`env.register_contract_wasm`) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.
 - Call `env.cost_estimate().budget().reset_unlimited()` before invoking the contract so measurement isn't cut short by the default test budget.
 - The macro checks the *local* estimate, which can sit above or below the real network cost depending on the build profile. Set `N` a few percent above the measured local number to catch regressions, and use `cargo budget-report` for the network ground truth (see the End-User Guide).
+{% endhint %}
 
 ## CLI: `cargo budget-report`
 
@@ -54,6 +56,7 @@ External requirements: the `stellar` CLI on `PATH`, a funded source identity on 
 
 Read from the directory the command runs in (the workspace root):
 
+{% code title="budget.toml" %}
 ```toml
 network = "testnet"
 source = "alice"
@@ -62,6 +65,7 @@ source = "alice"
 [functions.do_expensive_work]
 args = ["--n", "10000"]
 ```
+{% endcode %}
 
 - `network`, `source` — defaults for the corresponding CLI flags.
 - `[functions.<name>].args` — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped (the run continues).
