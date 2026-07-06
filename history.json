@@ -1,0 +1,20 @@
+[
+  {
+    "commit": "522845aab49dfdd536cd72ac81a7c0f3c2b75e9e",
+    "timestamp": "2026-07-06T15:18:44Z",
+    "data": [
+      {
+        "package": "example-contract",
+        "function": "do_expensive_work",
+        "metric": "CPU Instructions",
+        "value": 1000000
+      },
+      {
+        "package": "example-contract",
+        "function": "do_expensive_work",
+        "metric": "Read Bytes",
+        "value": 4096
+      }
+    ]
+  }
+]
