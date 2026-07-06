@@ -1,0 +1,1 @@
+[{"commit": "mock", "timestamp": "2026-07-06T00:00:00Z", "data": {"package":"example-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000}}]
