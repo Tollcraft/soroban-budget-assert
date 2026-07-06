@@ -44,4 +44,14 @@ cargo run -p cargo-budget-report -- budget-report
 
 - **New assertion metrics** — follow the pattern in `budget-macros/src/lib.rs`: parse the limit literal, append a check on `env.cost_estimate().budget()`, keep the failure message explicit. Add a passing test and a `#[should_panic]` regression test in `example-contract`.
 - **CLI changes** — no panics; return `anyhow::Result` with `.context()` on every external call (network, `stellar` invocations, file I/O). Any new output must also work under `--json`.
-- **Docs** — this site is mdBook (`docs/`); CI deploys it to GitHub Pages on push to `main`. Add pages to `docs/src/SUMMARY.md`.
+- **Docs** — this site is GitBook, synced from the repository via Git Sync (`.gitbook.yaml` points at `docs/src`). Edits merged to `main` publish automatically; no CI step is involved. Add pages to `docs/src/SUMMARY.md` (GitBook's table of contents). GitBook-specific blocks (`{% hint %}`, `{% code title %}`) are available in any page.
+
+## Docs site appearance
+
+The site's look and feel is configured by a space admin in the GitBook app (**space → Customize**), not in this repository. The intended configuration:
+
+- **Theme**: dark mode as the default, with the light/dark toggle enabled.
+- **Accent color**: a single vibrant, high-contrast accent (used for links, hint borders, and active nav) against GitBook's deep dark background.
+- **Code blocks**: syntax highlighting works from the fence language tags already present in these pages (`rust`, `bash`, `toml`, `json`); enable line numbers for long snippets if desired.
+
+Content and structure changes belong in this repo; theme changes belong in the GitBook UI.

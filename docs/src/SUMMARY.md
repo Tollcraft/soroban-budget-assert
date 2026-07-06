@@ -1,4 +1,4 @@
-# Summary
+# Table of contents
 
 - [Introduction](README.md)
 - [Protocol Mechanics](mechanics.md)
