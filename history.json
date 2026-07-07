@@ -16,5 +16,23 @@
         "value": 4096
       }
     ]
+  },
+  {
+    "commit": "bd453e6b687795609cc23c1f2a564ba48115155b",
+    "timestamp": "2026-07-07T13:28:28Z",
+    "data": [
+      {
+        "package": "example-contract",
+        "function": "do_expensive_work",
+        "metric": "CPU Instructions",
+        "value": 1000000
+      },
+      {
+        "package": "example-contract",
+        "function": "do_expensive_work",
+        "metric": "Read Bytes",
+        "value": 4096
+      }
+    ]
   }
 ]
