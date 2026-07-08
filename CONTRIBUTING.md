@@ -23,3 +23,11 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 - Install Rust and the Soroban CLI.
 - Run `cargo test` in the workspace root to run macro tests.
 - Run `cargo run --bin cargo-budget-report` (or `cargo build`) to test the CLI locally.
+
+## Code Quality Standards
+Before submitting a pull request, please ensure your code meets our quality standards by running the following commands locally:
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`
+
+Please follow the styling and architectural patterns already used in the codebase.
