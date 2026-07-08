@@ -79,7 +79,7 @@ Table output ends with a note that values are testnet simulations and vary sligh
 ```json
 [
   {
-    "package": "example-contract",
+    "package": "amm-pool-contract",
     "function": "do_expensive_work",
     "metric": "CPU Instructions",
     "value": 756678

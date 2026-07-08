@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::process::Command;
 use tabled::{Table, Tabled};
@@ -38,12 +39,41 @@ struct FunctionConfig {
     args: Vec<String>,
 }
 
-#[derive(Tabled, serde::Serialize)]
+#[derive(serde::Serialize)]
 struct CostReport {
     package: String,
     function: String,
     metric: &'static str,
     value: u32,
+}
+
+#[derive(Tabled)]
+struct TableCostReport {
+    package: String,
+    function: String,
+    metric: &'static str,
+    value: String,
+}
+
+fn format_with_commas_and_units(value: u32, metric: &str) -> String {
+    let s = value.to_string();
+    let mut result = String::new();
+    let mut count = 0;
+    for c in s.chars().rev() {
+        if count == 3 {
+            result.push(',');
+            count = 0;
+        }
+        result.push(c);
+        count += 1;
+    }
+    let formatted = result.chars().rev().collect::<String>();
+
+    if metric.contains("Bytes") {
+        format!("{} B", formatted)
+    } else {
+        format!("{} inst.", formatted)
+    }
 }
 
 fn main() -> Result<()> {
@@ -134,7 +164,16 @@ fn main() -> Result<()> {
             continue;
         }
 
-        println!("Deploying contract {}...", package.name);
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✔"])
+                .template("{spinner:.green} Deploying contract {msg}...")
+                .unwrap(),
+        );
+        spinner.set_message(package.name.to_string());
+        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
         let deploy_output = Command::new("stellar")
             .args([
                 "contract",
@@ -148,6 +187,8 @@ fn main() -> Result<()> {
             ])
             .output()
             .context("failed to execute stellar-cli deploy")?;
+
+        spinner.finish_and_clear();
 
         if !deploy_output.status.success() {
             anyhow::bail!(
@@ -307,9 +348,22 @@ fn main() -> Result<()> {
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
     } else {
-        let table = Table::new(&reports);
+        let table_reports: Vec<TableCostReport> = reports
+            .into_iter()
+            .map(|r| {
+                let formatted = format_with_commas_and_units(r.value, r.metric);
+                TableCostReport {
+                    package: r.package,
+                    function: r.function,
+                    metric: r.metric,
+                    value: formatted,
+                }
+            })
+            .collect();
+        let table = Table::new(table_reports).to_string();
         println!("{}", table);
-        println!("\n* Note: These are simulated numbers on testnet. They vary slightly depending on ledger state.");
+        println!("\nSummary: The metrics above represent the total unrefundable network execution costs required to run your contract functions.");
+        println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
     }
 
     Ok(())

@@ -2,7 +2,7 @@
 members = [
     "budget-macros",
     "cargo-budget-report",
-    "example-contract",
+    "amm-pool-contract",
 ]
 resolver = "2"
 
