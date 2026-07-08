@@ -1,7 +1,7 @@
 #![cfg(test)]
 
-use budget_macros::budget_cpu_lt;
 use amm_pool_contract::{ExpensiveContract, ExpensiveContractClient};
+use budget_macros::budget_cpu_lt;
 use soroban_sdk::Env;
 
 #[test]

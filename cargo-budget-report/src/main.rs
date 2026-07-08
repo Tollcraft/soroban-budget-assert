@@ -68,7 +68,7 @@ fn format_with_commas_and_units(value: u32, metric: &str) -> String {
         count += 1;
     }
     let formatted = result.chars().rev().collect::<String>();
-    
+
     if metric.contains("Bytes") {
         format!("{} B", formatted)
     } else {
@@ -348,15 +348,18 @@ fn main() -> Result<()> {
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
     } else {
-        let table_reports: Vec<TableCostReport> = reports.into_iter().map(|r| {
-            let formatted = format_with_commas_and_units(r.value, r.metric);
-            TableCostReport {
-                package: r.package,
-                function: r.function,
-                metric: r.metric,
-                value: formatted,
-            }
-        }).collect();
+        let table_reports: Vec<TableCostReport> = reports
+            .into_iter()
+            .map(|r| {
+                let formatted = format_with_commas_and_units(r.value, r.metric);
+                TableCostReport {
+                    package: r.package,
+                    function: r.function,
+                    metric: r.metric,
+                    value: formatted,
+                }
+            })
+            .collect();
         let table = Table::new(table_reports).to_string();
         println!("{}", table);
         println!("\nSummary: The metrics above represent the total unrefundable network execution costs required to run your contract functions.");
