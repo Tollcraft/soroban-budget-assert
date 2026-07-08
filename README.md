@@ -69,11 +69,11 @@ fn test_expensive_function() {
 ## 🤝 Community & Maintainers
 
 Join the discussion and get support:
-* **Community Link**: [Stellar Developer Discord](https://discord.gg/stellardev)
+* **Community Link**: [Stellar Developer Discord](https://discord.gg/5aprtMSyR)
 
 | Maintainer | Role | Telegram |
 |------------|------|----------|
-| Tollcraft Team | Core Developers | [@tollcraft](https://t.me/tollcraft) |
+| Tollcraft Team | Core Developers | [@tollcraft](https://t.me/+Gflo5jZStw1jMjE0) |
 
 ---
 
