@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Env, Vec, symbol_short};
+use soroban_sdk::{contract, contractimpl, symbol_short, Env, Vec};
 
 #[contract]
 pub struct ExpensiveContract;
@@ -8,7 +8,7 @@ pub struct ExpensiveContract;
 impl ExpensiveContract {
     pub fn do_expensive_work(env: Env, n: u32) -> u32 {
         let mut result: u32 = 0;
-        
+
         // Compute expensive
         for i in 0..n {
             result = result.wrapping_add(i.wrapping_mul(i));

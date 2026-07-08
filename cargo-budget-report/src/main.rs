@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use clap::Parser;
-use std::process::Command;
-use std::collections::HashMap;
-use tabled::{Table, Tabled};
 use cargo_metadata::MetadataCommand;
+use clap::Parser;
+use std::collections::HashMap;
+use std::process::Command;
+use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
 #[derive(Parser, Debug)]
@@ -16,7 +16,7 @@ enum CargoCli {
 struct BudgetReportArgs {
     #[arg(long)]
     network: Option<String>,
-    
+
     #[arg(long)]
     source: Option<String>,
 
@@ -54,8 +54,14 @@ fn main() -> Result<()> {
         .and_then(|s| toml::from_str(&s).ok())
         .unwrap_or_default();
 
-    let network = args.network.or(toml_config.network).context("missing --network or budget.toml network field")?;
-    let source = args.source.or(toml_config.source).context("missing --source or budget.toml source field")?;
+    let network = args
+        .network
+        .or(toml_config.network)
+        .context("missing --network or budget.toml network field")?;
+    let source = args
+        .source
+        .or(toml_config.source)
+        .context("missing --source or budget.toml source field")?;
 
     println!("Discovering workspace members...");
     let metadata = MetadataCommand::new()
@@ -66,24 +72,35 @@ fn main() -> Result<()> {
     let mut reports = Vec::new();
 
     for package in metadata.packages {
-        let is_cdylib = package.targets.iter().any(|t| t.crate_types.iter().any(|c| c.to_string() == "cdylib"));
+        let is_cdylib = package
+            .targets
+            .iter()
+            .any(|t| t.crate_types.iter().any(|c| c.to_string() == "cdylib"));
         if !is_cdylib {
             continue;
         }
 
         println!("Building package '{}' for wasm32...", package.name);
         let build_status = Command::new("cargo")
-            .args(["build", "-p", &package.name, "--target", "wasm32-unknown-unknown", "--release"])
+            .args([
+                "build",
+                "-p",
+                &package.name,
+                "--target",
+                "wasm32-unknown-unknown",
+                "--release",
+            ])
             .status()
             .context("failed to build package")?;
-            
+
         if !build_status.success() {
             anyhow::bail!("Failed to build {}", package.name);
         }
 
         // Locate wasm
         let wasm_name = package.name.replace('-', "_");
-        let wasm_path = metadata.target_directory
+        let wasm_path = metadata
+            .target_directory
             .join("wasm32-unknown-unknown")
             .join("release")
             .join(format!("{}.wasm", wasm_name));
@@ -96,7 +113,7 @@ fn main() -> Result<()> {
         // Parse WASM exports
         let wasm_bytes = std::fs::read(&wasm_path).context("failed to read wasm file")?;
         let mut exported_fns = Vec::new();
-        
+
         for payload in WasmParser::new(0).parse_all(&wasm_bytes) {
             if let wasmparser::Payload::ExportSection(s) = payload? {
                 for export in s {
@@ -119,30 +136,50 @@ fn main() -> Result<()> {
 
         println!("Deploying contract {}...", package.name);
         let deploy_output = Command::new("stellar")
-            .args(["contract", "deploy", "--wasm", wasm_path.as_str(), "--source", &source, "--network", &network])
+            .args([
+                "contract",
+                "deploy",
+                "--wasm",
+                wasm_path.as_str(),
+                "--source",
+                &source,
+                "--network",
+                &network,
+            ])
             .output()
             .context("failed to execute stellar-cli deploy")?;
 
         if !deploy_output.status.success() {
-            anyhow::bail!("Failed to deploy {}. Ensure your source account is funded.\nError: {}", package.name, String::from_utf8_lossy(&deploy_output.stderr));
+            anyhow::bail!(
+                "Failed to deploy {}. Ensure your source account is funded.\nError: {}",
+                package.name,
+                String::from_utf8_lossy(&deploy_output.stderr)
+            );
         }
-        
-        let contract_id = String::from_utf8_lossy(&deploy_output.stdout).trim().to_string();
+
+        let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
+            .trim()
+            .to_string();
         println!("Contract deployed at: {}", contract_id);
 
         for function in exported_fns {
             println!("Simulating function '{}'...", function);
-            
+
             let func_config = toml_config.functions.get(&function);
             let func_args = func_config.map(|c| c.args.clone()).unwrap_or_default();
 
             let mut invoke_args = vec![
-                "contract".to_string(), "invoke".to_string(), 
-                "--id".to_string(), contract_id.clone(), 
-                "--source".to_string(), source.clone(), 
-                "--network".to_string(), network.clone(), 
-                "--build-only".to_string(), 
-                "--".to_string(), function.clone()
+                "contract".to_string(),
+                "invoke".to_string(),
+                "--id".to_string(),
+                contract_id.clone(),
+                "--source".to_string(),
+                source.clone(),
+                "--network".to_string(),
+                network.clone(),
+                "--build-only".to_string(),
+                "--".to_string(),
+                function.clone(),
             ];
             invoke_args.extend(func_args);
 
@@ -152,11 +189,17 @@ fn main() -> Result<()> {
                 .context("failed to execute stellar-cli invoke")?;
 
             if !invoke_output.status.success() {
-                println!("Warning: Simulation failed for {}: {}", function, String::from_utf8_lossy(&invoke_output.stderr));
+                println!(
+                    "Warning: Simulation failed for {}: {}",
+                    function,
+                    String::from_utf8_lossy(&invoke_output.stderr)
+                );
                 continue;
             }
 
-            let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout).trim().to_string();
+            let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
+                .trim()
+                .to_string();
 
             let rpc_payload = serde_json::json!({
                 "jsonrpc": "2.0",
@@ -169,7 +212,16 @@ fn main() -> Result<()> {
 
             use std::io::Write;
             let mut curl = Command::new("curl")
-                .args(["-s", "-X", "POST", "-H", "Content-Type: application/json", "-d", "@-", "https://soroban-testnet.stellar.org:443"])
+                .args([
+                    "-s",
+                    "-X",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/json",
+                    "-d",
+                    "@-",
+                    "https://soroban-testnet.stellar.org:443",
+                ])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .spawn()
@@ -177,11 +229,16 @@ fn main() -> Result<()> {
 
             {
                 let stdin = curl.stdin.as_mut().context("Failed to open stdin")?;
-                stdin.write_all(rpc_payload.to_string().as_bytes()).context("Failed to write to stdin")?;
+                stdin
+                    .write_all(rpc_payload.to_string().as_bytes())
+                    .context("Failed to write to stdin")?;
             }
 
-            let curl_output = curl.wait_with_output().context("Failed to read curl output")?;
-            let rpc_resp: serde_json::Value = serde_json::from_slice(&curl_output.stdout).context("Failed to parse RPC response")?;
+            let curl_output = curl
+                .wait_with_output()
+                .context("Failed to read curl output")?;
+            let rpc_resp: serde_json::Value = serde_json::from_slice(&curl_output.stdout)
+                .context("Failed to parse RPC response")?;
 
             if let Some(error) = rpc_resp.get("error") {
                 println!("Warning: RPC error for {}: {}", function, error);
@@ -201,20 +258,40 @@ fn main() -> Result<()> {
 
             {
                 let stdin = decode_cmd.stdin.as_mut().context("Failed to open stdin")?;
-                stdin.write_all(tx_data_b64.as_bytes()).context("Failed to write to stdin")?;
+                stdin
+                    .write_all(tx_data_b64.as_bytes())
+                    .context("Failed to write to stdin")?;
             }
 
-            let decode_output = decode_cmd.wait_with_output().context("Failed to read stdout")?;
+            let decode_output = decode_cmd
+                .wait_with_output()
+                .context("Failed to read stdout")?;
             let json_str = String::from_utf8_lossy(&decode_output.stdout);
-            let parsed: serde_json::Value = serde_json::from_str(&json_str).context("Failed to parse XDR JSON")?;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&json_str).context("Failed to parse XDR JSON")?;
 
             let instructions = parsed["resources"]["instructions"].as_u64().unwrap_or(0) as u32;
             let read_bytes = parsed["resources"]["disk_read_bytes"].as_u64().unwrap_or(0) as u32;
             let write_bytes = parsed["resources"]["write_bytes"].as_u64().unwrap_or(0) as u32;
 
-            reports.push(CostReport { package: package.name.to_string(), function: function.clone(), metric: "CPU Instructions", value: instructions });
-            reports.push(CostReport { package: package.name.to_string(), function: function.clone(), metric: "Read Bytes", value: read_bytes });
-            reports.push(CostReport { package: package.name.to_string(), function: function.clone(), metric: "Write Bytes", value: write_bytes });
+            reports.push(CostReport {
+                package: package.name.to_string(),
+                function: function.clone(),
+                metric: "CPU Instructions",
+                value: instructions,
+            });
+            reports.push(CostReport {
+                package: package.name.to_string(),
+                function: function.clone(),
+                metric: "Read Bytes",
+                value: read_bytes,
+            });
+            reports.push(CostReport {
+                package: package.name.to_string(),
+                function: function.clone(),
+                metric: "Write Bytes",
+                value: write_bytes,
+            });
         }
     }
 
@@ -224,9 +301,10 @@ fn main() -> Result<()> {
     }
 
     println!("\n=== WORKSPACE BUDGET REPORT ===");
-    
+
     if args.json {
-        let json_output = serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
+        let json_output =
+            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
     } else {
         let table = Table::new(&reports);
