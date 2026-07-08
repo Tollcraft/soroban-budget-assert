@@ -15,7 +15,7 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 |---|---|
 | `budget-macros` | Proc-macro crate. `budget_cpu_lt` / `budget_mem_lt` rewrite a test function's block to append a budget assertion against its `env` variable. |
 | `cargo-budget-report` | The CLI (`cargo budget-report` subcommand). Uses `cargo_metadata` for workspace discovery, `wasmparser` for export scanning, shells out to `stellar` for deploy/invoke/XDR decode, and `tabled`/`serde_json` for output. |
-| `example-contract` | Reference contract (`do_expensive_work`) plus the integration tests that double as the research measurements. |
+| `amm-pool-contract` | Reference contract (`do_expensive_work`) plus the integration tests that double as the research measurements. |
 
 `budget.toml` at the root configures the CLI for the example contract, and `.github/workflows/budget.yml` runs the Tier A tests in CI.
 
@@ -24,11 +24,11 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 The macro tests execute the compiled WASM, so build it first:
 
 ```bash
-cargo build -p example-contract --release --target wasm32-unknown-unknown
+cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test
 ```
 
-`example-contract/tests/budget_test.rs` contains four tests:
+`amm-pool-contract/tests/budget_test.rs` contains four tests:
 
 - `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
 - `test_budget_macro_gated` — a passing assertion at the 950,000 CPU limit.
@@ -42,7 +42,7 @@ cargo run -p cargo-budget-report -- budget-report
 
 ## Extending
 
-- **New assertion metrics** — follow the pattern in `budget-macros/src/lib.rs`: parse the limit literal, append a check on `env.cost_estimate().budget()`, keep the failure message explicit. Add a passing test and a `#[should_panic]` regression test in `example-contract`.
+- **New assertion metrics** — follow the pattern in `budget-macros/src/lib.rs`: parse the limit literal, append a check on `env.cost_estimate().budget()`, keep the failure message explicit. Add a passing test and a `#[should_panic]` regression test in `amm-pool-contract`.
 - **CLI changes** — no panics; return `anyhow::Result` with `.context()` on every external call (network, `stellar` invocations, file I/O). Any new output must also work under `--json`.
 - **Docs** — this site is GitBook, synced from the repository via Git Sync (`.gitbook.yaml` points at `docs/src`). Edits merged to `main` publish automatically; no CI step is involved. Add pages to `docs/src/SUMMARY.md` (GitBook's table of contents). GitBook-specific blocks (`{% hint %}`, `{% code title %}`) are available in any page.
 

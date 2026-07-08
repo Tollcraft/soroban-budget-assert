@@ -10,6 +10,8 @@
 
 ## 📖 Overview
 
+[![asciicast](https://asciinema.org/a/lsFPySnxL26HmRCj.svg)](https://asciinema.org/a/lsFPySnxL26HmRCj)
+
 `soroban-budget-assert` is a developer tool that measures the gap between local Soroban test estimates and real network costs. It allows developers to assert budget limits during testing and automatically generate detailed cost reports across an entire workspace.
 
 ### 🏗️ Architecture

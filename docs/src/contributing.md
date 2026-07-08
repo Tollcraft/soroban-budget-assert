@@ -10,5 +10,5 @@ We welcome contributions to `soroban-budget-assert`.
 
 ### Requirements
 - All new CLI features must support the `--json` flag.
-- Macro changes must include corresponding `#[test]` cases in the `example-contract`.
+- Macro changes must include corresponding `#[test]` cases in the `amm-pool-contract`.
 - Do not introduce panics in the CLI; use `anyhow::Result` for graceful error handling.

@@ -30,7 +30,7 @@ async function main() {
     
     // 1. Upload WASM
     console.log("Uploading contract...");
-    const wasm = fs.readFileSync("../target/wasm32-unknown-unknown/release/example_contract.wasm");
+    const wasm = fs.readFileSync("../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm");
     
     let uploadTx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE })
         .addOperation(
