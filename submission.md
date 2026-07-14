@@ -14,15 +14,6 @@ We have scoped genuine ongoing work organized into three primary areas:
 
 ## 4. Required Links
 - **Live Repository URL**: https://github.com/Tollcraft/soroban-budget-assert
-- **Documentation Site**: https://tollcraft.github.io/soroban-budget-assert/
+- **Documentation Site**: https://tollcraft.gitbook.io/docs/budget-assert
 - **On-chain Contract Verification**: N/A (Developer Tool, not a deployed contract protocol)
-- **Demo Video**: [INSERT URL ONCE RECORDED]
-
----
-
-## 🎬 Instructions for Recording the Demo Video
-To complete the submission, record a 1-2 minute Loom or screen recording showing:
-1. Run `cargo test` on a contract function where the `#[budget_cpu_lt]` limit is set *too low*. Show the test failing with the explicit "underestimates real network cost" error.
-2. Fix the limit in the code and re-run `cargo test` to show it passing.
-3. Run `cargo budget-report` from the workspace root and show the aggregated testnet simulation cost table printing to the terminal.
-4. Upload the video (YouTube/Loom/Drive) and paste the link in Section 4 above.
+- **Demo Video**: https://asciinema.org/a/qqC0RysuCDBvfUXC

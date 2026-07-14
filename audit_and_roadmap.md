@@ -2,6 +2,8 @@
 
 Based on the `stellar_wave_builder_master_prompt.md.pdf` standards, this document serves as a guide to bring the `soroban-budget-assert` project up to the required standard for a Drips Wave repo approval.
 
+> **Status (2026-07-14): all roadmap items complete.** Repo hygiene, GitHub configuration, docs site, and submission assets are in place; `submission.md` holds the final links. Demo recording: https://asciinema.org/a/qqC0RysuCDBvfUXC
+
 ## 1. Audit: What's Missing
 
 ### Repository Hygiene (Phase 10)
@@ -23,9 +25,9 @@ Based on the `stellar_wave_builder_master_prompt.md.pdf` standards, this documen
 ## 2. Roadmap to Completion
 
 ### Step 1: Core Hygiene
-- [ ] Create `SECURITY.md` outlining responsible disclosure and audit status.
-- [ ] Create `CONTRIBUTING.md` to guide open-source contributors.
-- [ ] Rewrite `README.md` to include:
+- [x] Create `SECURITY.md` outlining responsible disclosure and audit status.
+- [x] Create `CONTRIBUTING.md` to guide open-source contributors.
+- [x] Rewrite `README.md` to include:
   - Project banner/logo
   - CI/CD status badges
   - Maintainer table with contact info
@@ -34,19 +36,19 @@ Based on the `stellar_wave_builder_master_prompt.md.pdf` standards, this documen
   - `contrib.rocks` contributors section
 
 ### Step 2: Repository Configuration
-- [ ] Configure GitHub repository settings: add topics (e.g., `soroban`, `stellar`, `testing`) and enforce branch protection.
-- [ ] Write and run a `gh` CLI script to populate the repository with categorized issues (including Summary, Acceptance Criteria, and Tech Stack).
-- [ ] Cut and publish a `v0.1.0` release tag.
+- [x] Configure GitHub repository settings: add topics (e.g., `soroban`, `stellar`, `testing`) and enforce branch protection.
+- [x] Write and run a `gh` CLI script to populate the repository with categorized issues (including Summary, Acceptance Criteria, and Tech Stack).
+- [x] Cut and publish a `v0.1.0` release tag.
 
 ### Step 3: Documentation Site
-- [ ] Scaffold a GitBook (or similar) docs site.
-- [ ] Write the required sections:
+- [x] Scaffold a GitBook (or similar) docs site.
+- [x] Write the required sections:
   - **Introduction**: Problem and solution with cited figures.
   - **Mechanics**: How the CLI and macros calculate and assert costs.
   - **Reference**: Detailed usage of `cargo budget-report` and `#[budget_cpu_lt]`.
   - **Developer Guide**: Local setup and extending the tool.
 
 ### Step 4: Submission Preparation
-- [ ] Record a short demo video showing a contract exceeding its budget and failing, followed by a passing assertion.
-- [ ] Draft the final submission descriptions (1-paragraph plain English description, repo relationships, and planned issue breakdown).
-- [ ] Aggregate all links (live URLs, repo URLs, documentation site, demo video) for final submission.
+- [x] Record a short demo video showing a contract exceeding its budget and failing, followed by a passing assertion.
+- [x] Draft the final submission descriptions (1-paragraph plain English description, repo relationships, and planned issue breakdown).
+- [x] Aggregate all links (live URLs, repo URLs, documentation site, demo video) for final submission.
