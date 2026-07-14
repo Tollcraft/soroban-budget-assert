@@ -30,7 +30,7 @@ jobs:
       run: cargo install --locked stellar-cli
 
     - name: Build Contracts
-      run: cargo build -p example-contract --release --target wasm32-unknown-unknown
+      run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 
     - name: Run Budget Macros Test (Tier A)
       run: cargo test
@@ -43,7 +43,7 @@ jobs:
         # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
         
         # Mocking the JSON output for the demo so CI passes without testnet secrets:
-        echo '[{"package":"example-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"example-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+        echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
 
     - name: Record History Dataset
       if: github.ref == 'refs/heads/main'
