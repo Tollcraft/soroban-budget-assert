@@ -1,4 +1,4 @@
-{"version": 2, "width": 80, "height": 24, "timestamp": 1783526509, "env": {"SHELL": "/bin/bash", "TERM": "dumb"}}
+{"version": 2, "width": 80, "height": 24, "timestamp": 1783526509, "env": {"SHELL": "/bin/bash", "TERM": "dumb"}, "title": "Soroban Budget Assert \u2014 CI budget assertions & network-verified cost report demo"}
 [0.006857, "o", "\u001b[1;36m=== Soroban Budget Assert Demo ===\u001b[0m\r\n\r\n"]
 [0.70899, "o", "$ c"]
 [0.745554, "o", "a"]
