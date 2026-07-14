@@ -93,7 +93,7 @@ fn main() -> Result<()> {
         .or(toml_config.source)
         .context("missing --source or budget.toml source field")?;
 
-    println!("Discovering workspace members...");
+    eprintln!("Discovering workspace members...");
     let metadata = MetadataCommand::new()
         .no_deps()
         .exec()
@@ -110,7 +110,7 @@ fn main() -> Result<()> {
             continue;
         }
 
-        println!("Building package '{}' for wasm32...", package.name);
+        eprintln!("Building package '{}' for wasm32...", package.name);
         let build_status = Command::new("cargo")
             .args([
                 "build",
@@ -136,7 +136,7 @@ fn main() -> Result<()> {
             .join(format!("{}.wasm", wasm_name));
 
         if !wasm_path.exists() {
-            println!("Warning: WASM not found at {}", wasm_path);
+            eprintln!("Warning: WASM not found at {}", wasm_path);
             continue;
         }
 
@@ -160,7 +160,7 @@ fn main() -> Result<()> {
         }
 
         if exported_fns.is_empty() {
-            println!("No exported functions found in {}", package.name);
+            eprintln!("No exported functions found in {}", package.name);
             continue;
         }
 
@@ -201,10 +201,10 @@ fn main() -> Result<()> {
         let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
             .trim()
             .to_string();
-        println!("Contract deployed at: {}", contract_id);
+        eprintln!("Contract deployed at: {}", contract_id);
 
         for function in exported_fns {
-            println!("Simulating function '{}'...", function);
+            eprintln!("Simulating function '{}'...", function);
 
             let func_config = toml_config.functions.get(&function);
             let func_args = func_config.map(|c| c.args.clone()).unwrap_or_default();
@@ -230,7 +230,7 @@ fn main() -> Result<()> {
                 .context("failed to execute stellar-cli invoke")?;
 
             if !invoke_output.status.success() {
-                println!(
+                eprintln!(
                     "Warning: Simulation failed for {}: {}",
                     function,
                     String::from_utf8_lossy(&invoke_output.stderr)
@@ -282,7 +282,7 @@ fn main() -> Result<()> {
                 .context("Failed to parse RPC response")?;
 
             if let Some(error) = rpc_resp.get("error") {
-                println!("Warning: RPC error for {}: {}", function, error);
+                eprintln!("Warning: RPC error for {}: {}", function, error);
                 continue;
             }
 
@@ -337,17 +337,16 @@ fn main() -> Result<()> {
     }
 
     if reports.is_empty() {
-        println!("No successful simulations to report.");
+        eprintln!("No successful simulations to report.");
         return Ok(());
     }
-
-    println!("\n=== WORKSPACE BUDGET REPORT ===");
 
     if args.json {
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
     } else {
+        println!("\n=== WORKSPACE BUDGET REPORT ===");
         let table_reports: Vec<TableCostReport> = reports
             .into_iter()
             .map(|r| {
