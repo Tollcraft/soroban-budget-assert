@@ -7,6 +7,7 @@ use syn::{parse::Parse, parse::ParseStream, parse_macro_input, Ident, ItemFn, Li
 enum BudgetLimit {
     Int(u64),
     EnvVar(String),
+    // TODO: Add support for parsing a default value if the env var is missing
 }
 
 impl Parse for BudgetLimit {

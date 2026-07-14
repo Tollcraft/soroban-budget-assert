@@ -1,6 +1,6 @@
 # Soroban Budget Assert: Audit & Roadmap
 
-Based on the `stellar_wave_builder_master_prompt.md.pdf` standards, this document serves as a guide to bring the `soroban-budget-assert` project up to the required standard for a Drips Wave repo approval.
+Based on open source repository standards, this document serves as a guide to bring the `soroban-budget-assert` project up to the required standard for an open source repository.
 
 ## 1. Audit: What's Missing
 
