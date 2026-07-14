@@ -55,8 +55,14 @@ jobs:
         # Save report to temp location so it survives the checkout
         cp current_report.json /tmp/current_report.json
         
+        # Clean up any modified files from testing before switching branches
+        git reset --hard
+        git clean -fd
+        
         # Fetch and checkout the gh-pages branch, or create it if missing
+        git fetch origin gh-pages || true
         git checkout gh-pages || git checkout -b gh-pages
+        git pull origin gh-pages || true
         
         # Initialize history.json if it doesn't exist
         if [ ! -f history.json ]; then
