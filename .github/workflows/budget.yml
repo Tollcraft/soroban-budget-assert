@@ -73,9 +73,16 @@ jobs:
         
         # Save report to temp location so it survives the checkout
         cp current_report.json /tmp/current_report.json
-        
-        # Fetch and checkout the gh-pages branch, or create it if missing
-        git checkout gh-pages || git checkout -b gh-pages
+
+        # Discard build/test artifacts: cargo test rewrites the committed
+        # test_snapshots, and a dirty tree makes the checkout below abort
+        git reset --hard HEAD
+        git clean -fd
+
+        # Checkout the existing gh-pages branch. Never fall back to branching
+        # off main — that would replace the published site; use an orphan
+        # branch if gh-pages doesn't exist yet.
+        git checkout gh-pages || { git checkout --orphan gh-pages && git rm -rfq . ; }
         
         # Initialize history.json if it doesn't exist
         if [ ! -f history.json ]; then
