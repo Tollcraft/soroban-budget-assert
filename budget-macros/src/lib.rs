@@ -9,6 +9,7 @@ use syn::{
 enum BudgetLimit {
     Int(u64),
     EnvVar(String),
+    // TODO: Add support for parsing a default value if the env var is missing
 }
 
 impl Parse for BudgetLimit {
