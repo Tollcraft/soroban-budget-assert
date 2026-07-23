@@ -56,7 +56,7 @@ fn test_budget_macro_gated() {
 
     env.cost_estimate().budget().reset_unlimited();
 
-    client.do_expensive_work(&10_000); // Should pass as it's < 850000 CPU limit
+    client.do_expensive_work(&10_000); // Should pass as it's < 950000 CPU limit
 }
 
 #[test]
