@@ -72,7 +72,7 @@ args = ["--n", "10000"]
 
 ## Output
 
-Each simulated function produces three rows (or three JSON objects): `CPU Instructions`, `Read Bytes`, and `Write Bytes`.
+Each simulated function produces three rows (or three JSON objects): `CPU Instructions`, `Read Bytes`, and `Write Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
 
 Table output ends with a note that values are testnet simulations and vary slightly with ledger state. JSON output (`--json`) is an array suited to CI:
 
