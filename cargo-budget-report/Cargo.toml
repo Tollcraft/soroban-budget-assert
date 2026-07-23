@@ -16,3 +16,6 @@ toml = "1.1.2"
 cargo_metadata = "0.23.1"
 wasmparser = "0.252.0"
 indicatif = "0.17.8"
+
+[dev-dependencies]
+tempfile = "3.10"
