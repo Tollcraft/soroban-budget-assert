@@ -73,6 +73,55 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     })
 }
 
+/// Asserts that the ledger write bytes used by `env` are less than N.
+///
+/// Write bytes represent the total bytes written to ledger storage during
+/// contract execution. This macro measures the local `memory_bytes_cost` as a
+/// proxy, which correlates with storage serialization overhead even though the
+/// exact on-network write-bytes figure is only available via RPC simulation.
+/// Must be placed on a test function that has a local `env` variable.
+#[proc_macro_attribute]
+pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let limit = parse_macro_input!(attr as BudgetLimit);
+    let mut input_fn = parse_macro_input!(item as ItemFn);
+
+    let stmts = &input_fn.block.stmts;
+
+    let limit_expr = match limit {
+        BudgetLimit::Int(n) => quote! { #n },
+        BudgetLimit::EnvVar(var) => quote! {
+            std::env::var(#var)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(u64::MAX)
+        },
+    };
+
+    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+
+    let new_block = quote! {
+        {
+            #(#stmts)*
+
+            let budget = #env_ident.cost_estimate().budget();
+            let write_bytes_cost = budget.memory_bytes_cost();
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                write_bytes_cost < limit_u64,
+                "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
+                write_bytes_cost,
+                limit_u64
+            );
+        }
+    };
+
+    *input_fn.block = syn::parse2(new_block).unwrap();
+
+    TokenStream::from(quote! {
+        #input_fn
+    })
+}
+
 /// Asserts that the memory bytes used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
 #[proc_macro_attribute]
