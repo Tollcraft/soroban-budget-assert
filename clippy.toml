@@ -1,0 +1,24 @@
+# Clippy configuration for soroban-budget-assert.
+#
+# Decision: the default lint set is right for this repository. `CONTRIBUTING.md`
+# gates on `cargo clippy --workspace --all-targets -- -D warnings`, and the
+# workspace passes that on defaults, so nothing here relaxes or adds a lint.
+#
+# What this file does do is pin the tunable thresholds that the default lints
+# read. They are set to their current upstream defaults on purpose: if a future
+# clippy release changes a default, the gate stays where it is today instead of
+# moving under an unchanged source tree. Same reasoning as `rustfmt.toml`.
+#
+# Not set here:
+#   * `msrv` -- the project declares no `rust-version`, and the toolchain is
+#     unpinned. Pinning an MSRV belongs with the toolchain work (issue #113);
+#     setting one here would only silence version-gated suggestions based on a
+#     number nothing else in the repo enforces.
+#   * `avoid-breaking-exported-api` -- left at its default (`true`). The crates
+#     here are a proc-macro library and a CLI binary, neither of which has an
+#     API surface stable enough to be worth linting against.
+
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+enum-variant-name-threshold = 3
+single-char-binding-names-threshold = 4
