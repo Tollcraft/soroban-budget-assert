@@ -41,8 +41,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            std::env::var(#var)
-                .ok()
+            budget_env_resolve(#var)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
         },
@@ -52,6 +51,11 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let new_block = quote! {
         {
+            #[allow(unused_variables)]
+            let budget_env_resolve = |var: &str| -> Option<String> {
+                std::env::var(var).ok()
+            };
+
             #(#stmts)*
 
             let budget = #env_ident.cost_estimate().budget();
@@ -85,8 +89,7 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            std::env::var(#var)
-                .ok()
+            budget_env_resolve(#var)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
         },
@@ -96,6 +99,11 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let new_block = quote! {
         {
+            #[allow(unused_variables)]
+            let budget_env_resolve = |var: &str| -> Option<String> {
+                std::env::var(var).ok()
+            };
+
             #(#stmts)*
 
             let budget = #env_ident.cost_estimate().budget();

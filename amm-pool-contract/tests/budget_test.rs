@@ -80,7 +80,9 @@ fn test_budget_macro_deliberate_regression() {
 #[test]
 #[budget_cpu_lt(env = "TEST_MAX_CPU")]
 fn test_budget_macro_dynamic_env() {
-    std::env::set_var("TEST_MAX_CPU", "950000");
+    let budget_env_resolve = |var: &str| -> Option<String> {
+        if var == "TEST_MAX_CPU" { Some("950000".to_string()) } else { None }
+    };
     let env = Env::default();
 
     let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
@@ -97,7 +99,7 @@ fn test_budget_macro_dynamic_env() {
 #[test]
 #[budget_cpu_lt(env = "TEST_MAX_CPU_FALLBACK")]
 fn test_budget_macro_dynamic_env_fallback() {
-    std::env::remove_var("TEST_MAX_CPU_FALLBACK");
+    let budget_env_resolve = |_var: &str| -> Option<String> { None };
     let env = Env::default();
 
     let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
