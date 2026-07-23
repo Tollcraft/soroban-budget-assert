@@ -29,8 +29,42 @@ impl Parse for BudgetLimit {
     }
 }
 
-/// Asserts that the CPU instructions used by `env` are less than N.
-/// Must be placed on a test function that has a local `env` variable.
+/// Asserts CPU instruction cost is strictly less than N after the test body runs.
+///
+/// The injected check reads `env.cost_estimate().budget().cpu_instruction_cost()`
+/// and panics with the actual cost and limit if the assertion fails.
+///
+/// # Syntax
+///
+/// **Static limit** — a literal integer:
+///
+/// ```ignore
+/// #[budget_cpu_lt(850000)]
+/// ```
+///
+/// **Dynamic limit** — read from an environment variable at test time:
+///
+/// ```ignore
+/// #[budget_cpu_lt(env = "MY_CPU_LIMIT")]
+/// ```
+///
+/// When using the `env = "..."` form, if the variable is unset or not a valid `u64`,
+/// the limit defaults to `u64::MAX` (assertion passes unconditionally).
+///
+/// # Requirements
+///
+/// - The function body **must** have a local variable named `env` of type
+///   `soroban_sdk::Env`.
+/// - The contract should be registered as WASM
+///   (`env.register_contract_wasm(...)`) — raw native estimates are not
+///   representative of real network costs.
+/// - Call `env.cost_estimate().budget().reset_unlimited()` before the
+///   measured invocation so the default test budget does not cap the reading.
+///
+/// # Panics
+///
+/// Panics with the message:
+/// `CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost`
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = parse_macro_input!(attr as BudgetLimit);
@@ -73,8 +107,42 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     })
 }
 
-/// Asserts that the memory bytes used by `env` are less than N.
-/// Must be placed on a test function that has a local `env` variable.
+/// Asserts memory bytes cost is strictly less than N after the test body runs.
+///
+/// The injected check reads `env.cost_estimate().budget().memory_bytes_cost()`
+/// and panics with the actual cost and limit if the assertion fails.
+///
+/// # Syntax
+///
+/// **Static limit** — a literal integer:
+///
+/// ```ignore
+/// #[budget_mem_lt(500000)]
+/// ```
+///
+/// **Dynamic limit** — read from an environment variable at test time:
+///
+/// ```ignore
+/// #[budget_mem_lt(env = "MY_MEM_LIMIT")]
+/// ```
+///
+/// When using the `env = "..."` form, if the variable is unset or not a valid `u64`,
+/// the limit defaults to `u64::MAX` (assertion passes unconditionally).
+///
+/// # Requirements
+///
+/// - The function body **must** have a local variable named `env` of type
+///   `soroban_sdk::Env`.
+/// - The contract should be registered as WASM
+///   (`env.register_contract_wasm(...)`) — raw native estimates are not
+///   representative of real network costs.
+/// - Call `env.cost_estimate().budget().reset_unlimited()` before the
+///   measured invocation so the default test budget does not cap the reading.
+///
+/// # Panics
+///
+/// Panics with the message:
+/// `Memory bytes cost {actual} exceeded limit {N} - local estimate, underestimates real network cost`
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = parse_macro_input!(attr as BudgetLimit);

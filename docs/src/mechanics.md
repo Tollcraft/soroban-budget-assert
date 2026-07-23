@@ -21,7 +21,11 @@ Two conclusions drive the tool's design:
 
 ## Tier A: Local fast fail (`budget-macros`)
 
-`#[budget_cpu_lt(N)]` and `#[budget_mem_lt(N)]` are procedural attribute macros. Each one rewrites the test function's body: the original statements run first, then the macro appends a cost check against the test's local `env` variable:
+Two attribute macros gate tests on local cost estimates. Each rewrites the test function's body: the original statements run first, then the macro appends a cost check against the test's local `env` variable.
+
+### `#[budget_cpu_lt(N)]` — CPU instruction assertion
+
+Appends the equivalent of:
 
 {% code title="appended by #[budget_cpu_lt(N)]" %}
 ```rust
@@ -31,7 +35,29 @@ assert!(cpu_cost < N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cos
 ```
 {% endcode %}
 
-The assertion is strict (`<`). If the local estimate reaches the limit, the test panics and `cargo test` fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.
+### `#[budget_mem_lt(N)]` — Memory bytes assertion
+
+Same shape, checks `budget.memory_bytes_cost()`:
+
+{% code title="appended by #[budget_mem_lt(N)]" %}
+```rust
+let budget = env.cost_estimate().budget();
+let mem_cost = budget.memory_bytes_cost();
+assert!(mem_cost < N, "Memory bytes cost {} exceeded limit {} - ...", mem_cost, N);
+```
+{% endcode %}
+
+Both assertions are strict (`<`). If the local estimate reaches the limit, the test panics and `cargo test` fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.
+
+### Dynamic limits via environment variables
+
+Either macro can read its limit from an environment variable at test time instead of using a hard-coded integer:
+
+```rust
+#[budget_cpu_lt(env = "MY_CPU_LIMIT")]
+```
+
+When the variable is unset or not a valid `u64`, the limit defaults to `u64::MAX`, making the assertion pass unconditionally. This lets you raise or disable limits without recompiling — useful for CI matrix builds where different runners have different budgets.
 
 ## Tier B: Network simulation (`cargo-budget-report`)
 

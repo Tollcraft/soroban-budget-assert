@@ -8,9 +8,7 @@ Both macros are attribute macros for test functions. They require a local variab
 
 Asserts that the CPU instruction cost measured by the test's `env` is strictly less than `N`.
 
-- `N` is an integer literal (e.g., `850000`).
-- On failure the test panics with:
-  `CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost`
+**Static limit** — `N` is an integer literal:
 
 ```rust
 use budget_macros::budget_cpu_lt;
@@ -23,9 +21,58 @@ fn test_expensive_function() {
 }
 ```
 
+**Dynamic limit** — read the limit from an environment variable at test time:
+
+```rust
+#[test]
+#[budget_cpu_lt(env = "MY_CPU_LIMIT")]
+fn test_with_env_limit() {
+    std::env::set_var("MY_CPU_LIMIT", "850000");
+    let env = Env::default();
+    // ... test logic ...
+}
+```
+
+If the environment variable is unset or not a valid `u64`, the limit defaults to `u64::MAX` (effectively disabling the assertion).
+
+On failure the test panics with:
+```
+CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+```
+
 ### `#[budget_mem_lt(N)]`
 
-Same shape; asserts `memory_bytes_cost() < N`.
+Asserts that the memory bytes cost measured by the test's `env` is strictly less than `N`.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_mem_lt;
+
+#[test]
+#[budget_mem_lt(500000)]
+fn test_memory_budget() {
+    let env = Env::default();
+    // ... register contract as WASM, call client ...
+}
+```
+
+**Dynamic limit:**
+
+```rust
+#[test]
+#[budget_mem_lt(env = "MY_MEM_LIMIT")]
+fn test_memory_with_env_limit() {
+    std::env::set_var("MY_MEM_LIMIT", "500000");
+    let env = Env::default();
+    // ... test logic ...
+}
+```
+
+Failure message format:
+```
+Memory bytes cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+```
 
 ### Requirements and caveats
 
@@ -34,6 +81,33 @@ Same shape; asserts `memory_bytes_cost() < N`.
 - Run the contract as WASM (`env.register_contract_wasm`) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.
 - Call `env.cost_estimate().budget().reset_unlimited()` before invoking the contract so measurement isn't cut short by the default test budget.
 - The macro checks the *local* estimate, which can sit above or below the real network cost depending on the build profile. Set `N` a few percent above the measured local number to catch regressions, and use `cargo budget-report` for the network ground truth (see the End-User Guide).
+{% endhint %}
+
+## Soroban Budget API
+
+The macros and manual tests interact with the Soroban budget API through `env.cost_estimate().budget()`. The key methods are:
+
+| Method | Returns | Description |
+|---|---|---|
+| `cpu_instruction_cost()` | `u64` | Total CPU instructions consumed since the last reset |
+| `memory_bytes_cost()` | `u64` | Total memory bytes consumed since the last reset |
+| `reset_unlimited()` | `()` | Resets all cost counters and removes the default test budget cap |
+
+Example of manual inspection:
+
+```rust
+let budget = env.cost_estimate().budget();
+budget.reset_unlimited();
+
+// ... invoke contract ...
+
+let cpu = budget.cpu_instruction_cost();
+let mem = budget.memory_bytes_cost();
+println!("CPU: {cpu}, Memory: {mem}");
+```
+
+{% hint style="info" %}
+`reset_unlimited()` must be called *before* the contract invocation you want to measure. The default `Env` applies a low test budget that caps measurement if not removed.
 {% endhint %}
 
 ## CLI: `cargo budget-report`
