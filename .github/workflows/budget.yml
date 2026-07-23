@@ -19,10 +19,8 @@ jobs:
         fetch-depth: 0
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        target: wasm32-unknown-unknown
-        
+      uses: dtolnay/rust-toolchain@master
+
     - name: Install System Dependencies
       run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
