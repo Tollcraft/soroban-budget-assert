@@ -28,7 +28,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli
+        run: cargo install --locked stellar-cli --version 21.5.3
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
