@@ -6,3 +6,4 @@
 - [End-User Guide](user_guide.md)
 - [Developer Guide](developer_guide.md)
 - [Contributing](contributing.md)
+- [Measurements](../../MEASUREMENTS.md)

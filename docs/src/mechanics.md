@@ -4,14 +4,10 @@
 
 Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on *how* the contract executes locally — and the error can point in either direction. Measured on the example contract's `do_expensive_work(10_000)`, built with the standard Soroban release profile (`opt-level = "z"`, LTO):
 
-| Execution mode | CPU instructions | Gap vs. testnet |
-|---|---|---|
-| Raw Rust (native test) | 143,887 | underestimates by ~81% |
-| Local WASM (`register_contract_wasm`) | 901,816 | overestimates by ~19% |
-| Testnet simulation (`simulateTransaction`) | 756,678 | ground truth |
+The raw figures and deltas are recorded in the [measurements file](../../MEASUREMENTS.md), which is the single source of truth for empirical cost data across the project. The same page documents the methodology, the build profiles tested, and the operation types not yet measured.
 
 {% hint style="info" %}
-The direction of the WASM gap is not stable. The same contract built with Cargo's *default* release profile measured 767,049 locally vs 832,006 on testnet — ~8% *under*. Applying the size-optimization profile flipped it to ~19% *over*: the smaller binary executes more instructions locally, while the network's cost model priced it lower.
+The direction of the WASM gap is not stable — see the two build profiles compared in the [existing measurements](../../MEASUREMENTS.md#cpu-instructions).
 {% endhint %}
 
 Two conclusions drive the tool's design:
