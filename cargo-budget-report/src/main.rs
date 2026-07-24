@@ -219,9 +219,20 @@ fn main() -> Result<()> {
         .exec()
         .context("failed to execute cargo metadata")?;
 
+    let cdylib_names: Vec<&str> = metadata
+        .packages
+        .iter()
+        .filter(|p| {
+            p.targets
+                .iter()
+                .any(|t| t.crate_types.iter().any(|c| c.to_string() == "cdylib"))
+        })
+        .map(|p| p.name.as_str())
+        .collect();
+
     let mut reports = Vec::new();
 
-    for package in metadata.packages {
+    for package in &metadata.packages {
         let is_cdylib = package
             .targets
             .iter()
@@ -441,16 +452,6 @@ fn main() -> Result<()> {
     }
 
     if !requested_packages.is_empty() {
-        let cdylib_names: Vec<&str> = metadata
-            .packages
-            .iter()
-            .filter(|p| {
-                p.targets
-                    .iter()
-                    .any(|t| t.crate_types.iter().any(|c| c.to_string() == "cdylib"))
-            })
-            .map(|p| p.name.as_str())
-            .collect();
         let unknown_pkgs: Vec<&String> = requested_packages
             .iter()
             .filter(|p| !cdylib_names.contains(&p.as_str()))
