@@ -27,10 +27,11 @@ jobs:
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
       - name: Install Stellar CLI
-        uses: stellar/actions/setup-cli@main
-        with:
-          version: 21.5.3
+        run: cargo binstall --no-confirm stellar-cli@21.5.3
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
@@ -72,10 +73,11 @@ jobs:
     - name: Install System Dependencies
       run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+    - name: Install cargo-binstall
+      uses: cargo-bins/cargo-binstall@main
+
     - name: Install Stellar CLI
-      uses: stellar/actions/setup-cli@main
-      with:
-        version: 21.5.3
+      run: cargo binstall --no-confirm stellar-cli@21.5.3
 
     - name: Build Contracts
       run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
