@@ -123,7 +123,7 @@ fn get_contract_id_for_package(
     wasm_bytes: &[u8],
     network: &str,
     source: &str,
-    wasm_path: &std::path::Path,
+    wasm_path_str: &str,
     force_deploy: bool,
     cache: &mut BudgetCache,
 ) -> Result<String> {
@@ -153,7 +153,7 @@ fn get_contract_id_for_package(
             "contract",
             "deploy",
             "--wasm",
-            wasm_path.as_str(),
+            wasm_path_str,
             "--source",
             source,
             "--network",
@@ -305,14 +305,21 @@ fn main() -> Result<()> {
                 anyhow::bail!(
                     "Unknown function(s) for package '{}': {}\nAvailable functions: {}",
                     package.name,
-                    unknown.join(", "),
+                    unknown.iter().map(|name| name.as_str()).collect::<Vec<_>>().join(", "),
                     exported_fns.join(", ")
                 );
             }
         }
 
-        let contract_id =
-            get_contract_id_for_package(&package.name, &wasm_bytes, &network, &source, &wasm_path, force_deploy, &mut cache)?;
+        let contract_id = get_contract_id_for_package(
+            &package.name,
+            &wasm_bytes,
+            &network,
+            &source,
+            wasm_path.as_str(),
+            force_deploy,
+            &mut cache,
+        )?;
 
         for function in &exported_fns {
             if !requested_functions.is_empty() && !requested_functions.contains(function) {
@@ -459,7 +466,11 @@ fn main() -> Result<()> {
         if !unknown_pkgs.is_empty() {
             anyhow::bail!(
                 "Unknown package(s): {}\nAvailable cdylib packages: {}",
-                unknown_pkgs.join(", "),
+                unknown_pkgs
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 cdylib_names.join(", ")
             );
         }
