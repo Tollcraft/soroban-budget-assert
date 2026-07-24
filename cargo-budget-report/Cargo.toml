@@ -1,7 +1,11 @@
 [package]
 name = "cargo-budget-report"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "Cargo subcommand that reports Soroban smart-contract resource costs across a workspace."
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

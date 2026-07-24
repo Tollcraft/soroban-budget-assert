@@ -4,14 +4,10 @@
 
 Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on *how* the contract executes locally — and the error can point in either direction. Measured on the example contract's `do_expensive_work(10_000)`, built with the standard Soroban release profile (`opt-level = "z"`, LTO):
 
-| Execution mode | CPU instructions | Gap vs. testnet |
-|---|---|---|
-| Raw Rust (native test) | 143,887 | underestimates by ~81% |
-| Local WASM (`register_contract_wasm`) | 901,816 | overestimates by ~19% |
-| Testnet simulation (`simulateTransaction`) | 756,678 | ground truth |
+The raw figures and deltas are recorded in the [measurements file](../../MEASUREMENTS.md), which is the single source of truth for empirical cost data across the project. The same page documents the methodology, the build profiles tested, and the operation types not yet measured.
 
 {% hint style="info" %}
-The direction of the WASM gap is not stable. The same contract built with Cargo's *default* release profile measured 767,049 locally vs 832,006 on testnet — ~8% *under*. Applying the size-optimization profile flipped it to ~19% *over*: the smaller binary executes more instructions locally, while the network's cost model priced it lower.
+The direction of the WASM gap is not stable — see the two build profiles compared in the [existing measurements](../../MEASUREMENTS.md#cpu-instructions).
 {% endhint %}
 
 Two conclusions drive the tool's design:
@@ -45,7 +41,9 @@ The CLI measures ground truth. One invocation walks this pipeline:
 6. **Decode** — decodes the returned `SorobanTransactionData` XDR (`stellar xdr decode`) and extracts `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes`.
 7. **Report** — aggregates every package/function pair into one table, or JSON with `--json`.
 
-Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.
+Simulated numbers vary slightly with ledger state, but they are the network's own measurement of the exact WASM you deploy, not a local approximation.
+
+These three figures are resource *amounts*, and they are inputs to the non-refundable resource fee — not the fee itself and not a total cost. Rent, other refundable fees, transaction size, footprint entry counts, and the inclusion fee are outside what the tool measures. See [Measurement scope](reference.md#measurement-scope) for the full boundary and where to find the omitted pieces.
 
 ## How the tiers work together
 
