@@ -1,6 +1,9 @@
 target/
+venv/
+.venv/
 contract_id.txt
 req.json
 node_modules/
 docs/book/
 *.pdf
+current_report.json

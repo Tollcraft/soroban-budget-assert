@@ -3,7 +3,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    parse::Parse, parse::ParseStream, parse_macro_input, Ident, ItemFn, LitInt, LitStr, Token,
+    parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token,
 };
 
 enum BudgetLimit {
@@ -46,8 +46,7 @@ fn generate_budget_assert(attr: TokenStream, item: TokenStream, metric: BudgetMe
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            std::env::var(#var)
-                .ok()
+            budget_env_resolve(#var)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
         },
@@ -55,21 +54,28 @@ fn generate_budget_assert(attr: TokenStream, item: TokenStream, metric: BudgetMe
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
 
-    let (cost_ident, cost_expr, metric_label) = match metric {
+    let (cost_ident, cost_expr, metric_label, assert_msg) = match metric {
         BudgetMetric::CpuInstructionCost => (
             proc_macro2::Ident::new("cpu_cost", proc_macro2::Span::call_site()),
             quote! { budget.cpu_instruction_cost() },
             "CPU instruction cost",
+            "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
         ),
         BudgetMetric::MemoryBytesCost => (
             proc_macro2::Ident::new("mem_cost", proc_macro2::Span::call_site()),
             quote! { budget.memory_bytes_cost() },
             "Memory bytes cost",
+            "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
         ),
     };
 
     let new_block = quote! {
         {
+            #[allow(unused_variables)]
+            let budget_env_resolve = |var: &str| -> Option<String> {
+                std::env::var(var).ok()
+            };
+
             #(#stmts)*
 
             let budget = #env_ident.cost_estimate().budget();
@@ -77,8 +83,7 @@ fn generate_budget_assert(attr: TokenStream, item: TokenStream, metric: BudgetMe
             let limit_u64: u64 = #limit_expr;
             assert!(
                 #cost_ident < limit_u64,
-                "{} {} exceeded limit {} - local estimate, underestimates real network cost",
-                #metric_label,
+                #assert_msg,
                 #cost_ident,
                 limit_u64
             );
@@ -94,6 +99,11 @@ fn generate_budget_assert(attr: TokenStream, item: TokenStream, metric: BudgetMe
 
 /// Asserts that the CPU instructions used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
+///
+/// This checks a *local* estimate. Real network cost can differ from it
+/// significantly in either direction depending on the build profile — see
+/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
+/// network ground truth.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::CpuInstructionCost)
@@ -101,8 +111,12 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Asserts that the memory bytes used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
+///
+/// This checks a *local* estimate. Real network cost can differ from it
+/// significantly in either direction depending on the build profile — see
+/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
+/// network ground truth.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::MemoryBytesCost)
 }
-

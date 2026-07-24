@@ -1,6 +1,14 @@
 network = "testnet"
 source = "alice"
 
-# Function-specific arguments for automated discovery simulation
+# The `do_expensive_work` function is retained as a synthetic CPU-bound baseline.
+# It exercises loops and instance storage without cross-contract calls, making it
+# the only function that can be invoked via `cargo budget-report` on testnet without
+# additional token contract deployments.
 [functions.do_expensive_work]
 args = ["--n", "10000"]
+
+# The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
+# local test-harness measurement and exercise multiple storage keys, authorization,
+# events, and simulated token flows. They require pre-deployed token contracts and
+# are not intended for `cargo budget-report` invocation without additional setup.

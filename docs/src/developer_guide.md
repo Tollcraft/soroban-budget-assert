@@ -28,11 +28,13 @@ cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test
 ```
 
-`amm-pool-contract/tests/budget_test.rs` contains four tests:
+`amm-pool-contract/tests/budget_test.rs` contains six tests:
 
 - `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
 - `test_budget_macro_gated` — a passing assertion at the 950,000 CPU limit.
 - `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (600,000) and expects the macro's panic, proving the gate fires.
+- `test_budget_macro_dynamic_env` — asserts a CPU limit read from the `TEST_MAX_CPU` environment variable.
+- `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` and the assertion passes unconditionally.
 
 To exercise the CLI end-to-end against testnet (requires the funded `alice` identity):
 
@@ -55,3 +57,17 @@ The site's look and feel is configured by a space admin in the GitBook app (**sp
 - **Code blocks**: syntax highlighting works from the fence language tags already present in these pages (`rust`, `bash`, `toml`, `json`); enable line numbers for long snippets if desired.
 
 Content and structure changes belong in this repo; theme changes belong in the GitBook UI.
+
+## ⚙️ Supported Versions & Compatibility
+
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 22**
+
+### Compatibility Matrix
+
+| SDK Version | Protocol Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
