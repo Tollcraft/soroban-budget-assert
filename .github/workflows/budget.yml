@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  STELLAR_CLI_VERSION: "21.5.3"
+
 jobs:
   budget-check:
     runs-on: ubuntu-latest
@@ -24,11 +27,22 @@ jobs:
           toolchain: 1.93.0
           target: wasm32-unknown-unknown
 
+      - name: Cache Rust dependencies and build artifacts
+        run: Swatinem/rust-cache@v2
+      
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+      
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --version 21.5.3
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked stellar-cli --version ${{ env.STELLAR_CLI_VERSION }}
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
@@ -73,9 +87,17 @@ jobs:
     - name: Install System Dependencies
       run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+    - name: Cache Stellar CLI binary
+      id: stellar-cli-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/stellar
+        key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+    
     - name: Install Stellar CLI
-      run: cargo install --locked stellar-cli --version 21.5.3
-
+      if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
+      run: cargo install --locked stellar-cli --version ${{ env.STELLAR_CLI_VERSION }}
+    
     - name: Build Contracts
       run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
 
