@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-70b8546a.js";
+            window.path_to_searchindex_js = "searchindex-4a7f4e70.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -245,16 +245,45 @@ assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use budget_macros::budget_cpu_lt;
+use soroban_sdk::Env;
 
 #[test]
-#[budget_cpu_lt(850000)]
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
 fn test_expensive_function() {
     let env = Env::default();
-    // ... register contract as WASM, call client ...
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&amp;env, &amp;contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&amp;10_000);
 }
 <span class="boring">}</span></code></pre>
 <h3 id="budget_mem_ltn"><a class="header" href="#budget_mem_ltn"><code>#[budget_mem_lt(N)]</code></a></h3>
 <p>Same shape; asserts <code>memory_bytes_cost() &lt; N</code>.</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use budget_macros::budget_mem_lt;
+use soroban_sdk::Env;
+
+#[test]
+#[budget_mem_lt(500000)]
+fn test_memory_budget() {
+    let env = Env::default();
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&amp;env, &amp;contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&amp;10_000);
+}
+<span class="boring">}</span></code></pre>
 <h3 id="requirements-and-caveats"><a class="header" href="#requirements-and-caveats">Requirements and caveats</a></h3>
 <p>{% hint style=“warning” %}</p>
 <ul>
