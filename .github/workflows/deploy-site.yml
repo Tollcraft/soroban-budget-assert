@@ -1,0 +1,49 @@
+name: Deploy Site to GitHub Pages
+
+# Builds the static landing page + cost-over-time dashboard (issues #30, #31)
+# and publishes them to `gh-pages`, without touching `history.json`, which
+# the `record-history` job in `.github/workflows/budget.yml` appends to on
+# every push to main. The `concurrency` group below is shared with that job
+# so the two never race on the same branch.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "site/**"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: gh-pages-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Build static site
+        run: |
+          mkdir -p dist
+          cp -r site/. dist/
+          # NOTE: once #30 (landing page) and #31 (dashboard) land with a real
+          # frontend toolchain (e.g. Vite/Next.js/Astro), replace the two
+          # lines above with that toolchain's install + build commands
+          # (e.g. `npm ci` / `npm run build`) and point `publish_dir` below at
+          # its build output directory instead of `dist/`.
+
+      - name: Deploy to GitHub Pages (preserve history.json)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          keep_files: true
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_message: "ci: deploy site for ${{ github.sha }}"
