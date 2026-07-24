@@ -30,13 +30,17 @@ args = ["--n", "10000"]
 ```
 {% endcode %}
 
-## Step 3: Measure real costs
+## Step 3: Measure network resource usage
 
 ```bash
 cargo budget-report
 ```
 
 The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use `--json` if you want to feed the numbers to a script.
+
+{% hint style="warning" %}
+This is not your transaction fee. The three metrics are inputs to the non-refundable resource fee; rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. If you are budgeting what users will actually pay — especially for a contract that writes persistent state, where rent often dominates — read [Measurement scope](reference.md#measurement-scope) first.
+{% endhint %}
 
 ## Step 4: Pin the costs into tests
 

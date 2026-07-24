@@ -11,18 +11,8 @@ Measured on this repo's example contract (`do_expensive_work(10_000)`, testnet g
 A developer who trusts local numbers either deploys a contract that exhausts its budget on the public network, or over-provisions against costs that aren't real. Both mistakes come from the same root cause: the only trustworthy number is a network simulation of the exact WASM you deploy.
 {% endhint %}
 
-This tool provides both halves of the fix: `cargo budget-report` measures real simulated network costs across a whole workspace, and the `budget_macros` assertions pin measured costs into `cargo test` so a cost regression fails CI before it fails on-chain.
+This tool provides both halves of the fix: `cargo budget-report` measures network-simulated resource usage across a whole workspace, and the `budget_macros` assertions pin measured costs into `cargo test` so a cost regression fails CI before it fails on-chain.
 
-## ⚙️ Supported Versions & Compatibility
-
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
-* **Corresponding Stellar Protocol**: **Protocol 22**
-
-### Compatibility Matrix
-
-| SDK Version | Protocol Version | Status | Notes |
-| :--- | :--- | :--- | :--- |
-| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
-| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
+{% hint style="info" %}
+Scope: the report covers execution resources — CPU instructions and ledger read/write bytes. Those are inputs to the non-refundable resource fee, not a total transaction fee: rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. [Measurement scope](reference.md#measurement-scope) sets out the boundary and points at where to find the rest.
+{% endhint %}
