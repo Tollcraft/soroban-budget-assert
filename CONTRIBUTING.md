@@ -16,8 +16,9 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 1. Fork the repo and create your branch from `main`.
 2. If you've added code that should be tested, add tests.
 3. If you've changed APIs, update the documentation.
-4. Ensure the test suite passes.
-5. Issue that pull request!
+4. Add a changelog entry in `CHANGELOG.md` for any user-visible change.
+5. Ensure the test suite passes.
+6. Issue that pull request!
 
 ## Local Development
 - Install Rust and the Soroban CLI. The repository includes a `rust-toolchain.toml` file, so `rustup` will automatically install and use the correct toolchain and target when you run cargo commands.

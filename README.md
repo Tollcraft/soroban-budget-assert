@@ -14,7 +14,7 @@
 
 ## 📖 Overview
 
-`soroban-budget-assert` is a developer tool that measures the gap between local Soroban test estimates and real network costs. It allows developers to assert budget limits during testing and automatically generate detailed cost reports across an entire workspace.
+`soroban-budget-assert` is a developer tool that measures the gap between local Soroban test estimates and real network costs. It allows developers to assert budget limits during testing and automatically generate detailed execution-resource reports across an entire workspace.
 
 ### 🏗️ Architecture
 
@@ -26,8 +26,23 @@ The tool is split into two primary components:
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
    - A CLI tool that automatically discovers all contracts in your workspace.
-   - Compiles WASM, simulates execution on testnet, and reports actual non-refundable costs (CPU instructions, read/write bytes).
+   - Compiles WASM, simulates execution on testnet, and reports the simulated resource amounts (CPU instructions, read/write bytes).
+   - These are inputs to the non-refundable resource fee — not a total cost. Rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured; see [Measurement scope](https://tollcraft.gitbook.io/docs/budget-assert/reference#measurement-scope).
    - Configurable via a central `budget.toml` file.
+
+## ⚙️ Supported Versions & Compatibility
+
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 22**
+
+### Compatibility Matrix
+
+| SDK Version | Protocol Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
 
 ---
 
@@ -57,18 +72,43 @@ cargo budget-report
 ```
 
 **Use Macros in Tests:**
-```rust
-use budget_macros::budget_cpu_lt;
 
+The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
+
+```rust
+use budget_macros::{budget_cpu_lt, budget_mem_lt};
+use soroban_sdk::Env;
+
+// CPU instruction assertion
 #[test]
-#[budget_cpu_lt(800000)]
-fn test_expensive_function() {
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
+fn test_cpu_budget() {
     let env = Env::default();
-    // ... test logic ...
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+}
+
+// Memory assertion — same shape
+#[test]
+#[budget_mem_lt(500000)]
+fn test_mem_budget() {
+    let env = Env::default();
+    // register, reset_unlimited, invoke …
 }
 ```
 
 ---
+
+## 📊 Measurements
+
+The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/protocol-mechanics) cites this file as the source of truth for measured figures.
 
 ## 🤝 Community & Maintainers
 

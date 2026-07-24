@@ -31,7 +31,7 @@ jobs:
       run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
 
     - name: Run Budget Macros Test (Tier A)
-      run: cargo test --locked
+      run: cargo test --workspace
 
     - name: Run Budget Report (Tier B)
       run: |
