@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use amm_pool_contract::{ExpensiveContract, ExpensiveContractClient};
-use budget_macros::budget_cpu_lt;
+use budget_macros::{budget_cpu_lt, budget_mem_lt};
 use soroban_sdk::Env;
 
 #[test]
@@ -60,9 +60,31 @@ fn test_budget_macro_gated() {
 }
 
 #[test]
-#[should_panic(expected = "local estimate, underestimates real network cost")]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
 #[budget_cpu_lt(600000)] // Deliberate regression
 fn test_budget_macro_deliberate_regression() {
+    let env = Env::default();
+
+    // Path to the compiled wasm
+    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    #[allow(deprecated)]
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = ExpensiveContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+
+    client.do_expensive_work(&10_000);
+}
+
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_mem_lt(1)] // Deliberate regression: any real memory cost exceeds an impossible 1-byte limit
+fn test_budget_macro_mem_deliberate_regression() {
     let env = Env::default();
 
     // Path to the compiled wasm

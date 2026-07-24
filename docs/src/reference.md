@@ -10,7 +10,7 @@ Asserts that the CPU instruction cost measured by the test's `env` is strictly l
 
 - `N` is an integer literal (e.g., `850000`).
 - On failure the test panics with:
-  `CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost`
+  `CPU instruction cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction`
 
 ```rust
 use budget_macros::budget_cpu_lt;

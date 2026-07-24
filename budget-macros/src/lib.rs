@@ -31,6 +31,11 @@ impl Parse for BudgetLimit {
 
 /// Asserts that the CPU instructions used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
+///
+/// This checks a *local* estimate. Real network cost can differ from it
+/// significantly in either direction depending on the build profile — see
+/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
+/// network ground truth.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = parse_macro_input!(attr as BudgetLimit);
@@ -59,7 +64,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
             let limit_u64: u64 = #limit_expr;
             assert!(
                 cpu_cost < limit_u64,
-                "CPU instruction cost {} exceeded limit {} - local estimate, underestimates real network cost",
+                "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
                 cpu_cost,
                 limit_u64
             );
@@ -75,6 +80,11 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Asserts that the memory bytes used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
+///
+/// This checks a *local* estimate. Real network cost can differ from it
+/// significantly in either direction depending on the build profile — see
+/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
+/// network ground truth.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = parse_macro_input!(attr as BudgetLimit);
@@ -103,7 +113,7 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
             let limit_u64: u64 = #limit_expr;
             assert!(
                 mem_cost < limit_u64,
-                "Memory bytes cost {} exceeded limit {} - local estimate, underestimates real network cost",
+                "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
                 mem_cost,
                 limit_u64
             );
