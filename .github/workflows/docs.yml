@@ -1,11 +1,12 @@
-name: Deploy mdBook site to GitHub Pages
+name: Deploy Landing Page to GitHub Pages
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'docs/**'
+      - 'site/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
@@ -17,16 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: 'latest'
-
-      - name: Build mdBook
-        run: mdbook build docs
-
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/book
+          publish_dir: ./site
