@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-353884d5.js";
+            window.path_to_searchindex_js = "searchindex-b7ae541e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -207,8 +207,49 @@ fn test_expensive_function() {
     client.do_expensive_work(&amp;10_000);
 }
 <span class="boring">}</span></code></pre>
+<p><strong>Dynamic limit</strong> — read the limit from an environment variable at test time:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[budget_cpu_lt(env = "MY_CPU_LIMIT")]
+fn test_with_env_limit() {
+    std::env::set_var("MY_CPU_LIMIT", "850000");
+    let env = Env::default();
+    // ... test logic ...
+}
+<span class="boring">}</span></code></pre>
+<p>If the environment variable is unset or not a valid <code>u64</code>, the limit defaults to <code>u64::MAX</code> (effectively disabling the assertion).</p>
+<p>On failure the test panics with:</p>
+<pre><code>CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+</code></pre>
 <h3 id="budget_mem_ltn"><a class="header" href="#budget_mem_ltn"><code>#[budget_mem_lt(N)]</code></a></h3>
-<p>Same shape; asserts <code>memory_bytes_cost() &lt; N</code>.</p>
+<p>Asserts that the memory bytes cost measured by the test’s <code>env</code> is strictly less than <code>N</code>.</p>
+<p><strong>Static limit:</strong></p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use budget_macros::budget_mem_lt;
+
+#[test]
+#[budget_mem_lt(500000)]
+fn test_memory_budget() {
+    let env = Env::default();
+    // ... register contract as WASM, call client ...
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Dynamic limit:</strong></p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[budget_mem_lt(env = "MY_MEM_LIMIT")]
+fn test_memory_with_env_limit() {
+    std::env::set_var("MY_MEM_LIMIT", "500000");
+    let env = Env::default();
+    // ... test logic ...
+}
+<span class="boring">}</span></code></pre>
+<p>Failure message format:</p>
+<pre><code>Memory bytes cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+</code></pre>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use budget_macros::budget_mem_lt;
@@ -238,6 +279,35 @@ fn test_memory_budget() {
 <li>The macro checks the <em>local</em> estimate, which can sit above or below the real network cost depending on the build profile. Set <code>N</code> a few percent above the measured local number to catch regressions, and use <code>cargo budget-report</code> for the network ground truth (see the End-User Guide).
 {% endhint %}</li>
 </ul>
+<h2 id="soroban-budget-api"><a class="header" href="#soroban-budget-api">Soroban Budget API</a></h2>
+<p>The macros and manual tests interact with the Soroban budget API through <code>env.cost_estimate().budget()</code>. The key methods are:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Returns</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>cpu_instruction_cost()</code></td><td><code>u64</code></td><td>Total CPU instructions consumed since the last reset</td></tr>
+<tr><td><code>memory_bytes_cost()</code></td><td><code>u64</code></td><td>Total memory bytes consumed since the last reset</td></tr>
+<tr><td><code>reset_unlimited()</code></td><td><code>()</code></td><td>Resets all cost counters and removes the default test budget cap</td></tr>
+</tbody>
+</table>
+</div>
+<p>Example of manual inspection:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let budget = env.cost_estimate().budget();
+budget.reset_unlimited();
+
+// ... invoke contract ...
+
+let cpu = budget.cpu_instruction_cost();
+let mem = budget.memory_bytes_cost();
+println!("CPU: {cpu}, Memory: {mem}");
+<span class="boring">}</span></code></pre>
+<p>{% hint style=“info” %}
+<code>reset_unlimited()</code> must be called <em>before</em> the contract invocation you want to measure. The default <code>Env</code> applies a low test budget that caps measurement if not removed.
+{% endhint %}</p>
 <h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo budget-report</code></a></h2>
 <pre><code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]
 </code></pre>

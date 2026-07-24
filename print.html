@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-353884d5.js";
+            window.path_to_searchindex_js = "searchindex-b7ae541e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -206,7 +206,9 @@ The direction of the WASM gap is not stable — see the two build profiles compa
 <li>Even WASM-mode local estimates can miss real network cost by double-digit percentages, in either direction depending on the build profile. The only trustworthy number is a network simulation of the exact WASM you deploy.</li>
 </ol>
 <h2 id="tier-a-local-fast-fail-budget-macros"><a class="header" href="#tier-a-local-fast-fail-budget-macros">Tier A: Local fast fail (<code>budget-macros</code>)</a></h2>
-<p><code>#[budget_cpu_lt(N)]</code> and <code>#[budget_mem_lt(N)]</code> are procedural attribute macros. Each one rewrites the test function’s body: the original statements run first, then the macro appends a cost check against the test’s local <code>env</code> variable:</p>
+<p>Two attribute macros gate tests on local cost estimates. Each rewrites the test function’s body: the original statements run first, then the macro appends a cost check against the test’s local <code>env</code> variable.</p>
+<h3 id="budget_cpu_ltn--cpu-instruction-assertion"><a class="header" href="#budget_cpu_ltn--cpu-instruction-assertion"><code>#[budget_cpu_lt(N)]</code> — CPU instruction assertion</a></h3>
+<p>Appends the equivalent of:</p>
 <p>{% code title=“appended by #[budget_cpu_lt(N)]” %}</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -215,7 +217,24 @@ let cpu_cost = budget.cpu_instruction_cost();
 assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cost, N);
 <span class="boring">}</span></code></pre>
 <p>{% endcode %}</p>
-<p>The assertion is strict (<code>&lt;</code>). If the local estimate reaches the limit, the test panics and <code>cargo test</code> fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.</p>
+<h3 id="budget_mem_ltn--memory-bytes-assertion"><a class="header" href="#budget_mem_ltn--memory-bytes-assertion"><code>#[budget_mem_lt(N)]</code> — Memory bytes assertion</a></h3>
+<p>Same shape, checks <code>budget.memory_bytes_cost()</code>:</p>
+<p>{% code title=“appended by #[budget_mem_lt(N)]” %}</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let budget = env.cost_estimate().budget();
+let mem_cost = budget.memory_bytes_cost();
+assert!(mem_cost &lt; N, "Memory bytes cost {} exceeded limit {} - ...", mem_cost, N);
+<span class="boring">}</span></code></pre>
+<p>{% endcode %}</p>
+<p>Both assertions are strict (<code>&lt;</code>). If the local estimate reaches the limit, the test panics and <code>cargo test</code> fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.</p>
+<h3 id="dynamic-limits-via-environment-variables"><a class="header" href="#dynamic-limits-via-environment-variables">Dynamic limits via environment variables</a></h3>
+<p>Either macro can read its limit from an environment variable at test time instead of using a hard-coded integer:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[budget_cpu_lt(env = "MY_CPU_LIMIT")]
+<span class="boring">}</span></code></pre>
+<p>When the variable is unset or not a valid <code>u64</code>, the limit defaults to <code>u64::MAX</code>, making the assertion pass unconditionally. This lets you raise or disable limits without recompiling — useful for CI matrix builds where different runners have different budgets.</p>
 <h2 id="tier-b-network-simulation-cargo-budget-report"><a class="header" href="#tier-b-network-simulation-cargo-budget-report">Tier B: Network simulation (<code>cargo-budget-report</code>)</a></h2>
 <p>The CLI measures ground truth. One invocation walks this pipeline:</p>
 <ol>
@@ -281,8 +300,49 @@ fn test_expensive_function() {
     client.do_expensive_work(&amp;10_000);
 }
 <span class="boring">}</span></code></pre>
+<p><strong>Dynamic limit</strong> — read the limit from an environment variable at test time:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[budget_cpu_lt(env = "MY_CPU_LIMIT")]
+fn test_with_env_limit() {
+    std::env::set_var("MY_CPU_LIMIT", "850000");
+    let env = Env::default();
+    // ... test logic ...
+}
+<span class="boring">}</span></code></pre>
+<p>If the environment variable is unset or not a valid <code>u64</code>, the limit defaults to <code>u64::MAX</code> (effectively disabling the assertion).</p>
+<p>On failure the test panics with:</p>
+<pre><code>CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+</code></pre>
 <h3 id="budget_mem_ltn"><a class="header" href="#budget_mem_ltn"><code>#[budget_mem_lt(N)]</code></a></h3>
-<p>Same shape; asserts <code>memory_bytes_cost() &lt; N</code>.</p>
+<p>Asserts that the memory bytes cost measured by the test’s <code>env</code> is strictly less than <code>N</code>.</p>
+<p><strong>Static limit:</strong></p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use budget_macros::budget_mem_lt;
+
+#[test]
+#[budget_mem_lt(500000)]
+fn test_memory_budget() {
+    let env = Env::default();
+    // ... register contract as WASM, call client ...
+}
+<span class="boring">}</span></code></pre>
+<p><strong>Dynamic limit:</strong></p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>#[test]
+#[budget_mem_lt(env = "MY_MEM_LIMIT")]
+fn test_memory_with_env_limit() {
+    std::env::set_var("MY_MEM_LIMIT", "500000");
+    let env = Env::default();
+    // ... test logic ...
+}
+<span class="boring">}</span></code></pre>
+<p>Failure message format:</p>
+<pre><code>Memory bytes cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+</code></pre>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use budget_macros::budget_mem_lt;
@@ -312,6 +372,35 @@ fn test_memory_budget() {
 <li>The macro checks the <em>local</em> estimate, which can sit above or below the real network cost depending on the build profile. Set <code>N</code> a few percent above the measured local number to catch regressions, and use <code>cargo budget-report</code> for the network ground truth (see the End-User Guide).
 {% endhint %}</li>
 </ul>
+<h2 id="soroban-budget-api"><a class="header" href="#soroban-budget-api">Soroban Budget API</a></h2>
+<p>The macros and manual tests interact with the Soroban budget API through <code>env.cost_estimate().budget()</code>. The key methods are:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Returns</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>cpu_instruction_cost()</code></td><td><code>u64</code></td><td>Total CPU instructions consumed since the last reset</td></tr>
+<tr><td><code>memory_bytes_cost()</code></td><td><code>u64</code></td><td>Total memory bytes consumed since the last reset</td></tr>
+<tr><td><code>reset_unlimited()</code></td><td><code>()</code></td><td>Resets all cost counters and removes the default test budget cap</td></tr>
+</tbody>
+</table>
+</div>
+<p>Example of manual inspection:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let budget = env.cost_estimate().budget();
+budget.reset_unlimited();
+
+// ... invoke contract ...
+
+let cpu = budget.cpu_instruction_cost();
+let mem = budget.memory_bytes_cost();
+println!("CPU: {cpu}, Memory: {mem}");
+<span class="boring">}</span></code></pre>
+<p>{% hint style=“info” %}
+<code>reset_unlimited()</code> must be called <em>before</em> the contract invocation you want to measure. The default <code>Env</code> applies a low test budget that caps measurement if not removed.
+{% endhint %}</p>
 <h2 id="cli-cargo-budget-report"><a class="header" href="#cli-cargo-budget-report">CLI: <code>cargo budget-report</code></a></h2>
 <pre><code>cargo budget-report [--network &lt;network&gt;] [--source &lt;source&gt;] [--json]
 </code></pre>
@@ -686,11 +775,13 @@ fn test_expensive_function_budget() {
 <pre><code class="language-bash">cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test
 </code></pre>
-<p><code>amm-pool-contract/tests/budget_test.rs</code> contains four tests:</p>
+<p><code>amm-pool-contract/tests/budget_test.rs</code> contains six tests:</p>
 <ul>
 <li><code>test_budget_raw_rust</code> / <code>test_budget_wasm</code> — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).</li>
 <li><code>test_budget_macro_gated</code> — a passing assertion at the 950,000 CPU limit.</li>
 <li><code>test_budget_macro_deliberate_regression</code> — asserts an intentionally low limit (600,000) and expects the macro’s panic, proving the gate fires.</li>
+<li><code>test_budget_macro_dynamic_env</code> — asserts a CPU limit read from the <code>TEST_MAX_CPU</code> environment variable.</li>
+<li><code>test_budget_macro_dynamic_env_fallback</code> — verifies the fallback behaviour: when the env var is unset, the limit defaults to <code>u64::MAX</code> and the assertion passes unconditionally.</li>
 </ul>
 <p>To exercise the CLI end-to-end against testnet (requires the funded <code>alice</code> identity):</p>
 <pre><code class="language-bash">cargo run -p cargo-budget-report -- budget-report
