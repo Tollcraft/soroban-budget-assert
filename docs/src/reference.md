@@ -183,3 +183,17 @@ answering "how much will my users pay".
 - Build failure, deploy failure, or an unparsable RPC response aborts the run with a contextual error (via `anyhow`) — e.g., a deploy failure reports that the source account may be unfunded.
 - A failed simulation of a single function prints a warning and skips it; the report still prints for the functions that succeeded.
 - If nothing simulates successfully, the CLI prints `No successful simulations to report.` and exits 0.
+
+## ⚙️ Supported Versions & Compatibility
+
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 22**
+
+### Compatibility Matrix
+
+| SDK Version | Protocol Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |

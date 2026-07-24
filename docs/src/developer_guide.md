@@ -55,3 +55,17 @@ The site's look and feel is configured by a space admin in the GitBook app (**sp
 - **Code blocks**: syntax highlighting works from the fence language tags already present in these pages (`rust`, `bash`, `toml`, `json`); enable line numbers for long snippets if desired.
 
 Content and structure changes belong in this repo; theme changes belong in the GitBook UI.
+
+## ⚙️ Supported Versions & Compatibility
+
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 22**
+
+### Compatibility Matrix
+
+| SDK Version | Protocol Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
