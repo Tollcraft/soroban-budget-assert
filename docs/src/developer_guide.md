@@ -28,11 +28,13 @@ cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test
 ```
 
-`amm-pool-contract/tests/budget_test.rs` contains four tests:
+`amm-pool-contract/tests/budget_test.rs` contains six tests:
 
 - `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
 - `test_budget_macro_gated` — a passing assertion at the 950,000 CPU limit.
 - `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (600,000) and expects the macro's panic, proving the gate fires.
+- `test_budget_macro_dynamic_env` — asserts a CPU limit read from the `TEST_MAX_CPU` environment variable.
+- `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` and the assertion passes unconditionally.
 
 To exercise the CLI end-to-end against testnet (requires the funded `alice` identity):
 

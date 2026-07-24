@@ -34,6 +34,28 @@ struct BudgetToml {
     functions: HashMap<String, FunctionConfig>,
 }
 
+#[derive(serde::Deserialize, Debug)]
+struct Resources {
+    instructions: u64,
+    disk_read_bytes: u64,
+    write_bytes: u64,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct TransactionData {
+    #[serde(alias = "resources")]
+    resources: Resources,
+}
+
+impl TransactionData {
+    #[cfg(test)]
+    fn parse_json(json_str: &str) -> Result<Self> {
+        let parsed_json: serde_json::Value =
+            serde_json::from_str(json_str).context("Failed to parse JSON")?;
+        serde_json::from_value(parsed_json).context("Failed to deserialize transaction data")
+    }
+}
+
 #[derive(serde::Deserialize, Default, Debug)]
 struct FunctionConfig {
     #[serde(default)]
@@ -315,30 +337,33 @@ fn main() -> Result<()> {
                 .wait_with_output()
                 .context("Failed to read stdout")?;
             let json_str = String::from_utf8_lossy(&decode_output.stdout);
-            let parsed: serde_json::Value =
+            let parsed_json: serde_json::Value =
                 serde_json::from_str(&json_str).context("Failed to parse XDR JSON")?;
 
-            let instructions = parsed["resources"]["instructions"].as_u64().unwrap_or(0) as u32;
-            let read_bytes = parsed["resources"]["disk_read_bytes"].as_u64().unwrap_or(0) as u32;
-            let write_bytes = parsed["resources"]["write_bytes"].as_u64().unwrap_or(0) as u32;
+            let tx_data: TransactionData = serde_json::from_value(parsed_json)
+                .context("Failed to deserialize transaction data")?;
+
+            let instructions = tx_data.resources.instructions;
+            let read_bytes = tx_data.resources.disk_read_bytes;
+            let write_bytes = tx_data.resources.write_bytes;
 
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "CPU Instructions",
-                value: instructions,
+                value: instructions as u32,
             });
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "Read Bytes",
-                value: read_bytes,
+                value: read_bytes as u32,
             });
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "Write Bytes",
-                value: write_bytes,
+                value: write_bytes as u32,
             });
         }
     }
@@ -420,5 +445,40 @@ mod tests {
         assert!(err_text.contains("failed to parse"));
         assert!(err_text.contains("line") || err_text.contains("Line"));
         assert!(err_text.contains("column") || err_text.contains("Column"));
+    }
+
+    #[test]
+    fn transaction_data_parsing_deserializes_successfully() {
+        let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
+        let tx_data = TransactionData::parse_json(json_str).expect("Parsing should succeed");
+        assert_eq!(tx_data.resources.instructions, 1000);
+        assert_eq!(tx_data.resources.disk_read_bytes, 2048);
+        assert_eq!(tx_data.resources.write_bytes, 3072);
+    }
+
+    #[test]
+    fn transaction_data_parsing_fails_on_missing_field() {
+        let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048}}"#;
+        let result = TransactionData::parse_json(json_str);
+        assert!(result.is_err(), "Parsing should fail on missing field");
+        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        assert!(
+            err_msg.contains("write_bytes"),
+            "Error should mention missing field, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn transaction_data_parsing_fails_on_non_numeric_field() {
+        let json_str = r#"{"resources": {"instructions": "not-a-number", "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
+        let result = TransactionData::parse_json(json_str);
+        assert!(result.is_err(), "Parsing should fail on non-numeric field");
+        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        assert!(
+            err_msg.contains("invalid type") || err_msg.contains("not-a-number"),
+            "Error should mention type mismatch, got: {}",
+            err_msg
+        );
     }
 }
