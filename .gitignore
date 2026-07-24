@@ -4,6 +4,7 @@ venv/
 contract_id.txt
 req.json
 node_modules/
-docs/book/
+/dist
+site/dist
 *.pdf
 current_report.json

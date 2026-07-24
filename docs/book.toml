@@ -1,9 +1,0 @@
-[book]
-title = "Soroban Budget Assert"
-authors = ["Tollcraft Team"]
-language = "en"
-src = "src"
-
-[output.html]
-default-theme = "rust"
-git-repository-url = "https://github.com/Tollcraft/soroban-budget-assert"
