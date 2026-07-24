@@ -21,7 +21,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.1
+          toolchain: 1.93.0
           target: wasm32-unknown-unknown
 
       - name: Install System Dependencies
