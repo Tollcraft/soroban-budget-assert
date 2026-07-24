@@ -1,0 +1,31 @@
+# rustfmt configuration for soroban-budget-assert.
+#
+# `CONTRIBUTING.md` makes `cargo fmt --all -- --check` a merge gate, so the
+# formatting rules have to be a property of the repository rather than of
+# whichever toolchain a contributor happens to have installed. Every option
+# below is stable on the release channel and records the formatting the
+# codebase already uses -- adding this file reformats nothing.
+#
+# `style_edition` is the important one: it freezes the formatting rules
+# themselves, so a newer rustfmt cannot change the expected output from under
+# an unchanged source tree.
+
+style_edition = "2021"
+edition = "2021"
+
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"
+
+reorder_imports = true
+reorder_modules = true
+merge_derives = true
+remove_nested_parens = true
+
+force_explicit_abi = true
+fn_params_layout = "Tall"
+match_arm_leading_pipes = "Never"
+use_field_init_shorthand = false
+use_try_shorthand = false
