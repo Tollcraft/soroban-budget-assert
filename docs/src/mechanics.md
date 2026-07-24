@@ -41,7 +41,9 @@ The CLI measures ground truth. One invocation walks this pipeline:
 6. **Decode** — decodes the returned `SorobanTransactionData` XDR (`stellar xdr decode`) and extracts `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes`.
 7. **Report** — aggregates every package/function pair into one table, or JSON with `--json`.
 
-Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.
+Simulated numbers vary slightly with ledger state, but they are the network's own measurement of the exact WASM you deploy, not a local approximation.
+
+These three figures are resource *amounts*, and they are inputs to the non-refundable resource fee — not the fee itself and not a total cost. Rent, other refundable fees, transaction size, footprint entry counts, and the inclusion fee are outside what the tool measures. See [Measurement scope](reference.md#measurement-scope) for the full boundary and where to find the omitted pieces.
 
 ## How the tiers work together
 

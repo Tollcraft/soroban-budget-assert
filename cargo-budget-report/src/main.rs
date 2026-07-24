@@ -368,8 +368,10 @@ fn main() -> Result<()> {
             .collect();
         let table = Table::new(table_reports).to_string();
         println!("{}", table);
-        println!("\nSummary: The metrics above represent the total unrefundable network execution costs required to run your contract functions.");
+        println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
+        println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
         println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
+        println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
     }
 
     Ok(())

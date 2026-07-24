@@ -14,7 +14,7 @@
 
 ## 📖 Overview
 
-`soroban-budget-assert` is a developer tool that measures the gap between local Soroban test estimates and real network costs. It allows developers to assert budget limits during testing and automatically generate detailed cost reports across an entire workspace.
+`soroban-budget-assert` is a developer tool that measures the gap between local Soroban test estimates and real network costs. It allows developers to assert budget limits during testing and automatically generate detailed execution-resource reports across an entire workspace.
 
 ### 🏗️ Architecture
 
@@ -26,7 +26,8 @@ The tool is split into two primary components:
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
    - A CLI tool that automatically discovers all contracts in your workspace.
-   - Compiles WASM, simulates execution on testnet, and reports actual non-refundable costs (CPU instructions, read/write bytes).
+   - Compiles WASM, simulates execution on testnet, and reports the simulated resource amounts (CPU instructions, read/write bytes).
+   - These are inputs to the non-refundable resource fee — not a total cost. Rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured; see [Measurement scope](https://tollcraft.gitbook.io/docs/budget-assert/reference#measurement-scope).
    - Configurable via a central `budget.toml` file.
 
 ---
