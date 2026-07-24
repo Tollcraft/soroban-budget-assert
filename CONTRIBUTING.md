@@ -21,7 +21,7 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 6. Issue that pull request!
 
 ## Local Development
-- Install Rust and the Soroban CLI.
+- Install Rust and the Soroban CLI. The repository includes a `rust-toolchain.toml` file, so `rustup` will automatically install and use the correct toolchain and target when you run cargo commands.
 - Run `cargo test` in the workspace root to run macro tests.
 - Run `cargo run --bin cargo-budget-report` (or `cargo build`) to test the CLI locally.
 
