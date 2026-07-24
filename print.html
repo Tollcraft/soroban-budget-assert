@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-088fee11.js";
+            window.path_to_searchindex_js = "searchindex-70b8546a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -188,7 +188,10 @@
 <p>{% hint style=“warning” %}
 A developer who trusts local numbers either deploys a contract that exhausts its budget on the public network, or over-provisions against costs that aren’t real. Both mistakes come from the same root cause: the only trustworthy number is a network simulation of the exact WASM you deploy.
 {% endhint %}</p>
-<p>This tool provides both halves of the fix: <code>cargo budget-report</code> measures real simulated network costs across a whole workspace, and the <code>budget_macros</code> assertions pin measured costs into <code>cargo test</code> so a cost regression fails CI before it fails on-chain.</p>
+<p>This tool provides both halves of the fix: <code>cargo budget-report</code> measures network-simulated resource usage across a whole workspace, and the <code>budget_macros</code> assertions pin measured costs into <code>cargo test</code> so a cost regression fails CI before it fails on-chain.</p>
+<p>{% hint style=“info” %}
+Scope: the report covers execution resources — CPU instructions and ledger read/write bytes. Those are inputs to the non-refundable resource fee, not a total transaction fee: rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. <a href="#measurement-scope">Measurement scope</a> sets out the boundary and points at where to find the rest.
+{% endhint %}</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="protocol-mechanics"><a class="header" href="#protocol-mechanics">Protocol Mechanics</a></h1>
 <h2 id="the-measured-gap"><a class="header" href="#the-measured-gap">The measured gap</a></h2>
@@ -224,7 +227,8 @@ assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_
 <li><strong>Decode</strong> — decodes the returned <code>SorobanTransactionData</code> XDR (<code>stellar xdr decode</code>) and extracts <code>resources.instructions</code>, <code>resources.disk_read_bytes</code>, and <code>resources.write_bytes</code>.</li>
 <li><strong>Report</strong> — aggregates every package/function pair into one table, or JSON with <code>--json</code>.</li>
 </ol>
-<p>Simulated numbers vary slightly with ledger state, but they are the numbers the network will charge — non-refundable resource costs, not local approximations.</p>
+<p>Simulated numbers vary slightly with ledger state, but they are the network’s own measurement of the exact WASM you deploy, not a local approximation.</p>
+<p>These three figures are resource <em>amounts</em>, and they are inputs to the non-refundable resource fee — not the fee itself and not a total cost. Rent, other refundable fees, transaction size, footprint entry counts, and the inclusion fee are outside what the tool measures. See <a href="#measurement-scope">Measurement scope</a> for the full boundary and where to find the omitted pieces.</p>
 <h2 id="how-the-tiers-work-together"><a class="header" href="#how-the-tiers-work-together">How the tiers work together</a></h2>
 <p>Tier B tells you what a function really costs on the network. Tier A pins the <em>local</em> estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract’s gated test uses exactly this pattern: local WASM estimate 901,816, asserted limit 950,000, real testnet cost 756,678 known from Tier B.</p>
 <div style="break-before: page; page-break-before: always;"></div>
@@ -294,7 +298,9 @@ args = ["--n", "10000"]
 </ul>
 <h2 id="output"><a class="header" href="#output">Output</a></h2>
 <p>Each simulated function produces three rows (or three JSON objects): <code>CPU Instructions</code>, <code>Read Bytes</code>, and <code>Write Bytes</code>. For a mapping between these metric names, their XDR field names, and Stellar’s own terminology, see the <a href="#cost-terms-glossary">Cost Terms Glossary</a>.</p>
-<p>Table output ends with a note that values are testnet simulations and vary slightly with ledger state. JSON output (<code>--json</code>) is an array suited to CI:</p>
+<p>Table output ends with a note that the values are simulated resource amounts rather than fees,
+what is not measured, and that testnet simulations vary slightly with ledger state — see
+<a href="#measurement-scope">Measurement scope</a>. JSON output (<code>--json</code>) is an array suited to CI:</p>
 <pre><code class="language-json">[
   {
     "package": "amm-pool-contract",
@@ -304,6 +310,62 @@ args = ["--n", "10000"]
   }
 ]
 </code></pre>
+<h2 id="measurement-scope"><a class="header" href="#measurement-scope">Measurement scope</a></h2>
+<p><code>cargo budget-report</code> reports <strong>resource amounts from a simulation, not fees</strong>. It reads three
+fields out of the <code>SorobanTransactionData</code> returned by <code>simulateTransaction</code> —
+<code>resources.instructions</code>, <code>resources.disk_read_bytes</code>, and <code>resources.write_bytes</code> — and prints
+them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
+total.</p>
+<h3 id="in-scope"><a class="header" href="#in-scope">In scope</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reported</th><th>Stellar resource it corresponds to</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CPU Instructions</code></td><td><code>resources.instructions</code> — metered CPU instruction count</td></tr>
+<tr><td><code>Read Bytes</code></td><td><code>resources.disk_read_bytes</code> — bytes read from disk-backed ledger entries</td></tr>
+<tr><td><code>Write Bytes</code></td><td><code>resources.write_bytes</code> — bytes written to ledger entries</td></tr>
+</tbody>
+</table>
+</div>
+<p>These three quantities are <em>inputs</em> to the <strong>non-refundable resource fee</strong>. They are not the
+whole of it.</p>
+<h3 id="not-in-scope"><a class="header" href="#not-in-scope">Not in scope</a></h3>
+<p>{% hint style=“warning” %}
+Do not treat the reported numbers as what a transaction will cost. On Stellar, the total
+transaction fee is <code>resource fee + inclusion fee</code>, and the resource fee is itself
+<code>non-refundable + refundable</code>. This tool measures neither total, and does not convert what it
+measures into a fee.
+{% endhint %}</p>
+<ul>
+<li><strong>Rent</strong> — the fee for creating ledger entries and extending their TTL. Rent is a <em>refundable</em>
+resource fee, charged up front and refunded against actual usage. It is frequently the largest
+single line item for a contract that writes persistent state, and it is entirely absent here.
+A simulation surfaces it in the <code>minResourceFee</code> and the returned <code>SorobanTransactionData</code>
+rent-change data; the <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering">Fees, resource limits, and metering</a> page explains how it is
+computed.</li>
+<li><strong>Other refundable fees</strong> — the size of emitted events and of the return value are also
+charged as refundable resource fees. Not measured.</li>
+<li><strong>Transaction size (bandwidth)</strong> — the serialized transaction and its signatures are charged
+as part of the <em>non-refundable</em> resource fee. So even within the non-refundable portion, the
+three reported figures are incomplete.</li>
+<li><strong>Ledger footprint</strong> — the read-only and read-write entry <em>keys and counts</em> in the footprint
+are charged per entry, separately from the byte counts reported here. A function that touches
+many small entries can cost far more than its byte totals suggest. <code>stellar contract invoke --build-only</code> followed by <code>stellar xdr decode --type SorobanTransactionData</code> shows the full
+footprint for a transaction the tool has already built.</li>
+<li><strong>Total transaction fee</strong> — requires the inclusion fee, which is a bid set by the submitter
+and not a property of the contract at all. The <code>minResourceFee</code> field of a
+<code>simulateTransaction</code> response is the closest single number to “what the resources cost”;
+reach for that, not for this report, when you need a figure in stroops.</li>
+<li><strong>WASM binary size</strong> — the size of the deployed contract binary is not reported. This is
+coming: see issue #88.</li>
+</ul>
+<h3 id="what-the-report-is-good-for"><a class="header" href="#what-the-report-is-good-for">What the report is good for</a></h3>
+<p>Comparing a function against itself over time. The three metrics are the ones that move when
+contract logic changes, so they are the right signal for catching an execution-cost regression
+— which is exactly what the Tier A macros pin into <code>cargo test</code>. They are the wrong signal for
+answering “how much will my users pay”.</p>
 <h2 id="failure-behavior"><a class="header" href="#failure-behavior">Failure behavior</a></h2>
 <ul>
 <li>Build failure, deploy failure, or an unparsable RPC response aborts the run with a contextual error (via <code>anyhow</code>) — e.g., a deploy failure reports that the source account may be unfunded.</li>
@@ -463,10 +525,13 @@ source = "alice"
 args = ["--n", "10000"]
 </code></pre>
 <p>{% endcode %}</p>
-<h2 id="step-3-measure-real-costs"><a class="header" href="#step-3-measure-real-costs">Step 3: Measure real costs</a></h2>
+<h2 id="step-3-measure-network-resource-usage"><a class="header" href="#step-3-measure-network-resource-usage">Step 3: Measure network resource usage</a></h2>
 <pre><code class="language-bash">cargo budget-report
 </code></pre>
 <p>The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use <code>--json</code> if you want to feed the numbers to a script.</p>
+<p>{% hint style=“warning” %}
+This is not your transaction fee. The three metrics are inputs to the non-refundable resource fee; rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. If you are budgeting what users will actually pay — especially for a contract that writes persistent state, where rent often dominates — read <a href="#measurement-scope">Measurement scope</a> first.
+{% endhint %}</p>
 <h2 id="step-4-pin-the-costs-into-tests"><a class="header" href="#step-4-pin-the-costs-into-tests">Step 4: Pin the costs into tests</a></h2>
 <p>Add the macro crate to your contract’s dev-dependencies, then gate a test. The macro asserts the <em>local</em> WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]

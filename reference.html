@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-088fee11.js";
+            window.path_to_searchindex_js = "searchindex-70b8546a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -243,7 +243,9 @@ args = ["--n", "10000"]
 </ul>
 <h2 id="output"><a class="header" href="#output">Output</a></h2>
 <p>Each simulated function produces three rows (or three JSON objects): <code>CPU Instructions</code>, <code>Read Bytes</code>, and <code>Write Bytes</code>. For a mapping between these metric names, their XDR field names, and Stellar’s own terminology, see the <a href="glossary.html">Cost Terms Glossary</a>.</p>
-<p>Table output ends with a note that values are testnet simulations and vary slightly with ledger state. JSON output (<code>--json</code>) is an array suited to CI:</p>
+<p>Table output ends with a note that the values are simulated resource amounts rather than fees,
+what is not measured, and that testnet simulations vary slightly with ledger state — see
+<a href="#measurement-scope">Measurement scope</a>. JSON output (<code>--json</code>) is an array suited to CI:</p>
 <pre><code class="language-json">[
   {
     "package": "amm-pool-contract",
@@ -253,6 +255,62 @@ args = ["--n", "10000"]
   }
 ]
 </code></pre>
+<h2 id="measurement-scope"><a class="header" href="#measurement-scope">Measurement scope</a></h2>
+<p><code>cargo budget-report</code> reports <strong>resource amounts from a simulation, not fees</strong>. It reads three
+fields out of the <code>SorobanTransactionData</code> returned by <code>simulateTransaction</code> —
+<code>resources.instructions</code>, <code>resources.disk_read_bytes</code>, and <code>resources.write_bytes</code> — and prints
+them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
+total.</p>
+<h3 id="in-scope"><a class="header" href="#in-scope">In scope</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Reported</th><th>Stellar resource it corresponds to</th></tr>
+</thead>
+<tbody>
+<tr><td><code>CPU Instructions</code></td><td><code>resources.instructions</code> — metered CPU instruction count</td></tr>
+<tr><td><code>Read Bytes</code></td><td><code>resources.disk_read_bytes</code> — bytes read from disk-backed ledger entries</td></tr>
+<tr><td><code>Write Bytes</code></td><td><code>resources.write_bytes</code> — bytes written to ledger entries</td></tr>
+</tbody>
+</table>
+</div>
+<p>These three quantities are <em>inputs</em> to the <strong>non-refundable resource fee</strong>. They are not the
+whole of it.</p>
+<h3 id="not-in-scope"><a class="header" href="#not-in-scope">Not in scope</a></h3>
+<p>{% hint style=“warning” %}
+Do not treat the reported numbers as what a transaction will cost. On Stellar, the total
+transaction fee is <code>resource fee + inclusion fee</code>, and the resource fee is itself
+<code>non-refundable + refundable</code>. This tool measures neither total, and does not convert what it
+measures into a fee.
+{% endhint %}</p>
+<ul>
+<li><strong>Rent</strong> — the fee for creating ledger entries and extending their TTL. Rent is a <em>refundable</em>
+resource fee, charged up front and refunded against actual usage. It is frequently the largest
+single line item for a contract that writes persistent state, and it is entirely absent here.
+A simulation surfaces it in the <code>minResourceFee</code> and the returned <code>SorobanTransactionData</code>
+rent-change data; the <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering">Fees, resource limits, and metering</a> page explains how it is
+computed.</li>
+<li><strong>Other refundable fees</strong> — the size of emitted events and of the return value are also
+charged as refundable resource fees. Not measured.</li>
+<li><strong>Transaction size (bandwidth)</strong> — the serialized transaction and its signatures are charged
+as part of the <em>non-refundable</em> resource fee. So even within the non-refundable portion, the
+three reported figures are incomplete.</li>
+<li><strong>Ledger footprint</strong> — the read-only and read-write entry <em>keys and counts</em> in the footprint
+are charged per entry, separately from the byte counts reported here. A function that touches
+many small entries can cost far more than its byte totals suggest. <code>stellar contract invoke --build-only</code> followed by <code>stellar xdr decode --type SorobanTransactionData</code> shows the full
+footprint for a transaction the tool has already built.</li>
+<li><strong>Total transaction fee</strong> — requires the inclusion fee, which is a bid set by the submitter
+and not a property of the contract at all. The <code>minResourceFee</code> field of a
+<code>simulateTransaction</code> response is the closest single number to “what the resources cost”;
+reach for that, not for this report, when you need a figure in stroops.</li>
+<li><strong>WASM binary size</strong> — the size of the deployed contract binary is not reported. This is
+coming: see issue #88.</li>
+</ul>
+<h3 id="what-the-report-is-good-for"><a class="header" href="#what-the-report-is-good-for">What the report is good for</a></h3>
+<p>Comparing a function against itself over time. The three metrics are the ones that move when
+contract logic changes, so they are the right signal for catching an execution-cost regression
+— which is exactly what the Tier A macros pin into <code>cargo test</code>. They are the wrong signal for
+answering “how much will my users pay”.</p>
 <h2 id="failure-behavior"><a class="header" href="#failure-behavior">Failure behavior</a></h2>
 <ul>
 <li>Build failure, deploy failure, or an unparsable RPC response aborts the run with a contextual error (via <code>anyhow</code>) — e.g., a deploy failure reports that the source account may be unfunded.</li>

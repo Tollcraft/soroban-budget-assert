@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-088fee11.js";
+            window.path_to_searchindex_js = "searchindex-70b8546a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -199,10 +199,13 @@ source = "alice"
 args = ["--n", "10000"]
 </code></pre>
 <p>{% endcode %}</p>
-<h2 id="step-3-measure-real-costs"><a class="header" href="#step-3-measure-real-costs">Step 3: Measure real costs</a></h2>
+<h2 id="step-3-measure-network-resource-usage"><a class="header" href="#step-3-measure-network-resource-usage">Step 3: Measure network resource usage</a></h2>
 <pre><code class="language-bash">cargo budget-report
 </code></pre>
 <p>The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use <code>--json</code> if you want to feed the numbers to a script.</p>
+<p>{% hint style=“warning” %}
+This is not your transaction fee. The three metrics are inputs to the non-refundable resource fee; rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. If you are budgeting what users will actually pay — especially for a contract that writes persistent state, where rent often dominates — read <a href="reference.html#measurement-scope">Measurement scope</a> first.
+{% endhint %}</p>
 <h2 id="step-4-pin-the-costs-into-tests"><a class="header" href="#step-4-pin-the-costs-into-tests">Step 4: Pin the costs into tests</a></h2>
 <p>Add the macro crate to your contract’s dev-dependencies, then gate a test. The macro asserts the <em>local</em> WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]

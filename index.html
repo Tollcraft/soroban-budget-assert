@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-088fee11.js";
+            window.path_to_searchindex_js = "searchindex-70b8546a.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -187,7 +187,10 @@
 <p>{% hint style=“warning” %}
 A developer who trusts local numbers either deploys a contract that exhausts its budget on the public network, or over-provisions against costs that aren’t real. Both mistakes come from the same root cause: the only trustworthy number is a network simulation of the exact WASM you deploy.
 {% endhint %}</p>
-<p>This tool provides both halves of the fix: <code>cargo budget-report</code> measures real simulated network costs across a whole workspace, and the <code>budget_macros</code> assertions pin measured costs into <code>cargo test</code> so a cost regression fails CI before it fails on-chain.</p>
+<p>This tool provides both halves of the fix: <code>cargo budget-report</code> measures network-simulated resource usage across a whole workspace, and the <code>budget_macros</code> assertions pin measured costs into <code>cargo test</code> so a cost regression fails CI before it fails on-chain.</p>
+<p>{% hint style=“info” %}
+Scope: the report covers execution resources — CPU instructions and ledger read/write bytes. Those are inputs to the non-refundable resource fee, not a total transaction fee: rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. <a href="reference.html#measurement-scope">Measurement scope</a> sets out the boundary and points at where to find the rest.
+{% endhint %}</p>
 
                     </main>
 
