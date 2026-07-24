@@ -14,7 +14,7 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
@@ -33,7 +33,7 @@ jobs:
       run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 
     - name: Run Budget Macros Test (Tier A)
-      run: cargo test
+      run: cargo test --workspace
 
     - name: Run Budget Report (Tier B)
       run: |

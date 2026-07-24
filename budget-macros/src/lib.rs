@@ -31,6 +31,11 @@ impl Parse for BudgetLimit {
 
 /// Asserts that the CPU instructions used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
+///
+/// This checks a *local* estimate. Real network cost can differ from it
+/// significantly in either direction depending on the build profile — see
+/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
+/// network ground truth.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = parse_macro_input!(attr as BudgetLimit);
@@ -41,8 +46,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            std::env::var(#var)
-                .ok()
+            budget_env_resolve(#var)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
         },
@@ -52,6 +56,11 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let new_block = quote! {
         {
+            #[allow(unused_variables)]
+            let budget_env_resolve = |var: &str| -> Option<String> {
+                std::env::var(var).ok()
+            };
+
             #(#stmts)*
 
             let budget = #env_ident.cost_estimate().budget();
@@ -59,7 +68,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
             let limit_u64: u64 = #limit_expr;
             assert!(
                 cpu_cost < limit_u64,
-                "CPU instruction cost {} exceeded limit {} - local estimate, underestimates real network cost",
+                "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
                 cpu_cost,
                 limit_u64
             );
@@ -124,6 +133,11 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
 
 /// Asserts that the memory bytes used by `env` are less than N.
 /// Must be placed on a test function that has a local `env` variable.
+///
+/// This checks a *local* estimate. Real network cost can differ from it
+/// significantly in either direction depending on the build profile — see
+/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
+/// network ground truth.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = parse_macro_input!(attr as BudgetLimit);
@@ -134,8 +148,7 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            std::env::var(#var)
-                .ok()
+            budget_env_resolve(#var)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
         },
@@ -145,6 +158,11 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let new_block = quote! {
         {
+            #[allow(unused_variables)]
+            let budget_env_resolve = |var: &str| -> Option<String> {
+                std::env::var(var).ok()
+            };
+
             #(#stmts)*
 
             let budget = #env_ident.cost_estimate().budget();
@@ -152,7 +170,7 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
             let limit_u64: u64 = #limit_expr;
             assert!(
                 mem_cost < limit_u64,
-                "Memory bytes cost {} exceeded limit {} - local estimate, underestimates real network cost",
+                "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
                 mem_cost,
                 limit_u64
             );
