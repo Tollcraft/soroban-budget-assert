@@ -1,4 +1,6 @@
 target/
+venv/
+.venv/
 contract_id.txt
 req.json
 node_modules/
