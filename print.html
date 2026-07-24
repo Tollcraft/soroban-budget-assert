@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4a7f4e70.js";
+            window.path_to_searchindex_js = "searchindex-353884d5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -231,6 +231,25 @@ assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_
 <p>These three figures are resource <em>amounts</em>, and they are inputs to the non-refundable resource fee — not the fee itself and not a total cost. Rent, other refundable fees, transaction size, footprint entry counts, and the inclusion fee are outside what the tool measures. See <a href="#measurement-scope">Measurement scope</a> for the full boundary and where to find the omitted pieces.</p>
 <h2 id="how-the-tiers-work-together"><a class="header" href="#how-the-tiers-work-together">How the tiers work together</a></h2>
 <p>Tier B tells you what a function really costs on the network. Tier A pins the <em>local</em> estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract’s gated test uses exactly this pattern: local WASM estimate 901,816, asserted limit 950,000, real testnet cost 756,678 known from Tier B.</p>
+<h2 id="-supported-versions--compatibility"><a class="header" href="#-supported-versions--compatibility">⚙️ Supported Versions &amp; Compatibility</a></h2>
+<ul>
+<li><strong>Supported SDK Version</strong>: <code>soroban-sdk</code> = <code>"22.0.0"</code> (specifically tested/resolved to <code>22.0.11</code> in <code>Cargo.lock</code>)</li>
+<li><strong>Supported XDR Version</strong>: <code>stellar-xdr</code> = <code>"22.1.0"</code> (used for decoding transaction simulation responses)</li>
+<li><strong>Corresponding Stellar Protocol</strong>: <strong>Protocol 22</strong></li>
+</ul>
+<h3 id="compatibility-matrix"><a class="header" href="#compatibility-matrix">Compatibility Matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">SDK Version</th><th style="text-align: left">Protocol Version</th><th style="text-align: left">Status</th><th style="text-align: left">Notes</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left"><strong><code>&lt; 22.0.0</code></strong></td><td style="text-align: left"><code>&lt; 22</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Older protocols may use different transaction/resource schemas.</td></tr>
+<tr><td style="text-align: left"><strong><code>22.0.x</code></strong></td><td style="text-align: left"><code>22</code></td><td style="text-align: left"><strong>Supported</strong></td><td style="text-align: left">Matches pinned manifest dependencies (<code>soroban-sdk</code> <code>22.0.0</code>, <code>stellar-xdr</code> <code>22.1.0</code>).</td></tr>
+<tr><td style="text-align: left"><strong><code>&gt;= 23.0.0</code></strong></td><td style="text-align: left"><code>&gt;= 23</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing.</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="tool-reference"><a class="header" href="#tool-reference">Tool Reference</a></h1>
 <h2 id="macros-budget_macros"><a class="header" href="#macros-budget_macros">Macros: <code>budget_macros</code></a></h2>
@@ -401,6 +420,25 @@ answering “how much will my users pay”.</p>
 <li>A failed simulation of a single function prints a warning and skips it; the report still prints for the functions that succeeded.</li>
 <li>If nothing simulates successfully, the CLI prints <code>No successful simulations to report.</code> and exits 0.</li>
 </ul>
+<h2 id="-supported-versions--compatibility-1"><a class="header" href="#-supported-versions--compatibility-1">⚙️ Supported Versions &amp; Compatibility</a></h2>
+<ul>
+<li><strong>Supported SDK Version</strong>: <code>soroban-sdk</code> = <code>"22.0.0"</code> (specifically tested/resolved to <code>22.0.11</code> in <code>Cargo.lock</code>)</li>
+<li><strong>Supported XDR Version</strong>: <code>stellar-xdr</code> = <code>"22.1.0"</code> (used for decoding transaction simulation responses)</li>
+<li><strong>Corresponding Stellar Protocol</strong>: <strong>Protocol 22</strong></li>
+</ul>
+<h3 id="compatibility-matrix-1"><a class="header" href="#compatibility-matrix-1">Compatibility Matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">SDK Version</th><th style="text-align: left">Protocol Version</th><th style="text-align: left">Status</th><th style="text-align: left">Notes</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left"><strong><code>&lt; 22.0.0</code></strong></td><td style="text-align: left"><code>&lt; 22</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Older protocols may use different transaction/resource schemas.</td></tr>
+<tr><td style="text-align: left"><strong><code>22.0.x</code></strong></td><td style="text-align: left"><code>22</code></td><td style="text-align: left"><strong>Supported</strong></td><td style="text-align: left">Matches pinned manifest dependencies (<code>soroban-sdk</code> <code>22.0.0</code>, <code>stellar-xdr</code> <code>22.1.0</code>).</td></tr>
+<tr><td style="text-align: left"><strong><code>&gt;= 23.0.0</code></strong></td><td style="text-align: left"><code>&gt;= 23</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing.</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="cost-terms-glossary"><a class="header" href="#cost-terms-glossary">Cost Terms Glossary</a></h1>
 <p>This glossary maps the cost terms used across this project to their definitions in Stellar’s documentation, the XDR field names in <code>SorobanTransactionData</code>, and the display names in <code>cargo budget-report</code> output. Each entry notes whether the tool measures, does not measure, or derives the term.</p>
@@ -600,6 +638,25 @@ fn test_expensive_function_budget() {
   run: cargo test
 </code></pre>
 <p>If a change pushes a function past its asserted budget, the test fails with the actual cost and the limit in the message. Re-run <code>cargo budget-report</code> to re-measure, then either optimize the function or consciously raise the limit.</p>
+<h2 id="-supported-versions--compatibility-2"><a class="header" href="#-supported-versions--compatibility-2">⚙️ Supported Versions &amp; Compatibility</a></h2>
+<ul>
+<li><strong>Supported SDK Version</strong>: <code>soroban-sdk</code> = <code>"22.0.0"</code> (specifically tested/resolved to <code>22.0.11</code> in <code>Cargo.lock</code>)</li>
+<li><strong>Supported XDR Version</strong>: <code>stellar-xdr</code> = <code>"22.1.0"</code> (used for decoding transaction simulation responses)</li>
+<li><strong>Corresponding Stellar Protocol</strong>: <strong>Protocol 22</strong></li>
+</ul>
+<h3 id="compatibility-matrix-2"><a class="header" href="#compatibility-matrix-2">Compatibility Matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">SDK Version</th><th style="text-align: left">Protocol Version</th><th style="text-align: left">Status</th><th style="text-align: left">Notes</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left"><strong><code>&lt; 22.0.0</code></strong></td><td style="text-align: left"><code>&lt; 22</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Older protocols may use different transaction/resource schemas.</td></tr>
+<tr><td style="text-align: left"><strong><code>22.0.x</code></strong></td><td style="text-align: left"><code>22</code></td><td style="text-align: left"><strong>Supported</strong></td><td style="text-align: left">Matches pinned manifest dependencies (<code>soroban-sdk</code> <code>22.0.0</code>, <code>stellar-xdr</code> <code>22.1.0</code>).</td></tr>
+<tr><td style="text-align: left"><strong><code>&gt;= 23.0.0</code></strong></td><td style="text-align: left"><code>&gt;= 23</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing.</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="developer-guide"><a class="header" href="#developer-guide">Developer Guide</a></h1>
 <p>This guide is for developers modifying or extending <code>soroban-budget-assert</code> itself.</p>
@@ -652,6 +709,25 @@ cargo test
 <li><strong>Code blocks</strong>: syntax highlighting works from the fence language tags already present in these pages (<code>rust</code>, <code>bash</code>, <code>toml</code>, <code>json</code>); enable line numbers for long snippets if desired.</li>
 </ul>
 <p>Content and structure changes belong in this repo; theme changes belong in the GitBook UI.</p>
+<h2 id="-supported-versions--compatibility-3"><a class="header" href="#-supported-versions--compatibility-3">⚙️ Supported Versions &amp; Compatibility</a></h2>
+<ul>
+<li><strong>Supported SDK Version</strong>: <code>soroban-sdk</code> = <code>"22.0.0"</code> (specifically tested/resolved to <code>22.0.11</code> in <code>Cargo.lock</code>)</li>
+<li><strong>Supported XDR Version</strong>: <code>stellar-xdr</code> = <code>"22.1.0"</code> (used for decoding transaction simulation responses)</li>
+<li><strong>Corresponding Stellar Protocol</strong>: <strong>Protocol 22</strong></li>
+</ul>
+<h3 id="compatibility-matrix-3"><a class="header" href="#compatibility-matrix-3">Compatibility Matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">SDK Version</th><th style="text-align: left">Protocol Version</th><th style="text-align: left">Status</th><th style="text-align: left">Notes</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left"><strong><code>&lt; 22.0.0</code></strong></td><td style="text-align: left"><code>&lt; 22</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Older protocols may use different transaction/resource schemas.</td></tr>
+<tr><td style="text-align: left"><strong><code>22.0.x</code></strong></td><td style="text-align: left"><code>22</code></td><td style="text-align: left"><strong>Supported</strong></td><td style="text-align: left">Matches pinned manifest dependencies (<code>soroban-sdk</code> <code>22.0.0</code>, <code>stellar-xdr</code> <code>22.1.0</code>).</td></tr>
+<tr><td style="text-align: left"><strong><code>&gt;= 23.0.0</code></strong></td><td style="text-align: left"><code>&gt;= 23</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing.</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="contributing-guide"><a class="header" href="#contributing-guide">Contributing Guide</a></h1>
 <p>We welcome contributions to <code>soroban-budget-assert</code>.</p>
@@ -668,6 +744,25 @@ cargo test
 <li>Macro changes must include corresponding <code>#[test]</code> cases in the <code>amm-pool-contract</code>.</li>
 <li>Do not introduce panics in the CLI; use <code>anyhow::Result</code> for graceful error handling.</li>
 </ul>
+<h2 id="-supported-versions--compatibility-4"><a class="header" href="#-supported-versions--compatibility-4">⚙️ Supported Versions &amp; Compatibility</a></h2>
+<ul>
+<li><strong>Supported SDK Version</strong>: <code>soroban-sdk</code> = <code>"22.0.0"</code> (specifically tested/resolved to <code>22.0.11</code> in <code>Cargo.lock</code>)</li>
+<li><strong>Supported XDR Version</strong>: <code>stellar-xdr</code> = <code>"22.1.0"</code> (used for decoding transaction simulation responses)</li>
+<li><strong>Corresponding Stellar Protocol</strong>: <strong>Protocol 22</strong></li>
+</ul>
+<h3 id="compatibility-matrix-4"><a class="header" href="#compatibility-matrix-4">Compatibility Matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th style="text-align: left">SDK Version</th><th style="text-align: left">Protocol Version</th><th style="text-align: left">Status</th><th style="text-align: left">Notes</th></tr>
+</thead>
+<tbody>
+<tr><td style="text-align: left"><strong><code>&lt; 22.0.0</code></strong></td><td style="text-align: left"><code>&lt; 22</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Older protocols may use different transaction/resource schemas.</td></tr>
+<tr><td style="text-align: left"><strong><code>22.0.x</code></strong></td><td style="text-align: left"><code>22</code></td><td style="text-align: left"><strong>Supported</strong></td><td style="text-align: left">Matches pinned manifest dependencies (<code>soroban-sdk</code> <code>22.0.0</code>, <code>stellar-xdr</code> <code>22.1.0</code>).</td></tr>
+<tr><td style="text-align: left"><strong><code>&gt;= 23.0.0</code></strong></td><td style="text-align: left"><code>&gt;= 23</code></td><td style="text-align: left"><strong>Untested</strong></td><td style="text-align: left">Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing.</td></tr>
+</tbody>
+</table>
+</div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="measurements"><a class="header" href="#measurements">Measurements</a></h1>
 <p>This file records empirical cost measurements comparing local Soroban budget estimates against real network costs. Every measurement PR adds its numbers here so the series stays comparable and in one place.</p>
