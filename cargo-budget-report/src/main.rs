@@ -132,7 +132,10 @@ fn get_contract_id_for_package(
     if !force_deploy {
         if let Some(entry) = cache.package.get(package_name) {
             if entry.wasm_sha256 == hash && entry.network == network {
-                eprintln!("Cache hit for '{}' — reusing contract id {}", package_name, entry.contract_id);
+                eprintln!(
+                    "Cache hit for '{}' — reusing contract id {}",
+                    package_name, entry.contract_id
+                );
                 return Ok(entry.contract_id.clone());
             }
         }
@@ -305,7 +308,11 @@ fn main() -> Result<()> {
                 anyhow::bail!(
                     "Unknown function(s) for package '{}': {}\nAvailable functions: {}",
                     package.name,
-                    unknown.iter().map(|name| name.as_str()).collect::<Vec<_>>().join(", "),
+                    unknown
+                        .iter()
+                        .map(|name| name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     exported_fns.join(", ")
                 );
             }
