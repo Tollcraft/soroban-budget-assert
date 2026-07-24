@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Soroban Budget Assert | Empirical Cost Measurement & Assertions for Soroban Smart Contracts</title>
+  <meta name="description" content="Empirical cost measurement and budget assertion tooling for Soroban smart contracts on Stellar. Catch cost regressions in CI and verify resource limits against testnet.">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Styles -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Navigation -->
+  <header>
+    <div class="container nav-container">
+      <a href="#" class="brand">
+        <span class="brand-icon">🛡️</span>
+        <span>Soroban Budget Assert</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#problem" class="nav-link">The Cost Gap</a></li>
+        <li><a href="#architecture" class="nav-link">Two-Tier System</a></li>
+        <li><a href="#quickstart" class="nav-link">Quick Start</a></li>
+        <li><a href="#demo" class="nav-link">Demo</a></li>
+        <li><a href="https://tollcraft.gitbook.io/docs/budget-assert" class="nav-link" target="_blank" rel="noopener">Docs</a></li>
+        <li><a href="https://github.com/Tollcraft/soroban-budget-assert" class="btn btn-secondary" target="_blank" rel="noopener">GitHub</a></li>
+      </ul>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero Section -->
+    <section class="hero">
+      <div class="container">
+        <div class="badge">
+          <span class="badge-dot"></span>
+          <span>Protocol 22 • soroban-sdk v22.0.0</span>
+        </div>
+        <h1 class="hero-title">
+          Stop Guessing Smart Contract Costs.<br>
+          <span class="gradient-text">Empirical Budget Assertions</span> for Soroban.
+        </h1>
+        <p class="hero-subtitle">
+          Local Soroban resource estimates do not match real network costs. In empirical testnet benchmarks, local Rust estimates ran <strong>~81% under</strong> actual costs, while WASM-mode estimates swung from <strong>~8% under</strong> to <strong>~19% over</strong>. <br>
+          <code>soroban-budget-assert</code> provides empirical budget certainty before on-chain execution.
+        </p>
+        <div class="hero-cta">
+          <a href="#quickstart" class="btn btn-primary">Get Started</a>
+          <a href="https://tollcraft.gitbook.io/docs/budget-assert" class="btn btn-secondary" target="_blank" rel="noopener">Read Documentation</a>
+          <a href="https://discord.gg/5aprtMSyR" class="btn btn-secondary" target="_blank" rel="noopener">Join Discord</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- The Problem Section -->
+    <section id="problem" class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">The Cost-Gap Problem</h2>
+          <p class="section-description">Real measured figures comparing local estimates against Soroban Testnet ground truth for <code>do_expensive_work(10_000)</code>.</p>
+        </div>
+
+        <div class="metrics-grid">
+          <!-- Metric 1 -->
+          <div class="metric-card under-estimate">
+            <div class="metric-label">Native Rust Estimate</div>
+            <div class="metric-value">143,887</div>
+            <span class="metric-delta danger">−81.0% vs Network</span>
+            <p class="metric-context">Native Rust test execution (no WASM). Unreliable for budget decisions.</p>
+          </div>
+
+          <!-- Metric 2 -->
+          <div class="metric-card under-estimate">
+            <div class="metric-label">WASM Release Profile</div>
+            <div class="metric-value">767,049</div>
+            <span class="metric-delta danger">−7.8% vs Network</span>
+            <p class="metric-context">Compiled with Cargo's default <code>release</code> profile (opt-level=3).</p>
+          </div>
+
+          <!-- Metric 3 -->
+          <div class="metric-card over-estimate">
+            <div class="metric-label">WASM Size-Opt Profile</div>
+            <div class="metric-value">901,816</div>
+            <span class="metric-delta warning">+19.2% vs Network</span>
+            <p class="metric-context">Compiled with size optimization (opt-level="z", LTO enabled).</p>
+          </div>
+
+          <!-- Metric 4 -->
+          <div class="metric-card ground-truth">
+            <div class="metric-label">Soroban Testnet Ground Truth</div>
+            <div class="metric-value">756,678</div>
+            <span class="metric-delta success">Network Baseline</span>
+            <p class="metric-context">Actual CPU instructions returned by <code>simulateTransaction</code> on testnet.</p>
+          </div>
+        </div>
+
+        <div class="callout-box">
+          <span class="callout-icon">⚠️</span>
+          <div class="callout-text">
+            <strong>Why this matters:</strong> A developer trusting unverified local numbers either deploys a contract that exhausts its budget on the public network, or over-provisions against costs that aren't real. The only trustworthy figure is a network simulation of the exact WASM you deploy.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Two-Tier Architecture Section -->
+    <section id="architecture" class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Two-Tier Defense System</h2>
+          <p class="section-description">Combine fast local test assertion gates with network-verified workspace reporting.</p>
+        </div>
+
+        <div class="tiers-grid">
+          <!-- Tier A -->
+          <div class="tier-card">
+            <span class="tier-tag tier-a">Tier A • Fast & Local</span>
+            <h3 class="tier-title">budget-macros</h3>
+            <div class="tier-subtitle">Local, Fast, CI-Blocking Assertion Macros</div>
+            <p class="tier-desc">Rust attribute macros (<code>#[budget_cpu_lt(N)]</code>, <code>#[budget_mem_lt(N)]</code>) applied directly to your test functions.</p>
+            <ul class="tier-features">
+              <li>Fails <code>cargo test</code> the moment cost crosses pinned limit</li>
+              <li>Catches cost regressions locally in CI before deploying</li>
+              <li>Reads <code>env.cost_estimate().budget()</code> automatically</li>
+            </ul>
+          </div>
+
+          <!-- Tier B -->
+          <div class="tier-card">
+            <span class="tier-tag tier-b">Tier B • Network-Verified</span>
+            <h3 class="tier-title">cargo-budget-report</h3>
+            <div class="tier-subtitle">CLI Workspace Discovery & Network Verification</div>
+            <p class="tier-desc">A CLI tool that discovers contracts, compiles WASM, and simulates execution against Soroban Testnet.</p>
+            <ul class="tier-features">
+              <li>Automatically discovers all contracts in your workspace</li>
+              <li>Simulates execution on Testnet via <code>simulateTransaction</code></li>
+              <li>Reports execution resources (CPU instructions, read/write bytes)</li>
+              <li>Configurable via central <code>budget.toml</code></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section id="quickstart" class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">Quick Start</h2>
+          <p class="section-description">Get up and running in under a minute.</p>
+        </div>
+
+        <!-- Block 1: CLI Install -->
+        <div class="quickstart-container">
+          <div class="code-header">
+            <span class="code-title"><span>💻</span> 1. Install CLI Tool</span>
+            <button class="copy-btn" onclick="copyCode(this, 'code-install')">Copy</button>
+          </div>
+          <pre><code id="code-install"><span class="token-comment"># Install cargo-budget-report from repository root</span>
+<span class="token-function">cargo</span> install --path cargo-budget-report
+
+<span class="token-comment"># Run report across workspace</span>
+<span class="token-function">cargo</span> budget-report</code></pre>
+        </div>
+
+        <!-- Block 2: Configuration -->
+        <div class="quickstart-container">
+          <div class="code-header">
+            <span class="code-title"><span>⚙️</span> 2. Configure budget.toml</span>
+            <button class="copy-btn" onclick="copyCode(this, 'code-config')">Copy</button>
+          </div>
+          <pre><code id="code-config"><span class="token-keyword">network</span> = <span class="token-string">"testnet"</span>
+<span class="token-keyword">source</span> = <span class="token-string">"alice"</span>
+
+[<span class="token-function">functions.do_expensive_work</span>]
+<span class="token-keyword">args</span> = [<span class="token-string">"--n"</span>, <span class="token-string">"10000"</span>]</code></pre>
+        </div>
+
+        <!-- Block 3: Macro Usage -->
+        <div class="quickstart-container">
+          <div class="code-header">
+            <span class="code-title"><span>🦀</span> 3. Add Macro Assertions in Tests</span>
+            <button class="copy-btn" onclick="copyCode(this, 'code-macro')">Copy</button>
+          </div>
+          <pre><code id="code-macro"><span class="token-keyword">use</span> budget_macros::{<span class="token-macro">budget_cpu_lt</span>, <span class="token-macro">budget_mem_lt</span>};
+<span class="token-keyword">use</span> soroban_sdk::Env;
+
+<span class="token-macro">#[test]</span>
+<span class="token-macro">#[budget_cpu_lt(950000)]</span> <span class="token-comment">// Fails test if CPU instruction budget exceeds limit</span>
+<span class="token-keyword">fn</span> <span class="token-function">test_cpu_budget</span>() {
+    <span class="token-keyword">let</span> env = Env::default();
+    <span class="token-keyword">let</span> wasm = std::fs::read(<span class="token-string">"../target/wasm32-unknown-unknown/release/my_contract.wasm"</span>)
+        .expect(<span class="token-string">"build the WASM first"</span>);
+    <span class="token-keyword">let</span> contract_id = env.register_contract_wasm(<span class="token-keyword">None</span>, wasm.as_slice());
+    <span class="token-keyword">let</span> client = MyContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&<span class="token-number">10_000</span>);
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Demo Section -->
+    <section id="demo" class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2 class="section-title">See It in Action</h2>
+          <p class="section-description">Watch <code>cargo budget-report</code> simulate and report execution resources across workspace contracts.</p>
+        </div>
+
+        <div class="demo-box">
+          <div class="demo-player-wrapper">
+            <iframe src="https://asciinema.org/a/qqC0RysuCDBvfUXC/iframe" title="Soroban Budget Assert Demo" allowfullscreen></iframe>
+          </div>
+          <p class="demo-fallback">
+            Having trouble viewing the embedded demo? <a href="https://asciinema.org/a/qqC0RysuCDBvfUXC" target="_blank" rel="noopener">Watch the terminal recording on Asciinema</a>.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container footer-container">
+      <div class="footer-brand">
+        <span>🛡️ Soroban Budget Assert</span>
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/Tollcraft/soroban-budget-assert" class="footer-link" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://tollcraft.gitbook.io/docs/budget-assert" class="footer-link" target="_blank" rel="noopener">GitBook Docs</a></li>
+        <li><a href="https://discord.gg/5aprtMSyR" class="footer-link" target="_blank" rel="noopener">Stellar Discord</a></li>
+        <li><a href="https://t.me/+Gflo5jZStw1jMjE0" class="footer-link" target="_blank" rel="noopener">Telegram Support</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <!-- Simple Copy Script -->
+  <script>
+    function copyCode(btn, elementId) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const text = el.innerText || el.textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const originalText = btn.innerText;
+        btn.innerText = 'Copied!';
+        btn.style.color = '#4ade80';
+        setTimeout(() => {
+          btn.innerText = originalText;
+          btn.style.color = '';
+        }, 2000);
+      }).catch(err => {
+        console.error('Failed to copy: ', err);
+      });
+    }
+  </script>
+</body>
+</html>

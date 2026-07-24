@@ -28,7 +28,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
       - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli --version 21.5.3
+        run: |
+          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          mv stellar ~/.cargo/bin/
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
@@ -69,12 +71,17 @@ jobs:
 
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
-
+      with:
+        target: wasm32-unknown-unknown
+        components: rustfmt, clippy
+       
     - name: Install System Dependencies
       run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
     - name: Install Stellar CLI
-      run: cargo install --locked stellar-cli --version 21.5.3
+      run: |
+        curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+        mv stellar ~/.cargo/bin/
 
     - name: Build Contracts
       run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
