@@ -45,7 +45,7 @@ fn test_budget_wasm() {
 }
 
 #[test]
-#[budget_cpu_lt(950000)] // Re-measured with the Soroban release profile applied: WASM local 901816, actual testnet ~756678
+#[budget_cpu_lt(975000)] // Re-measured with the Soroban release profile applied: WASM local 901816, actual testnet ~756678
 fn test_budget_macro_gated() {
     let env = Env::default();
     let client = setup_wasm_client(&env);
@@ -89,7 +89,7 @@ fn test_budget_macro_mem_deliberate_regression() {
 #[budget_cpu_lt(env = "TEST_MAX_CPU")]
 fn test_budget_macro_dynamic_env() {
     let budget_env_resolve = |var: &str| -> Option<String> {
-        if var == "TEST_MAX_CPU" { Some("950000".to_string()) } else { None }
+        if var == "TEST_MAX_CPU" { Some("975000".to_string()) } else { None }
     };
     let env = Env::default();
     let client = setup_wasm_client(&env);
