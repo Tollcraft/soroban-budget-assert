@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Soroban Budget Assert — Cost-over-time Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="./assets/dashboard.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Cost-over-time Dashboard</h1>
+    <p class="sub">Per-function budget cost (CPU instructions, read/write bytes) across commits, from <code>history.json</code> recorded by CI.</p>
+    <p class="source" id="source-line"></p>
+  </header>
+
+  <main>
+    <section id="status"><p>Loading history…</p></section>
+
+    <section id="controls" hidden>
+      <div class="control">
+        <label for="package-select">Package</label>
+        <select id="package-select"></select>
+      </div>
+      <div class="control">
+        <label>Functions</label>
+        <div id="function-list" class="checkbox-list"></div>
+      </div>
+      <div class="control">
+        <label>Showing</label>
+        <span id="window-info"></span>
+      </div>
+    </section>
+
+    <section id="charts"></section>
+  </main>
+
+  <footer>
+    <p>Click a data point to open that commit on GitHub. Data via <a id="history-link" href="#">history.json</a>.</p>
+  </footer>
+
+  <script src="./assets/dashboard.js"></script>
+</body>
+</html>
