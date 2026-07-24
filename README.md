@@ -58,14 +58,35 @@ cargo budget-report
 ```
 
 **Use Macros in Tests:**
-```rust
-use budget_macros::budget_cpu_lt;
 
+The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
+
+```rust
+use budget_macros::{budget_cpu_lt, budget_mem_lt};
+use soroban_sdk::Env;
+
+// CPU instruction assertion
 #[test]
-#[budget_cpu_lt(800000)]
-fn test_expensive_function() {
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
+fn test_cpu_budget() {
     let env = Env::default();
-    // ... test logic ...
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+}
+
+// Memory assertion — same shape
+#[test]
+#[budget_mem_lt(500000)]
+fn test_mem_budget() {
+    let env = Env::default();
+    // register, reset_unlimited, invoke …
 }
 ```
 

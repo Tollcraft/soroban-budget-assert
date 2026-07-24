@@ -14,18 +14,47 @@ Asserts that the CPU instruction cost measured by the test's `env` is strictly l
 
 ```rust
 use budget_macros::budget_cpu_lt;
+use soroban_sdk::Env;
 
 #[test]
-#[budget_cpu_lt(850000)]
+#[budget_cpu_lt(950000)] // local WASM ~901,816; testnet ~756,678
 fn test_expensive_function() {
     let env = Env::default();
-    // ... register contract as WASM, call client ...
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
 }
 ```
 
 ### `#[budget_mem_lt(N)]`
 
 Same shape; asserts `memory_bytes_cost() < N`.
+
+```rust
+use budget_macros::budget_mem_lt;
+use soroban_sdk::Env;
+
+#[test]
+#[budget_mem_lt(500000)]
+fn test_memory_budget() {
+    let env = Env::default();
+
+    let wasm = std::fs::read(
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+    ).expect("build the WASM first");
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = MyContractClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+}
+```
 
 ### Requirements and caveats
 
