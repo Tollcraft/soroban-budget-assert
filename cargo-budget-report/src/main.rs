@@ -450,8 +450,7 @@ mod tests {
     #[test]
     fn transaction_data_parsing_deserializes_successfully() {
         let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
-        let tx_data = TransactionData::parse_json(json_str)
-            .expect("Parsing should succeed");
+        let tx_data = TransactionData::parse_json(json_str).expect("Parsing should succeed");
         assert_eq!(tx_data.resources.instructions, 1000);
         assert_eq!(tx_data.resources.disk_read_bytes, 2048);
         assert_eq!(tx_data.resources.write_bytes, 3072);
@@ -463,7 +462,11 @@ mod tests {
         let result = TransactionData::parse_json(json_str);
         assert!(result.is_err(), "Parsing should fail on missing field");
         let err_msg = format!("{:#}", result.as_ref().unwrap_err());
-        assert!(err_msg.contains("write_bytes"), "Error should mention missing field, got: {}", err_msg);
+        assert!(
+            err_msg.contains("write_bytes"),
+            "Error should mention missing field, got: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -472,6 +475,10 @@ mod tests {
         let result = TransactionData::parse_json(json_str);
         assert!(result.is_err(), "Parsing should fail on non-numeric field");
         let err_msg = format!("{:#}", result.as_ref().unwrap_err());
-        assert!(err_msg.contains("invalid type") || err_msg.contains("instructions"), "Error should mention type error, got: {}", err_msg);
+        assert!(
+            err_msg.contains("invalid type") || err_msg.contains("not-a-number"),
+            "Error should mention type mismatch, got: {}",
+            err_msg
+        );
     }
 }
