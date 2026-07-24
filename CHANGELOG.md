@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Placeholder entry for upcoming user-visible changes.
+- Single-page landing site under `site/` with empirical cost-gap breakdown, two-tier architecture overview, quick-start guide, asciinema demo embed, and project resources.
+- Updated GitHub Actions Pages deployment workflow to serve static site files from `./site`.
 - Contributors should add a short changelog entry with their pull request when the change is user-visible.
 
 ## [0.1.0] - 2026-07-24
