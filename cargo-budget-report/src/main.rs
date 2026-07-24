@@ -100,6 +100,7 @@ fn main() -> Result<()> {
         .context("failed to execute cargo metadata")?;
 
     let mut reports = Vec::new();
+    let mut has_errors = false;
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -230,6 +231,7 @@ fn main() -> Result<()> {
                 .context("failed to execute stellar-cli invoke")?;
 
             if !invoke_output.status.success() {
+                has_errors = true;
                 eprintln!(
                     "Warning: Simulation failed for {}: {}",
                     function,
@@ -282,6 +284,7 @@ fn main() -> Result<()> {
                 .context("Failed to parse RPC response")?;
 
             if let Some(error) = rpc_resp.get("error") {
+                has_errors = true;
                 eprintln!("Warning: RPC error for {}: {}", function, error);
                 continue;
             }
@@ -338,6 +341,9 @@ fn main() -> Result<()> {
 
     if reports.is_empty() {
         eprintln!("No successful simulations to report.");
+        if has_errors {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -363,6 +369,10 @@ fn main() -> Result<()> {
         println!("{}", table);
         println!("\nSummary: The metrics above represent the total unrefundable network execution costs required to run your contract functions.");
         println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
+    }
+
+    if has_errors {
+        std::process::exit(1);
     }
 
     Ok(())
