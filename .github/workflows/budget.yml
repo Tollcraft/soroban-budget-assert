@@ -2,82 +2,106 @@ name: Soroban Budget Check
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
 
 jobs:
   budget-check:
     runs-on: ubuntu-latest
-    
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.1
+          target: wasm32-unknown-unknown
+
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Build Contracts
+        run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+
+      - name: Run Budget Macros Test (Tier A)
+        run: cargo test
+
+      - name: Run Budget Report (Tier B)
+        run: |
+          # Optionally, this uses budget.toml to populate fields instead of args
+          # Ensure your repository has budget.toml configured for this to work
+          # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
+          # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
+
+          # Mocking the JSON output for the demo so CI passes without testnet secrets:
+          echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+
+      - name: Upload Budget Report
+        uses: actions/upload-artifact@v4.2.0
+        with:
+          name: budget-report
+          path: current_report.json
+
+  record-history:
+    needs: budget-check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        target: wasm32-unknown-unknown
-        
-    - name: Install System Dependencies
-      run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
+      - name: Download Budget Report
+        uses: actions/download-artifact@v4.2.0
+        with:
+          name: budget-report
+          path: ./artifacts
 
-    - name: Install Stellar CLI
-      run: cargo install --locked stellar-cli
+      - name: Record History Dataset
+        run: |
+          # Configure Git for the bot
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-    - name: Build Contracts
-      run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+          # Save report to temp location so it survives the checkout
+          cp ./artifacts/current_report.json /tmp/current_report.json
 
-    - name: Run Budget Macros Test (Tier A)
-      run: cargo test
+          # Clean up any modified files from testing before switching branches
+          git reset --hard
+          git clean -fd
 
-    - name: Run Budget Report (Tier B)
-      run: |
-        # Optionally, this uses budget.toml to populate fields instead of args
-        # Ensure your repository has budget.toml configured for this to work
-        # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-        # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
-        
-        # Mocking the JSON output for the demo so CI passes without testnet secrets:
-        echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+          # Fetch and checkout the gh-pages branch, or create it if missing
+          git fetch origin gh-pages || true
+          git checkout gh-pages || git checkout -b gh-pages
+          git pull origin gh-pages || true
 
-    - name: Record History Dataset
-      if: github.ref == 'refs/heads/main'
-      run: |
-        # Configure Git for the bot
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        
-        # Save report to temp location so it survives the checkout
-        cp current_report.json /tmp/current_report.json
-        
-        # Clean up any modified files from testing before switching branches
-        git reset --hard
-        git clean -fd
-        
-        # Fetch and checkout the gh-pages branch, or create it if missing
-        git fetch origin gh-pages || true
-        git checkout gh-pages || git checkout -b gh-pages
-        git pull origin gh-pages || true
-        
-        # Initialize history.json if it doesn't exist
-        if [ ! -f history.json ]; then
-          echo "[]" > history.json
-        fi
-        
-        # Append the new report to history.json using jq
-        jq --arg commit "${{ github.sha }}" \
-           --arg time "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-           --slurpfile report /tmp/current_report.json \
-           '. + [{commit: $commit, timestamp: $time, data: $report[0]}]' history.json > history_new.json
-           
-        mv history_new.json history.json
-        
-        # Commit and push to gh-pages branch
-        git add history.json
-        git commit -m "chore: record budget history for ${{ github.sha }}" || echo "No changes to commit"
-        git push origin gh-pages
+          # Initialize history.json if it doesn't exist
+          if [ ! -f history.json ]; then
+            echo "[]" > history.json
+          fi
+
+          # Append the new report to history.json using jq
+          jq --arg commit "${{ github.sha }}" \
+             --arg time "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+             --slurpfile report /tmp/current_report.json \
+             '. + [{commit: $commit, timestamp: $time, data: $report[0]}]' history.json > history_new.json
+
+          mv history_new.json history.json
+
+          # Commit and push to gh-pages branch
+          git add history.json
+          git commit -m "chore: record budget history for ${{ github.sha }}" || echo "No changes to commit"
+          git push origin gh-pages
