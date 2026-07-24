@@ -4,6 +4,7 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command;
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
@@ -43,6 +44,28 @@ struct BudgetToml {
     source: Option<String>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct Resources {
+    instructions: u64,
+    disk_read_bytes: u64,
+    write_bytes: u64,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct TransactionData {
+    #[serde(alias = "resources")]
+    resources: Resources,
+}
+
+impl TransactionData {
+    #[cfg(test)]
+    fn parse_json(json_str: &str) -> Result<Self> {
+        let parsed_json: serde_json::Value =
+            serde_json::from_str(json_str).context("Failed to parse JSON")?;
+        serde_json::from_value(parsed_json).context("Failed to deserialize transaction data")
+    }
 }
 
 #[derive(serde::Deserialize, Default, Debug)]
@@ -191,15 +214,19 @@ fn get_contract_id_for_package(
     save_cache(cache);
 
     Ok(contract_id)
+fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => toml::from_str(&contents)
+            .map_err(|err| anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BudgetToml::default()),
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.as_ref().display())),
+    }
 }
 
 fn main() -> Result<()> {
     let CargoCli::BudgetReport(args) = CargoCli::parse();
 
-    let toml_config: BudgetToml = std::fs::read_to_string("budget.toml")
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default();
+    let toml_config = load_budget_toml("budget.toml")?;
 
     let network = args
         .network
@@ -437,30 +464,33 @@ fn main() -> Result<()> {
                 .wait_with_output()
                 .context("Failed to read stdout")?;
             let json_str = String::from_utf8_lossy(&decode_output.stdout);
-            let parsed: serde_json::Value =
+            let parsed_json: serde_json::Value =
                 serde_json::from_str(&json_str).context("Failed to parse XDR JSON")?;
 
-            let instructions = parsed["resources"]["instructions"].as_u64().unwrap_or(0) as u32;
-            let read_bytes = parsed["resources"]["disk_read_bytes"].as_u64().unwrap_or(0) as u32;
-            let write_bytes = parsed["resources"]["write_bytes"].as_u64().unwrap_or(0) as u32;
+            let tx_data: TransactionData = serde_json::from_value(parsed_json)
+                .context("Failed to deserialize transaction data")?;
+
+            let instructions = tx_data.resources.instructions;
+            let read_bytes = tx_data.resources.disk_read_bytes;
+            let write_bytes = tx_data.resources.write_bytes;
 
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "CPU Instructions",
-                value: instructions,
+                value: instructions as u32,
             });
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "Read Bytes",
-                value: read_bytes,
+                value: read_bytes as u32,
             });
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "Write Bytes",
-                value: write_bytes,
+                value: write_bytes as u32,
             });
         }
     }
@@ -508,9 +538,92 @@ fn main() -> Result<()> {
             .collect();
         let table = Table::new(table_reports).to_string();
         println!("{}", table);
-        println!("\nSummary: The metrics above represent the total unrefundable network execution costs required to run your contract functions.");
+        println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
+        println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
         println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
+        println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_path() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is before UNIX_EPOCH")
+            .as_nanos();
+        path.push(format!("cargo_budget_report_test_{}.toml", nanos));
+        path
+    }
+
+    #[test]
+    fn missing_budget_toml_returns_default() {
+        let path = unique_test_path();
+        let _ = fs::remove_file(&path);
+
+        let config = load_budget_toml(&path).expect("missing file should return default");
+        assert!(config.network.is_none());
+        assert!(config.source.is_none());
+        assert!(config.functions.is_empty());
+    }
+
+    #[test]
+    fn malformed_budget_toml_errors_with_parse_message() {
+        let path = unique_test_path();
+        fs::write(
+            &path,
+            "network = \"testnet\"\n[functions.do_expensive_work]\nargs = \"--n 10\"\n",
+        )
+        .expect("failed to write malformed budget.toml");
+
+        let err = load_budget_toml(&path).unwrap_err();
+        let err_text = err.to_string();
+
+        assert!(err_text.contains("failed to parse"));
+        assert!(err_text.contains("line") || err_text.contains("Line"));
+        assert!(err_text.contains("column") || err_text.contains("Column"));
+    }
+
+    #[test]
+    fn transaction_data_parsing_deserializes_successfully() {
+        let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
+        let tx_data = TransactionData::parse_json(json_str).expect("Parsing should succeed");
+        assert_eq!(tx_data.resources.instructions, 1000);
+        assert_eq!(tx_data.resources.disk_read_bytes, 2048);
+        assert_eq!(tx_data.resources.write_bytes, 3072);
+    }
+
+    #[test]
+    fn transaction_data_parsing_fails_on_missing_field() {
+        let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048}}"#;
+        let result = TransactionData::parse_json(json_str);
+        assert!(result.is_err(), "Parsing should fail on missing field");
+        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        assert!(
+            err_msg.contains("write_bytes"),
+            "Error should mention missing field, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn transaction_data_parsing_fails_on_non_numeric_field() {
+        let json_str = r#"{"resources": {"instructions": "not-a-number", "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
+        let result = TransactionData::parse_json(json_str);
+        assert!(result.is_err(), "Parsing should fail on non-numeric field");
+        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        assert!(
+            err_msg.contains("invalid type") || err_msg.contains("not-a-number"),
+            "Error should mention type mismatch, got: {}",
+            err_msg
+        );
+    }
 }

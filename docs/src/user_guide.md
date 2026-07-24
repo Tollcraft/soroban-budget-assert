@@ -30,13 +30,17 @@ args = ["--n", "10000"]
 ```
 {% endcode %}
 
-## Step 3: Measure real costs
+## Step 3: Measure network resource usage
 
 ```bash
 cargo budget-report
 ```
 
 The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use `--json` if you want to feed the numbers to a script.
+
+{% hint style="warning" %}
+This is not your transaction fee. The three metrics are inputs to the non-refundable resource fee; rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. If you are budgeting what users will actually pay — especially for a contract that writes persistent state, where rent often dominates — read [Measurement scope](reference.md#measurement-scope) first.
+{% endhint %}
 
 ## Step 4: Pin the costs into tests
 
@@ -84,3 +88,17 @@ Build the WASM, then run the tests, on every push and pull request:
 ```
 
 If a change pushes a function past its asserted budget, the test fails with the actual cost and the limit in the message. Re-run `cargo budget-report` to re-measure, then either optimize the function or consciously raise the limit.
+
+## ⚙️ Supported Versions & Compatibility
+
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 22**
+
+### Compatibility Matrix
+
+| SDK Version | Protocol Version | Status | Notes |
+| :--- | :--- | :--- | :--- |
+| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
