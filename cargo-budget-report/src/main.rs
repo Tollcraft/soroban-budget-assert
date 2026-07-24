@@ -65,11 +65,40 @@ struct FunctionConfig {
     args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+enum Metric {
+    #[serde(rename = "CPU Instructions")]
+    CpuInstructions,
+    #[serde(rename = "Read Bytes")]
+    ReadBytes,
+    #[serde(rename = "Write Bytes")]
+    WriteBytes,
+}
+
+impl std::fmt::Display for Metric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Metric::CpuInstructions => write!(f, "CPU Instructions"),
+            Metric::ReadBytes => write!(f, "Read Bytes"),
+            Metric::WriteBytes => write!(f, "Write Bytes"),
+        }
+    }
+}
+
+impl Metric {
+    fn unit(&self) -> &'static str {
+        match self {
+            Metric::CpuInstructions => "inst.",
+            Metric::ReadBytes | Metric::WriteBytes => "B",
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct CostReport {
     package: String,
     function: String,
-    metric: &'static str,
+    metric: Metric,
     value: u32,
 }
 
@@ -77,11 +106,11 @@ struct CostReport {
 struct TableCostReport {
     package: String,
     function: String,
-    metric: &'static str,
+    metric: Metric,
     value: String,
 }
 
-fn format_with_commas_and_units(value: u32, metric: &str) -> String {
+fn format_with_commas_and_units(value: u32, metric: Metric) -> String {
     let s = value.to_string();
     let mut result = String::new();
     let mut count = 0;
@@ -95,11 +124,7 @@ fn format_with_commas_and_units(value: u32, metric: &str) -> String {
     }
     let formatted = result.chars().rev().collect::<String>();
 
-    if metric.contains("Bytes") {
-        format!("{} B", formatted)
-    } else {
-        format!("{} inst.", formatted)
-    }
+    format!("{} {}", formatted, metric.unit())
 }
 
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
@@ -342,19 +367,19 @@ fn main() -> Result<()> {
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
-                metric: "CPU Instructions",
+                metric: Metric::CpuInstructions,
                 value: instructions,
             });
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
-                metric: "Read Bytes",
+                metric: Metric::ReadBytes,
                 value: read_bytes,
             });
             reports.push(CostReport {
                 package: package.name.to_string(),
                 function: function.clone(),
-                metric: "Write Bytes",
+                metric: Metric::WriteBytes,
                 value: write_bytes,
             });
         }
@@ -618,5 +643,64 @@ mod tests {
             "Error should mention type mismatch, got: {}",
             err_msg
         );
+    }
+
+    // --- Metric enum tests ---
+
+    #[test]
+    fn metric_display_returns_correct_names() {
+        assert_eq!(Metric::CpuInstructions.to_string(), "CPU Instructions");
+        assert_eq!(Metric::ReadBytes.to_string(), "Read Bytes");
+        assert_eq!(Metric::WriteBytes.to_string(), "Write Bytes");
+    }
+
+    #[test]
+    fn metric_unit_returns_correct_suffixes() {
+        assert_eq!(Metric::CpuInstructions.unit(), "inst.");
+        assert_eq!(Metric::ReadBytes.unit(), "B");
+        assert_eq!(Metric::WriteBytes.unit(), "B");
+    }
+
+    #[test]
+    fn format_with_commas_and_units_uses_metric_type() {
+        assert_eq!(
+            format_with_commas_and_units(1_000_000, Metric::CpuInstructions),
+            "1,000,000 inst."
+        );
+        assert_eq!(
+            format_with_commas_and_units(2_048, Metric::ReadBytes),
+            "2,048 B"
+        );
+        assert_eq!(
+            format_with_commas_and_units(4_096, Metric::WriteBytes),
+            "4,096 B"
+        );
+    }
+
+    #[test]
+    fn json_serialization_preserves_expected_keys() {
+        let reports = vec![
+            CostReport {
+                package: "amm-pool-contract".to_string(),
+                function: "do_expensive_work".to_string(),
+                metric: Metric::CpuInstructions,
+                value: 1_000_000,
+            },
+            CostReport {
+                package: "amm-pool-contract".to_string(),
+                function: "do_expensive_work".to_string(),
+                metric: Metric::ReadBytes,
+                value: 2_048,
+            },
+            CostReport {
+                package: "amm-pool-contract".to_string(),
+                function: "do_expensive_work".to_string(),
+                metric: Metric::WriteBytes,
+                value: 4_096,
+            },
+        ];
+        let json = serde_json::to_string_pretty(&reports).unwrap();
+        let expected = "[\n  {\n    \"package\": \"amm-pool-contract\",\n    \"function\": \"do_expensive_work\",\n    \"metric\": \"CPU Instructions\",\n    \"value\": 1000000\n  },\n  {\n    \"package\": \"amm-pool-contract\",\n    \"function\": \"do_expensive_work\",\n    \"metric\": \"Read Bytes\",\n    \"value\": 2048\n  },\n  {\n    \"package\": \"amm-pool-contract\",\n    \"function\": \"do_expensive_work\",\n    \"metric\": \"Write Bytes\",\n    \"value\": 4096\n  }\n]";
+        assert_eq!(json, expected, "JSON serialization format must not change");
     }
 }

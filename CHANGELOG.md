@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated GitHub Actions Pages deployment workflow to serve static site files from `./site`.
 - Contributors should add a short changelog entry with their pull request when the change is user-visible.
 
+### Changed
+
+- Replaced the stringly-typed `metric` field in `cargo-budget-report` with a typed `Metric` enum. The unit for each metric now comes from the enum variant rather than substring matching on the display name. JSON output keys are unchanged.
+
 ## [0.1.0] - 2026-07-24
 
 ### Added
