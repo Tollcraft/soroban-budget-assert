@@ -1,5 +1,5 @@
 target/
-contract_id.txt
+.budget-cache.toml
 req.json
 node_modules/
 docs/book/
