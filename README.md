@@ -85,6 +85,37 @@ args = ["--n", "10000"]
 cargo budget-report
 ```
 
+**Filter by Package and Function:**
+```bash
+cargo budget-report --package example-contract --function do_expensive_work
+```
+
+The `--package` and `--function` flags can be repeated to select multiple items:
+```bash
+cargo budget-report --package contract-a --package contract-b --function init --function transfer
+```
+
+Unknown package or function names produce a clear error listing available candidates.
+
+**Contract ID Caching:**
+
+A `.budget-cache.toml` file (automatically gitignored) caches deployed contract IDs keyed by WASM SHA-256 hash and network. On subsequent runs with unchanged WASM, deployment is skipped and the cached ID is reused:
+
+```bash
+# First run — deploys and caches
+cargo budget-report
+
+# Second run (no WASM changes) — reuses cached contract IDs (fast)
+cargo budget-report
+```
+
+To force re-deployment:
+```bash
+cargo budget-report --force-deploy
+```
+
+Cache entries are isolated by network — a testnet ID will never be reused on another network.
+
 **Use Macros in Tests:**
 
 The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.

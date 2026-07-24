@@ -1,4 +1,5 @@
 target/
+.budget-cache.toml
 venv/
 .venv/
 contract_id.txt
