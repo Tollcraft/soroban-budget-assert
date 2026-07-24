@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7501739e.js";
+            window.path_to_searchindex_js = "searchindex-70a660d0.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-525d8f95.js"></script>
+        <script src="toc-7cb80aef.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -195,7 +195,7 @@ A developer who trusts local numbers either deploys a contract that exhausts its
 <p>Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on <em>how</em> the contract executes locally — and the error can point in either direction. Measured on the example contract’s <code>do_expensive_work(10_000)</code>, built with the standard Soroban release profile (<code>opt-level = "z"</code>, LTO):</p>
 <p>The raw figures and deltas are recorded in the <a href="#measurements">measurements file</a>, which is the single source of truth for empirical cost data across the project. The same page documents the methodology, the build profiles tested, and the operation types not yet measured.</p>
 <p>{% hint style=“info” %}
-The direction of the WASM gap is not stable — see the two build profiles compared in the <a href="#cpu-instructions">existing measurements</a>.
+The direction of the WASM gap is not stable — see the two build profiles compared in the <a href="#cpu-instructions-1">existing measurements</a>.
 {% endhint %}</p>
 <p>Two conclusions drive the tool’s design:</p>
 <ol>
@@ -293,7 +293,7 @@ args = ["--n", "10000"]
 <li><code>[functions.&lt;name&gt;].args</code> — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped (the run continues).</li>
 </ul>
 <h2 id="output"><a class="header" href="#output">Output</a></h2>
-<p>Each simulated function produces three rows (or three JSON objects): <code>CPU Instructions</code>, <code>Read Bytes</code>, and <code>Write Bytes</code>.</p>
+<p>Each simulated function produces three rows (or three JSON objects): <code>CPU Instructions</code>, <code>Read Bytes</code>, and <code>Write Bytes</code>. For a mapping between these metric names, their XDR field names, and Stellar’s own terminology, see the <a href="#cost-terms-glossary">Cost Terms Glossary</a>.</p>
 <p>Table output ends with a note that values are testnet simulations and vary slightly with ledger state. JSON output (<code>--json</code>) is an array suited to CI:</p>
 <pre><code class="language-json">[
   {
@@ -310,6 +310,136 @@ args = ["--n", "10000"]
 <li>A failed simulation of a single function prints a warning and skips it; the report still prints for the functions that succeeded.</li>
 <li>If nothing simulates successfully, the CLI prints <code>No successful simulations to report.</code> and exits 0.</li>
 </ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="cost-terms-glossary"><a class="header" href="#cost-terms-glossary">Cost Terms Glossary</a></h1>
+<p>This glossary maps the cost terms used across this project to their definitions in Stellar’s documentation, the XDR field names in <code>SorobanTransactionData</code>, and the display names in <code>cargo budget-report</code> output. Each entry notes whether the tool measures, does not measure, or derives the term.</p>
+<h2 id="cpu-instructions"><a class="header" href="#cpu-instructions">CPU Instructions</a></h2>
+<ul>
+<li><strong>Tool display name</strong>: <code>CPU Instructions</code></li>
+<li><strong>XDR field</strong>: <code>resources.instructions</code> (extracted from <code>SorobanTransactionData</code>)</li>
+<li><strong>What it is</strong>: The count of CPU instruction executions attributed to the transaction during metering. Metering accounts uniformly for both Wasm instructions executed in the guest VM and the calibrated-equivalent cost of host functions. CPU instructions are summed throughout execution and checked against the transaction’s declared limit; if the limit is exceeded the transaction fails before completion.</li>
+<li><strong>Measurement status</strong>: <strong>measures</strong> — <code>cargo budget-report</code> decodes this field from <code>simulateTransaction</code> output and reports it in every row.</li>
+</ul>
+<p>{% hint style=“info” %}
+Stellar’s fees and metering documentation states: <em>“execution of Wasm instructions is accounted for as a host cost type <code>WasmInsnExec</code>, which has a constant CPU cost per Wasm instruction.”</em> The reported number is the total inclusive of both guest and host metering.
+{% endhint %}</p>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#metering">Fees, Resource Limits, and Metering — Metering</a></p>
+<hr>
+<h2 id="read-bytes-disk-read-bytes"><a class="header" href="#read-bytes-disk-read-bytes">Read Bytes (disk-read bytes)</a></h2>
+<ul>
+<li><strong>Tool display name</strong>: <code>Read Bytes</code></li>
+<li><strong>XDR field</strong>: <code>resources.disk_read_bytes</code> (extracted from <code>SorobanTransactionData</code>)</li>
+<li><strong>Stellar documentation term</strong>: “bytes read from the ledger” / “disk-read bytes”</li>
+<li><strong>What it is</strong>: The total number of bytes read from ledger entries during the transaction’s execution. This includes reading persistent, instance, and temporary storage entries and any contract code or instance entry loaded by the host. “Disk” in the XDR name refers to on-disk ledger storage as distinct from in-memory access, though starting with Protocol 23 (<a href="https://github.com/stellar/stellar-protocol/blob/master/core/cap-0066.md">CAP-0066: Soroban In-Memory Read Resource</a>), reads are accounted against a separate, cheaper in-memory read resource — but <code>disk_read_bytes</code> is the XDR field the RPC returns and the field this tool reports.</li>
+<li><strong>Measurement status</strong>: <strong>measures</strong> — <code>cargo budget-report</code> reads <code>parsed["resources"]["disk_read_bytes"]</code> and labels it <code>"Read Bytes"</code> in output.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#resource-fee">Fees, Resource Limits, and Metering — Resource fee</a> (refers to “bytes read from the ledger”)</p>
+<hr>
+<h2 id="write-bytes"><a class="header" href="#write-bytes">Write Bytes</a></h2>
+<ul>
+<li><strong>Tool display name</strong>: <code>Write Bytes</code></li>
+<li><strong>XDR field</strong>: <code>resources.write_bytes</code> (extracted from <code>SorobanTransactionData</code>)</li>
+<li><strong>Stellar documentation term</strong>: “bytes written to the ledger”</li>
+<li><strong>What it is</strong>: The total number of bytes written to ledger entries during the transaction. This includes new and modified storage entries. Write bytes is a primary cost driver because ledger writes are charged at a dynamic rate that increases when the global ledger size grows.</li>
+<li><strong>Measurement status</strong>: <strong>measures</strong> — <code>cargo budget-report</code> reads <code>parsed["resources"]["write_bytes"]</code> and labels it <code>"Write Bytes"</code> in output.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#resource-fee">Fees, Resource Limits, and Metering — Resource fee</a></p>
+<hr>
+<h2 id="memory-bytes"><a class="header" href="#memory-bytes">Memory Bytes</a></h2>
+<ul>
+<li><strong>Tool display name</strong>: <code>memory bytes</code> (used by <code>#[budget_mem_lt(N)]</code>)</li>
+<li><strong>SDK field</strong>: <code>env.cost_estimate().budget().memory_bytes_cost()</code></li>
+<li><strong>What it is</strong>: The host’s accounting of memory allocated during execution. Memory bytes are metered alongside CPU instructions during host and guest execution — but, unlike CPU instructions, memory usage is <em>not</em> included in fee computation. It is subject to a per-transaction cap (a resource limit) and exceeding it terminates the transaction.</li>
+<li><strong>Measurement status</strong>: <strong>does not measure</strong> — <code>cargo budget-report</code> does not report memory bytes. The <code>#[budget_mem_lt(N)]</code> macro asserts the <em>local</em> estimate during <code>cargo test</code>.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#metering">Fees, Resource Limits, and Metering — Metering</a> (“memory usage is not included in the fee computation, it is nevertheless subject to the resource limits”)</p>
+<hr>
+<h2 id="resource-budget"><a class="header" href="#resource-budget">Resource budget</a></h2>
+<ul>
+<li><strong>Tool display name</strong>: <code>budget</code> (in <code>env.cost_estimate().budget()</code>)</li>
+<li><strong>What it is</strong>: A caps object carried by every <code>Env</code> that limits CPU instructions and memory bytes. The default test budget (<code>Env::default()</code>) has a low cap that can truncate measurement; <code>reset_unlimited()</code> removes it so the contract runs to completion and measurement captures the full cost.</li>
+<li><strong>Measurement status</strong>: <strong>does not measure</strong> — it controls measurement. The macros read the <em>budget’s consumed cost</em> after the test, and the user must call <code>reset_unlimited()</code> before invoking the contract so the budget doesn’t cap the execution before all costs are incurred.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#metering-process">Fees, Resource Limits, and Metering — Metering process</a></p>
+<hr>
+<h2 id="resource-limits"><a class="header" href="#resource-limits">Resource limits</a></h2>
+<ul>
+<li><strong>Stellar documentation term</strong>: “resource limitations” / “per-transaction limit”</li>
+<li><strong>What it is</strong>: Network-wide caps on each resource type (CPU instructions, ledger entry reads/writes, read bytes, write bytes, transaction size, events &amp; return-value size, and RAM/memory) that a single transaction may consume, regardless of fee. Limits are set by validator consensus and published on the <a href="https://lab.stellar.org/network-limits">Stellar Lab Network Limits page</a>. If a transaction’s declared resources exceed a limit, the transaction is rejected before execution.</li>
+<li><strong>Measurement status</strong>: <strong>does not measure</strong> — <code>cargo budget-report</code> reports the resources the transaction <em>used</em> (as determined by simulation), not the network-wide limits themselves. The numbers in the report are naturally bounded by these limits.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#resource-limitations">Fees, Resource Limits, and Metering — Resource limitations</a></p>
+<hr>
+<h2 id="footprint"><a class="header" href="#footprint">Footprint</a></h2>
+<ul>
+<li><strong>Tool reference</strong>: used in <code>SorobanTransactionData</code> XDR (read-only set / read-write set), not surfaced in tool output</li>
+<li><strong>Stellar documentation term</strong>: “ledger footprint” / “storage footprint”</li>
+<li><strong>What it is</strong>: The set of ledger keys a transaction declares it will read or write. The footprint is split into a read-only set (<code>readOnly</code>) and a read-write set (<code>readWrite</code>). The declared footprint bounds what the contract may access; accessing a key outside it causes the transaction to fail. The footprint also determines ledger I/O charges — bytes read from keys in the read-only set and bytes written to keys in the read-write set.</li>
+<li><strong>Measurement status</strong>: <strong>does not directly measure</strong> — the tool relies on <code>simulateTransaction</code> to compute the footprint and includes the resulting bytes in <code>Read Bytes</code> / <code>Write Bytes</code> fields.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/contract-development/storage/state-archival#terms-and-semantics">State Archival — Terms and Semantics</a>; <a href="https://developers.stellar.org/docs/learn/fundamentals/contract-development/contract-interactions/stellar-transaction#transaction-resources">Transaction Resources</a></p>
+<hr>
+<h2 id="ttl-time-to-live"><a class="header" href="#ttl-time-to-live">TTL (Time To Live)</a></h2>
+<ul>
+<li><strong>Stellar documentation term</strong>: “TTL” / “Time To Live”</li>
+<li><strong>What it is</strong>: The number of ledgers until a contract data entry (persistent, temporary, or instance) or contract code entry is no longer live. When <code>current_ledger &gt; liveUntilLedger</code>, the entry becomes archived (persistent/instance) or permanently deleted (temporary). TTL must be periodically extended (paying rent) to keep entries accessible. TTL extensions incur expenditure that contributes to the refundable portion of the resource fee.</li>
+<li><strong>Measurement status</strong>: <strong>does not measure</strong> — the tool does not report TTL values. Rent and TTL extensions are accounted in the transaction’s resource fee, but <code>cargo budget-report</code> reports the direct resource consumption (CPU instructions, read bytes, write bytes), not the derived fee or TTL of any entry.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/contract-development/storage/state-archival#ttl">State Archival — Terms and Semantics</a></p>
+<hr>
+<h2 id="rent"><a class="header" href="#rent">Rent</a></h2>
+<ul>
+<li><strong>Stellar documentation term</strong>: “ledger space rent” / “rent payment”</li>
+<li><strong>What it is</strong>: The fee charged for extending the TTL of ledger entries (i.e., keeping contract data alive). Rent also covers payments for increasing ledger entry size. Rent fees are <em>refundable</em>: the estimated amount is debited from the source account before execution and the difference between estimated and actual rent is refunded afterward.</li>
+<li><strong>Measurement status</strong>: <strong>does not measure</strong> — rent is a fee type derived from storage usage, not a raw resource count. The tool reports the raw resources (<code>CPU Instructions</code>, <code>Read Bytes</code>, <code>Write Bytes</code>) that feed into fee calculation, not the fee itself.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#resource-fee">Fees, Resource Limits, and Metering — Resource fee</a>; <a href="https://developers.stellar.org/docs/learn/fundamentals/contract-development/storage/state-archival">State Archival</a></p>
+<hr>
+<h2 id="refundable-and-non-refundable-fees"><a class="header" href="#refundable-and-non-refundable-fees">Refundable and non-refundable fees</a></h2>
+<ul>
+<li><strong>Stellar documentation term</strong>: “refundable fees” / “non-refundable fees”</li>
+<li><strong>What it is</strong>: The total resource fee is split into two portions:
+<ul>
+<li><strong>Non-refundable fees</strong> — charged from CPU instructions, read bytes, write bytes, and transaction bandwidth. These are deducted once and not returned, because the resources were consumed irreversibly.</li>
+<li><strong>Refundable fees</strong> — charged from rent, events, and return value size. These are debited upfront (the declared maximum), then the actual usage is measured, and the unused portion is refunded. The transaction <em>fails</em> if the declared refundable fee was insufficient to cover actual usage.</li>
+</ul>
+</li>
+<li><strong>Measurement status</strong>: <strong>does not directly measure</strong> — <code>cargo budget-report</code> reports the resource counts that drive the non-refundable portion (CPU instructions, read bytes, write bytes), not the fees themselves. The CLI does output a summary line: <em>“The metrics above represent the total unrefundable network execution costs required to run your contract functions.”</em></li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#refundable-and-non-refundable-resource-fees">Fees, Resource Limits, and Metering — Refundable and non-refundable resource fees</a></p>
+<hr>
+<h2 id="ledger-state"><a class="header" href="#ledger-state">Ledger state</a></h2>
+<ul>
+<li><strong>Context</strong>: used in notes about simulation variance</li>
+<li><strong>What it is</strong>: The on-chain state at the moment of simulation — which ledger entries exist, their current TTLs, and the global ledger-size-driven write fee multiplier. Because simulations run against the current live ledger (whose data changes block-by-block), simulated costs vary slightly between runs. This is why <code>cargo budget-report</code> warns: <em>“These are simulated numbers on testnet and may vary slightly depending on ledger state.”</em></li>
+<li><strong>Measurement status</strong>: <strong>not measured</strong> — ledger state is the <em>environment</em> the measurement runs in, not a metric the tool extracts.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#dynamic-pricing-for-storage">Fees, Resource Limits, and Metering — Dynamic pricing for storage</a></p>
+<hr>
+<h2 id="non-refundable-resource-costs"><a class="header" href="#non-refundable-resource-costs">Non-refundable resource costs</a></h2>
+<ul>
+<li><strong>Context</strong>: used in the <code>mechanics.md</code> and report summary</li>
+<li><strong>What it is</strong>: A shorthand for the set of raw resource consumption values — CPU instructions, read bytes, and write bytes — that drive the non-refundable portion of the resource fee. The tool reports these three numeric metrics per function, and the summary line refers to them collectively as “total unrefundable network execution costs.”</li>
+<li><strong>Measurement status</strong>: <strong>measures</strong> — these are the three metrics every <code>cargo budget-report</code> row contains.</li>
+</ul>
+<p><strong>Stellar docs</strong>: <a href="https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#refundable-and-non-refundable-resource-fees">Fees, Resource Limits, and Metering — Refundable and non-refundable resource fees</a></p>
+<hr>
+<h2 id="derivation-summary"><a class="header" href="#derivation-summary">Derivation summary</a></h2>
+<p>The three metrics the tool <strong>measures</strong> — all extracted from <code>SorobanTransactionData</code> XDR:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric (tool name)</th><th>XDR field</th><th>Fee category</th><th>Stellar term</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>CPU Instructions</strong></td><td><code>resources.instructions</code></td><td>Non-refundable</td><td>CPU instructions</td></tr>
+<tr><td><strong>Read Bytes</strong></td><td><code>resources.disk_read_bytes</code></td><td>Non-refundable</td><td>Bytes read from the ledger</td></tr>
+<tr><td><strong>Write Bytes</strong></td><td><code>resources.write_bytes</code></td><td>Non-refundable</td><td>Bytes written to the ledger</td></tr>
+</tbody>
+</table>
+</div>
+<p>Memory bytes (<code>#[budget_mem_lt(N)]</code>) are metered by the host but reported only by the local macro, not by the CLI.</p>
+<p>All terms not in the table above — resource limits, footprint, TTL, rent, refundable fees, and ledger state — are <strong>not measured</strong> by this tool. They are either part of Stellar’s fee derivation (rent, events structures) or environmental constraints the measurement runs within (limits, ledger state, TTL expiry behavior).</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="end-user-guide"><a class="header" href="#end-user-guide">End-User Guide</a></h1>
 <p>This guide is for Soroban developers who want budget assertions in an existing contract workspace. The workflow: measure real costs once (Tier B), then pin them into tests that run on every CI push (Tier A).</p>
@@ -470,7 +600,7 @@ cargo test
 </div>
 <h2 id="existing-measurements"><a class="header" href="#existing-measurements">Existing measurements</a></h2>
 <p>These figures were produced during the initial tool development and are published in the <a href="../../docs/src/mechanics.html">Protocol Mechanics documentation</a>. They serve as the worked example for contributors adding new measurements.</p>
-<h3 id="cpu-instructions"><a class="header" href="#cpu-instructions">CPU instructions</a></h3>
+<h3 id="cpu-instructions-1"><a class="header" href="#cpu-instructions-1">CPU instructions</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
