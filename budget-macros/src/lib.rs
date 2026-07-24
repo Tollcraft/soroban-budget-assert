@@ -2,9 +2,7 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{
-    parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token,
-};
+use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token};
 
 enum BudgetLimit {
     Int(u64),
@@ -34,7 +32,11 @@ impl Parse for BudgetLimit {
     }
 }
 
-fn generate_budget_assert(attr: TokenStream, item: TokenStream, metric: BudgetMetric) -> TokenStream {
+fn generate_budget_assert(
+    attr: TokenStream,
+    item: TokenStream,
+    metric: BudgetMetric,
+) -> TokenStream {
     let attr_tokens: proc_macro2::TokenStream = attr.into();
     let item_tokens: proc_macro2::TokenStream = item.into();
 
@@ -54,17 +56,15 @@ fn generate_budget_assert(attr: TokenStream, item: TokenStream, metric: BudgetMe
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
 
-    let (cost_ident, cost_expr, metric_label, assert_msg) = match metric {
+    let (cost_ident, cost_expr, assert_msg) = match metric {
         BudgetMetric::CpuInstructionCost => (
             proc_macro2::Ident::new("cpu_cost", proc_macro2::Span::call_site()),
             quote! { budget.cpu_instruction_cost() },
-            "CPU instruction cost",
             "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
         ),
         BudgetMetric::MemoryBytesCost => (
             proc_macro2::Ident::new("mem_cost", proc_macro2::Span::call_site()),
             quote! { budget.memory_bytes_cost() },
-            "Memory bytes cost",
             "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
         ),
     };

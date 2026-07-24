@@ -134,7 +134,7 @@ fn main() -> Result<()> {
         let is_cdylib = package
             .targets
             .iter()
-            .any(|t| t.crate_types.iter().any(|c| c.to_string() == "cdylib"));
+            .any(|t| t.crate_types.iter().any(|c| *c == "cdylib"));
         if !is_cdylib {
             continue;
         }
