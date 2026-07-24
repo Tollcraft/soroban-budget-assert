@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-70a660d0.js";
+            window.path_to_searchindex_js = "searchindex-088fee11.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-7cb80aef.js"></script>
@@ -236,7 +236,7 @@ assert!(cpu_cost &lt; N, "CPU instruction cost {} exceeded limit {} - ...", cpu_
 <ul>
 <li><code>N</code> is an integer literal (e.g., <code>850000</code>).</li>
 <li>On failure the test panics with:
-<code>CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost</code></li>
+<code>CPU instruction cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction</code></li>
 </ul>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
