@@ -110,7 +110,7 @@ struct CostReport {
 struct TableCostReport {
     package: String,
     function: String,
-    metric: Metric,
+    metric: &'static str,
     value: String,
 }
 
@@ -186,7 +186,11 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     }
     let formatted = result.chars().rev().collect::<String>();
 
-    format!("{} {}", formatted, metric.unit())
+    if metric.contains("Bytes") {
+        format!("{} B", formatted)
+    } else {
+        format!("{} inst.", formatted)
+    }
 }
 
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
