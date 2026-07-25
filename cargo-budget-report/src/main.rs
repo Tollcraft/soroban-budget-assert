@@ -228,7 +228,7 @@ fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
 ///   the caller should mark the check as failed.
 fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
     match limit {
-        Some(n) => (Some(n), Some(u64::from(value) <= n)),
+        Some(limit_value) => (Some(limit_value), Some(u64::from(value) <= limit_value)),
         None => (None, None),
     }
 }
@@ -275,16 +275,16 @@ fn emit_check_failure_entries(
 /// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
 ///   `B`, otherwise `inst.`.
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
-    let s = value.to_string();
+    let value_str = value.to_string();
     let mut result = String::new();
-    let mut count = 0;
-    for c in s.chars().rev() {
-        if count == 3 {
+    let mut digit_count = 0;
+    for ch in value_str.chars().rev() {
+        if digit_count == 3 {
             result.push(',');
-            count = 0;
+            digit_count = 0;
         }
-        result.push(c);
-        count += 1;
+        result.push(ch);
+        digit_count += 1;
     }
     let formatted = result.chars().rev().collect::<String>();
 
@@ -704,7 +704,7 @@ fn main() -> Result<()> {
         let is_cdylib = package
             .targets
             .iter()
-            .any(|t| t.crate_types.iter().any(|c| *c == "cdylib"));
+            .any(|target| target.crate_types.iter().any(|ct| *ct == "cdylib"));
         if !is_cdylib {
             continue;
         }
@@ -745,11 +745,11 @@ fn main() -> Result<()> {
         let mut exported_fns = Vec::new();
 
         for payload in WasmParser::new(0).parse_all(&wasm_bytes) {
-            if let wasmparser::Payload::ExportSection(s) = payload? {
-                for export in s {
-                    let export = export?;
-                    if export.kind == wasmparser::ExternalKind::Func {
-                        let name = export.name.to_string();
+            if let wasmparser::Payload::ExportSection(export_section) = payload? {
+                for export_item in export_section {
+                    let export_item = export_item?;
+                    if export_item.kind == wasmparser::ExternalKind::Func {
+                        let name = export_item.name.to_string();
                         // Ignore internal and common exports
                         if !name.starts_with('_') && name != "memory" {
                             exported_fns.push(name);
@@ -785,7 +785,7 @@ fn main() -> Result<()> {
             eprintln!("Simulating function '{}'...", function);
 
             let func_config = toml_config.functions.get(&function);
-            let func_args = func_config.map(|c| c.args.clone()).unwrap_or_default();
+            let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
 
             match simulate_function(&contract_id, &source, &network, &function, &func_args)? {
                 SimulationOutcome::Metrics {
@@ -802,7 +802,7 @@ fn main() -> Result<()> {
                         ("Write Bytes", write_bytes),
                         ("WASM Bytes", wasm_size),
                     ] {
-                        let limit = func_config.and_then(|c| limit_for_metric(c, metric));
+                        let limit = func_config.and_then(|cfg| limit_for_metric(cfg, metric));
                         let (entry_limit, pass) = evaluate_check(value, limit);
                         if pass == Some(false) {
                             checks_failed = true;
@@ -833,13 +833,18 @@ fn main() -> Result<()> {
                             );
                         }
                     }
-                    if let (true, Some(fc)) = (args.check, func_config) {
+                    if let (true, Some(function_config)) = (args.check, func_config) {
                         // A configured function that won't simulate cannot
                         // satisfy any of its declared limits; record this as
                         // a check failure even if no `*_limit` is set on
                         // this row of budget.toml.
                         checks_failed = true;
-                        emit_check_failure_entries(&mut reports, &package.name, &function, fc);
+                        emit_check_failure_entries(
+                            &mut reports,
+                            &package.name,
+                            &function,
+                            function_config,
+                        );
                     }
                 }
             }
@@ -855,41 +860,45 @@ fn main() -> Result<()> {
     }
 
     if args.csv {
-        let mut wtr = csv::Writer::from_writer(std::io::stdout());
+        let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
         if args.check {
-            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+            csv_writer
+                .write_record(["package", "function", "metric", "value", "limit", "pass"])
                 .context("Failed to write CSV header")?;
-            for r in &reports {
-                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
-                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
-                wtr.write_record([
-                    r.package.as_str(),
-                    r.function.as_str(),
-                    r.metric,
-                    value_str.as_str(),
-                    limit_str.as_str(),
-                    pass_str.as_str(),
-                ])
-                .context("Failed to write CSV record")?;
-            }
-        } else {
-            wtr.write_record(["package", "function", "metric", "value"])
-                .context("Failed to write CSV header")?;
-            for r in &reports {
-                if r.value.is_some() {
-                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                    wtr.write_record([
-                        r.package.as_str(),
-                        r.function.as_str(),
-                        r.metric,
+            for report in &reports {
+                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
+                let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
+                let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
+                csv_writer
+                    .write_record([
+                        report.package.as_str(),
+                        report.function.as_str(),
+                        report.metric,
                         value_str.as_str(),
+                        limit_str.as_str(),
+                        pass_str.as_str(),
                     ])
                     .context("Failed to write CSV record")?;
+            }
+        } else {
+            csv_writer
+                .write_record(["package", "function", "metric", "value"])
+                .context("Failed to write CSV header")?;
+            for report in &reports {
+                if report.value.is_some() {
+                    let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
+                    csv_writer
+                        .write_record([
+                            report.package.as_str(),
+                            report.function.as_str(),
+                            report.metric,
+                            value_str.as_str(),
+                        ])
+                        .context("Failed to write CSV record")?;
                 }
             }
         }
-        wtr.flush().context("Failed to flush CSV writer")?;
+        csv_writer.flush().context("Failed to flush CSV writer")?;
     } else if args.json {
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
@@ -901,14 +910,14 @@ fn main() -> Result<()> {
         println!("\n=== WORKSPACE BUDGET REPORT ===");
         let table_reports: Vec<TableCostReport> = reports
             .iter()
-            .filter(|r| r.value.is_some())
-            .map(|r| {
-                let value = r.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), r.metric);
+            .filter(|report| report.value.is_some())
+            .map(|report| {
+                let value = report.value.unwrap_or(0);
+                let formatted = format_with_commas_and_units(u64::from(value), report.metric);
                 TableCostReport {
-                    package: r.package.clone(),
-                    function: r.function.clone(),
-                    metric: r.metric,
+                    package: report.package.clone(),
+                    function: report.function.clone(),
+                    metric: report.metric,
                     value: formatted,
                 }
             })
@@ -924,28 +933,28 @@ fn main() -> Result<()> {
             println!("\n=== BUDGET CHECKS ===");
             let mut passed: usize = 0;
             let mut failed: usize = 0;
-            for r in &reports {
-                let Some(pass) = r.pass else {
+            for report in &reports {
+                let Some(pass) = report.pass else {
                     continue;
                 };
                 let status = if pass { "PASS" } else { "FAIL" };
-                let value_str = match r.value {
-                    Some(v) => format_with_commas_and_units(u64::from(v), r.metric),
+                let value_str = match report.value {
+                    Some(v) => format_with_commas_and_units(u64::from(v), report.metric),
                     None => "<simulation failed>".to_string(),
                 };
-                let limit_str = r
+                let limit_str = report
                     .limit
-                    .map(|n| {
+                    .map(|limit_val| {
                         // Limits wider than u32::MAX are not representable in
                         // the table's units, but anything close to the
                         // practical ceiling formats fine.
-                        let v = u32::try_from(n).unwrap_or(u32::MAX);
-                        format_with_commas_and_units(u64::from(v), r.metric)
+                        let display_value = u32::try_from(limit_val).unwrap_or(u32::MAX);
+                        format_with_commas_and_units(u64::from(display_value), report.metric)
                     })
                     .unwrap_or_else(|| "-".to_string());
                 println!(
                     "{}::{} [{}] value={} limit={} {}",
-                    r.package, r.function, r.metric, value_str, limit_str, status
+                    report.package, report.function, report.metric, value_str, limit_str, status
                 );
                 if pass {
                     passed += 1;
@@ -1396,42 +1405,46 @@ mod tests {
     /// Helper to serialize a slice of CostReport to CSV bytes and return the
     /// result as a String, using the same logic as the `--csv` output path.
     fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut wtr = csv::Writer::from_writer(vec![]);
+        let mut csv_writer = csv::Writer::from_writer(vec![]);
         if check {
-            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+            csv_writer
+                .write_record(["package", "function", "metric", "value", "limit", "pass"])
                 .unwrap();
-            for r in reports {
-                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
-                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
-                wtr.write_record([
-                    r.package.as_str(),
-                    r.function.as_str(),
-                    r.metric,
-                    value_str.as_str(),
-                    limit_str.as_str(),
-                    pass_str.as_str(),
-                ])
-                .unwrap();
-            }
-        } else {
-            wtr.write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for r in reports {
-                if r.value.is_some() {
-                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                    wtr.write_record([
-                        r.package.as_str(),
-                        r.function.as_str(),
-                        r.metric,
+            for report in reports {
+                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
+                let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
+                let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
+                csv_writer
+                    .write_record([
+                        report.package.as_str(),
+                        report.function.as_str(),
+                        report.metric,
                         value_str.as_str(),
+                        limit_str.as_str(),
+                        pass_str.as_str(),
                     ])
                     .unwrap();
+            }
+        } else {
+            csv_writer
+                .write_record(["package", "function", "metric", "value"])
+                .unwrap();
+            for report in reports {
+                if report.value.is_some() {
+                    let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
+                    csv_writer
+                        .write_record([
+                            report.package.as_str(),
+                            report.function.as_str(),
+                            report.metric,
+                            value_str.as_str(),
+                        ])
+                        .unwrap();
                 }
             }
         }
-        wtr.flush().unwrap();
-        String::from_utf8(wtr.into_inner().unwrap()).unwrap()
+        csv_writer.flush().unwrap();
+        String::from_utf8(csv_writer.into_inner().unwrap()).unwrap()
     }
 
     #[test]
