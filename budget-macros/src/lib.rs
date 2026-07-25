@@ -4,18 +4,77 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token};
 
+/// The resolved budget limit supplied by the user to a `budget_cpu_lt` or
+/// `budget_mem_lt` attribute macro.
+///
+/// There are three forms, each of which is parsed from the attribute's token
+/// stream by the [`Parse`] implementation:
+///
+/// | Form           | Syntax                         | Resolution                              |
+/// |----------------|--------------------------------|-----------------------------------------|
+/// | **Static**     | `#[budget_cpu_lt(500_000)]`    | Hard-coded `u64` literal at compile time|
+/// | **Env variable**| `#[budget_cpu_lt(env = "VAR")]`| Read `std::env::var("VAR")` at runtime  |
+/// | **JSON config**| `#[budget_cpu_lt(config = "key")]` | Parse `budget.json` at runtime      |
+///
+/// # Semantics
+///
+/// * `Int(n)` — the simplest form. The assertion checks that the measured cost
+///   is strictly less than `n`.
+/// * `EnvVar(name)` — looks up the environment variable `name` at test runtime.
+///   If the variable is unset, the limit silently defaults to `u64::MAX`
+///   (effectively "no limit") so CI can run without setting every variable.
+///   If the variable is set but does not parse as a `u64`, the test panics with
+///   an explicit message that includes the variable name and invalid value.
+/// * `Config(key)` — reads a local `budget.json` file that must contain a
+///   top-level `"key": <u64_value>` entry. If the file does not exist, the
+///   limit defaults to `u64::MAX` ("no limit"). If the file exists but the key
+///   is missing or the value is not a valid `u64`, the test panics.
 enum BudgetLimit {
+    /// A literal integer limit provided directly in the attribute.
     Int(u64),
+    /// An environment variable name whose runtime value will be used as the limit.
+    ///
+    /// TODO: Add support for parsing a default value if the env var is missing,
+    /// e.g. `env = "VAR" default = 500_000`.
     EnvVar(String),
+    /// A JSON key in `budget.json` whose value will be used as the limit.
     Config(String),
-    // TODO: Add support for parsing a default value if the env var is missing
 }
 
+/// The cost metric that a budget macro asserts against.
+///
+/// Determines which Soroban budget measurement is read and what assertion
+/// message is produced on failure.
+///
+/// | Variant               | Macro             | Measurement                                |
+/// |-----------------------|-------------------|--------------------------------------------|
+/// | `CpuInstructionCost`  | `budget_cpu_lt`   | `env.cost_estimate().budget().cpu_instruction_cost()` |
+/// | `MemoryBytesCost`     | `budget_mem_lt`   | `env.cost_estimate().budget().memory_bytes_cost()`    |
 enum BudgetMetric {
+    /// CPU instruction count consumed by the test function's `env`.
     CpuInstructionCost,
+    /// Memory bytes consumed by the test function's `env`.
     MemoryBytesCost,
 }
 
+/// Parses a budget limit from the attribute macro's token stream.
+///
+/// Recognises three forms in order:
+///
+/// 1. **Ident = string** — `env = "VAR_NAME"` or `config = "key"`.
+///    The identifier must be exactly `env` or `config`; any other identifier
+///    produces a compile error with a descriptive span.
+/// 2. **Integer literal** — a bare `u64` literal such as `500_000`.
+///
+/// # Errors
+///
+/// Returns a `syn::Error` with a helpful span if the input does not match
+/// either form, including when an unrecognised identifier is used.
+///
+/// # Note
+///
+/// Support for a default value when an env var is missing is not yet
+/// implemented (see the `TODO` on the [`EnvVar`](BudgetLimit::EnvVar) variant).
 impl Parse for BudgetLimit {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         if input.peek(Ident) {
@@ -37,6 +96,40 @@ impl Parse for BudgetLimit {
     }
 }
 
+/// Generates the final token stream for a budget assertion attribute macro.
+///
+/// This is the shared code-generation path behind both [`budget_cpu_lt`] and
+/// [`budget_mem_lt`]. It performs the following steps:
+///
+/// 1. **Parse the attribute** — attempts to parse the token stream as a
+///    [`BudgetLimit`]. On failure, emits a compile error at the call site.
+/// 2. **Parse the item** — attempts to parse the annotated item as a function
+///    ([`syn::ItemFn`]). On failure, emits a compile error.
+/// 3. **Generate limit-resolution code** — depending on the variant of
+///    [`BudgetLimit`] (`Int`, `EnvVar`, or `Config`), emits the appropriate
+///    runtime expression that produces a `u64` limit. The `Config` branch
+///    includes a `#[allow(unused_parens)]` suppression because the generated
+///    `match` arm wraps the resolution logic in an expression block that
+///    needs to return a `u64` through a parenthesised path.
+/// 4. **Generate the cost-measurement code** — embeds a call to
+///    `env.cost_estimate().budget().cpu_instruction_cost()` (for CPU) or
+///    `.memory_bytes_cost()` (for memory) and an `assert!` that the measured
+///    value is strictly less than the limit.
+/// 5. **Replace the function body** — wraps the original statements in a new
+///    block that includes the limit-resolution helpers, the original
+///    statements, the cost measurement, and the assertion check.
+///
+/// # Parameters
+///
+/// * `attr` — the token stream of the attribute arguments (e.g. `500_000` or
+///   `env = "VAR"`).
+/// * `item` — the token stream of the annotated function.
+/// * `metric` — which Soroban budget metric to assert against.
+///
+/// # Returns
+///
+/// A [`proc_macro::TokenStream`] containing the modified function with the
+/// budget assertion appended.
 fn generate_budget_assert(
     attr: TokenStream,
     item: TokenStream,
