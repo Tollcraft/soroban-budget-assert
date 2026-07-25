@@ -78,6 +78,10 @@ struct BudgetReportArgs {
     /// declared in `budget.toml` are reported only.
     #[arg(long, default_value_t = false)]
     check: bool,
+
+    /// Emit the report as CSV instead of a table or JSON.
+    #[arg(long, default_value_t = false)]
+    csv: bool,
 }
 
 #[derive(serde::Deserialize, Default, Debug)]
@@ -235,6 +239,10 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
 }
 
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
+    if let Some(error) = rpc_response.get("error") {
+        anyhow::bail!("{}", error);
+    }
+
     let tx_data_b64 = rpc_response["result"]["transactionData"]
         .as_str()
         .context("No transactionData found in simulateTransaction response.")?;
@@ -407,6 +415,7 @@ fn main() -> Result<()> {
 
         // Parse WASM exports
         let wasm_bytes = std::fs::read(&wasm_path).context("failed to read wasm file")?;
+        let wasm_size: u32 = wasm_bytes.len().try_into().unwrap_or(u32::MAX);
         let mut exported_fns = Vec::new();
 
         for payload in WasmParser::new(0).parse_all(&wasm_bytes) {
@@ -569,6 +578,7 @@ fn main() -> Result<()> {
                                 ("CPU Instructions", instructions),
                                 ("Read Bytes", read_bytes),
                                 ("Write Bytes", write_bytes),
+                                ("WASM Bytes", wasm_size),
                             ] {
                                 let limit = func_config.and_then(|c| limit_for_metric(c, metric));
                                 let (entry_limit, pass) = evaluate_check(value, limit);
@@ -618,7 +628,43 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if args.json {
+    if args.csv {
+        let mut wtr = csv::Writer::from_writer(std::io::stdout());
+        if args.check {
+            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+                .context("Failed to write CSV header")?;
+            for r in &reports {
+                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
+                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
+                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
+                wtr.write_record([
+                    r.package.as_str(),
+                    r.function.as_str(),
+                    r.metric,
+                    value_str.as_str(),
+                    limit_str.as_str(),
+                    pass_str.as_str(),
+                ])
+                .context("Failed to write CSV record")?;
+            }
+        } else {
+            wtr.write_record(["package", "function", "metric", "value"])
+                .context("Failed to write CSV header")?;
+            for r in &reports {
+                if r.value.is_some() {
+                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
+                    wtr.write_record([
+                        r.package.as_str(),
+                        r.function.as_str(),
+                        r.metric,
+                        value_str.as_str(),
+                    ])
+                    .context("Failed to write CSV record")?;
+                }
+            }
+        }
+        wtr.flush().context("Failed to flush CSV writer")?;
+    } else if args.json {
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
@@ -777,6 +823,26 @@ mod tests {
         assert_eq!(instructions, FIXTURE_INSTRUCTIONS);
         assert_eq!(read_bytes, FIXTURE_READ_BYTES);
         assert_eq!(write_bytes, FIXTURE_WRITE_BYTES);
+    }
+
+    #[test]
+    fn extract_metrics_fails_on_rpc_error() {
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32600,
+                "message": "Invalid Request"
+            }
+        });
+        let result = extract_metrics(&rpc_json);
+        assert!(result.is_err());
+        let err = format!("{:#}", result.as_ref().unwrap_err());
+        assert!(
+            err.contains("Invalid Request"),
+            "error should mention the RPC error message, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1025,5 +1091,159 @@ mod tests {
             format_with_commas_and_units(500, "Some Other Metric"),
             "500 inst."
         );
+    }
+
+    // --- CSV serialization tests ---
+
+    /// Helper to serialize a slice of CostReport to CSV bytes and return the
+    /// result as a String, using the same logic as the `--csv` output path.
+    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
+        let mut wtr = csv::Writer::from_writer(vec![]);
+        if check {
+            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+                .unwrap();
+            for r in reports {
+                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
+                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
+                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
+                wtr.write_record([
+                    r.package.as_str(),
+                    r.function.as_str(),
+                    r.metric,
+                    value_str.as_str(),
+                    limit_str.as_str(),
+                    pass_str.as_str(),
+                ])
+                .unwrap();
+            }
+        } else {
+            wtr.write_record(["package", "function", "metric", "value"])
+                .unwrap();
+            for r in reports {
+                if r.value.is_some() {
+                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
+                    wtr.write_record([
+                        r.package.as_str(),
+                        r.function.as_str(),
+                        r.metric,
+                        value_str.as_str(),
+                    ])
+                    .unwrap();
+                }
+            }
+        }
+        wtr.flush().unwrap();
+        String::from_utf8(wtr.into_inner().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn csv_output_without_check_has_four_columns() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let csv = reports_to_csv(&reports, false);
+        let expected = concat!(
+            "package,function,metric,value\n",
+            "my-contract,do_work,CPU Instructions,1000000\n",
+            "my-contract,do_work,Read Bytes,2048\n",
+        );
+        assert_eq!(csv, expected);
+    }
+
+    #[test]
+    fn csv_output_with_check_has_six_columns() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: Some(5_000_000),
+                pass: Some(true),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: Some(1_000),
+                pass: Some(false),
+            },
+        ];
+        let csv = reports_to_csv(&reports, true);
+        let expected = concat!(
+            "package,function,metric,value,limit,pass\n",
+            "my-contract,do_work,CPU Instructions,1000000,5000000,true\n",
+            "my-contract,do_work,Write Bytes,4096,1000,false\n",
+        );
+        assert_eq!(csv, expected);
+    }
+
+    #[test]
+    fn csv_output_without_check_excludes_null_values() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: None,
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let csv = reports_to_csv(&reports, false);
+        let expected = concat!(
+            "package,function,metric,value\n",
+            "my-contract,do_work,Read Bytes,2048\n",
+        );
+        assert_eq!(csv, expected);
+    }
+
+    #[test]
+    fn csv_output_with_check_includes_simulation_failures() {
+        let reports = vec![CostReport {
+            package: "my-contract".to_string(),
+            function: "do_work".to_string(),
+            metric: "CPU Instructions",
+            value: None,
+            limit: Some(5_000_000),
+            pass: Some(false),
+        }];
+        let csv = reports_to_csv(&reports, true);
+        let expected = concat!(
+            "package,function,metric,value,limit,pass\n",
+            "my-contract,do_work,CPU Instructions,,5000000,false\n",
+        );
+        assert_eq!(csv, expected);
+    }
+
+    #[test]
+    fn csv_output_empty_reports_produces_header_only() {
+        let reports: Vec<CostReport> = vec![];
+        let csv = reports_to_csv(&reports, false);
+        assert_eq!(csv, "package,function,metric,value\n");
     }
 }
