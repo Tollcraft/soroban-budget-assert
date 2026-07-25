@@ -18,6 +18,11 @@ cpu_limit = 5000000
 read_limit = 5000
 write_limit = 1000
 
+# The `require_auth_only` function isolates the cost of a single `require_auth()`
+# host call, providing a minimal baseline for authorization overhead measurement.
+[functions.require_auth_only]
+args = ["--addr", "alice"]
+
 # The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
 # local test-harness measurement and exercise multiple storage keys, authorization,
 # events, and simulated token flows. They require pre-deployed token contracts and

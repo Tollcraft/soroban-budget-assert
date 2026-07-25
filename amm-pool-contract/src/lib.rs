@@ -144,6 +144,10 @@ impl ConstantProductPool {
         (amount_a, amount_b)
     }
 
+    pub fn require_auth_only(_env: Env, addr: Address) {
+        addr.require_auth();
+    }
+
     pub fn do_expensive_work(env: Env, n: u32) -> u32 {
         let mut result: u32 = 0;
 
