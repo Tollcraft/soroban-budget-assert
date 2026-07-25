@@ -619,4 +619,120 @@ mod tests {
             err_msg
         );
     }
+
+    // --- Cost value formatter tests ---
+
+    #[test]
+    fn formatter_zero_cpu() {
+        assert_eq!(
+            format_with_commas_and_units(0, "CPU Instructions"),
+            "0 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_zero_bytes() {
+        assert_eq!(format_with_commas_and_units(0, "Read Bytes"), "0 B");
+    }
+
+    #[test]
+    fn formatter_single_digit_cpu() {
+        assert_eq!(
+            format_with_commas_and_units(7, "CPU Instructions"),
+            "7 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_single_digit_bytes() {
+        assert_eq!(format_with_commas_and_units(3, "Write Bytes"), "3 B");
+    }
+
+    #[test]
+    fn formatter_just_below_thousand() {
+        assert_eq!(
+            format_with_commas_and_units(999, "CPU Instructions"),
+            "999 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_at_thousand() {
+        assert_eq!(
+            format_with_commas_and_units(1_000, "CPU Instructions"),
+            "1,000 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_just_above_thousand() {
+        assert_eq!(
+            format_with_commas_and_units(1_001, "CPU Instructions"),
+            "1,001 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_just_below_million() {
+        assert_eq!(
+            format_with_commas_and_units(999_999, "Read Bytes"),
+            "999,999 B"
+        );
+    }
+
+    #[test]
+    fn formatter_at_million() {
+        assert_eq!(
+            format_with_commas_and_units(1_000_000, "CPU Instructions"),
+            "1,000,000 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_just_above_million() {
+        assert_eq!(
+            format_with_commas_and_units(1_000_001, "Write Bytes"),
+            "1,000,001 B"
+        );
+    }
+
+    #[test]
+    fn formatter_ten_million() {
+        assert_eq!(
+            format_with_commas_and_units(10_000_000, "CPU Instructions"),
+            "10,000,000 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_u32_max_cpu() {
+        assert_eq!(
+            format_with_commas_and_units(u32::MAX, "CPU Instructions"),
+            "4,294,967,295 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_u32_max_bytes() {
+        assert_eq!(
+            format_with_commas_and_units(u32::MAX, "Read Bytes"),
+            "4,294,967,295 B"
+        );
+    }
+
+    #[test]
+    fn formatter_write_bytes_gets_byte_unit() {
+        assert_eq!(
+            format_with_commas_and_units(4_096, "Write Bytes"),
+            "4,096 B"
+        );
+    }
+
+    #[test]
+    fn formatter_non_bytes_metric_gets_inst_unit() {
+        assert_eq!(
+            format_with_commas_and_units(500, "Some Other Metric"),
+            "500 inst."
+        );
+    }
 }
