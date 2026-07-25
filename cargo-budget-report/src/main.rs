@@ -4,6 +4,7 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
@@ -45,6 +46,7 @@ write_limit = 1000
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo", bin_name = "cargo")]
+#[allow(clippy::single_variant_enum)]
 enum CargoCli {
     BudgetReport(BudgetReportArgs),
 }
@@ -526,7 +528,6 @@ fn main() -> Result<()> {
                     }
                 });
 
-                use std::io::Write;
                 let mut curl = Command::new("curl")
                     .args([
                         "-s",
