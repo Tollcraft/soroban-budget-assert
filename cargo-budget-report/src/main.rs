@@ -1,3 +1,5 @@
+pub mod module_13;
+
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
@@ -573,14 +575,12 @@ fn main() -> Result<()> {
 
     let toml_config = load_budget_toml("budget.toml")?;
 
-    let network = args
-        .network
-        .or(toml_config.network)
-        .context("missing --network or budget.toml network field")?;
-    let source = args
-        .source
-        .or(toml_config.source)
-        .context("missing --source or budget.toml source field")?;
+    // ── Resolve network and source with fallback defaults ─────────────
+    // If neither the CLI args nor budget.toml specify a network or
+    // source, fall back to safe defaults ("testnet" / "alice") rather
+    // than failing.  See `module_13` for the fallback logic.
+    let network = module_13::resolve_toml_network(args.network.or(toml_config.network));
+    let source = module_13::resolve_toml_source(args.source.or(toml_config.source));
 
     eprintln!("Discovering workspace members...");
     let metadata = MetadataCommand::new()
