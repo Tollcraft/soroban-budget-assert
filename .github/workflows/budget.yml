@@ -28,7 +28,7 @@ jobs:
           target: wasm32-unknown-unknown
 
       - name: Cache Rust dependencies and build artifacts
-        run: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
       
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
@@ -42,7 +42,9 @@ jobs:
       
       - name: Install Stellar CLI
         if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
-        run: cargo install --locked stellar-cli --version ${{ env.STELLAR_CLI_VERSION }}
+        run: |
+          curl -sL https://github.com/stellar/stellar-cli/releases/download/v${{ env.STELLAR_CLI_VERSION }}/stellar-cli-${{ env.STELLAR_CLI_VERSION }}-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          mv stellar ~/.cargo/bin/
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
@@ -83,6 +85,9 @@ jobs:
 
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        target: wasm32-unknown-unknown
+        components: rustfmt, clippy
 
     - name: Install System Dependencies
       run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
@@ -96,7 +101,9 @@ jobs:
     
     - name: Install Stellar CLI
       if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
-      run: cargo install --locked stellar-cli --version ${{ env.STELLAR_CLI_VERSION }}
+      run: |
+        curl -sL https://github.com/stellar/stellar-cli/releases/download/v${{ env.STELLAR_CLI_VERSION }}/stellar-cli-${{ env.STELLAR_CLI_VERSION }}-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+        mv stellar ~/.cargo/bin/
     
     - name: Build Contracts
       run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
