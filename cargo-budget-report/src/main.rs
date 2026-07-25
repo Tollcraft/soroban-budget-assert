@@ -66,6 +66,11 @@ struct BudgetReportArgs {
     #[arg(long)]
     source: Option<String>,
 
+    /// Explicit RPC endpoint URL for `simulateTransaction` calls.
+    /// Overrides the default RPC endpoint for the chosen network.
+    #[arg(long)]
+    rpc_url: Option<String>,
+
     #[arg(long, default_value_t = false)]
     json: bool,
 
@@ -89,6 +94,7 @@ struct BudgetReportArgs {
 struct BudgetToml {
     network: Option<String>,
     source: Option<String>,
+    rpc_url: Option<String>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
 }
@@ -321,7 +327,7 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 
 /// POSTs a `simulateTransaction` JSON-RPC request for `b64_xdr` and returns
 /// the parsed response body.
-fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
+fn simulate_transaction_rpc(b64_xdr: &str, rpc_url: &str) -> Result<serde_json::Value> {
     let rpc_payload = build_rpc_payload(b64_xdr);
 
     let mut curl = Command::new("curl")
@@ -333,7 +339,7 @@ fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
             "Content-Type: application/json",
             "-d",
             "@-",
-            "https://soroban-testnet.stellar.org:443",
+            rpc_url,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -370,6 +376,7 @@ fn simulate_function(
     network: &str,
     function: &str,
     func_args: &[String],
+    rpc_url: &str,
 ) -> Result<SimulationOutcome> {
     let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
     let invoke_output = Command::new("stellar")
@@ -385,7 +392,7 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
-    let rpc_resp = simulate_transaction_rpc(&b64_xdr)?;
+    let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
         return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
@@ -490,6 +497,39 @@ fn run_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+/// Resolves the Soroban RPC endpoint URL based on CLI arguments, TOML configuration,
+/// and well-known network mappings.
+///
+/// Precedence order:
+/// 1. Explicit CLI `--rpc-url`
+/// 2. Explicit `rpc_url` in `budget.toml`
+/// 3. Well-known network mapping (`testnet`, `futurenet`, `mainnet`/`public`, `local`/`standalone`)
+/// 4. Errors out if the network is unknown and no explicit `rpc_url` is provided.
+fn resolve_rpc_url(
+    cli_rpc_url: Option<&str>,
+    toml_rpc_url: Option<&str>,
+    network: &str,
+) -> Result<String> {
+    if let Some(url) = cli_rpc_url.filter(|s| !s.trim().is_empty()) {
+        return Ok(url.trim().to_string());
+    }
+
+    if let Some(url) = toml_rpc_url.filter(|s| !s.trim().is_empty()) {
+        return Ok(url.trim().to_string());
+    }
+
+    match network.trim().to_lowercase().as_str() {
+        "testnet" => Ok("https://soroban-testnet.stellar.org:443".to_string()),
+        "futurenet" => Ok("https://rpc-futurenet.stellar.org:443".to_string()),
+        "mainnet" | "public" => Ok("https://soroban-rpc.stellar.org:443".to_string()),
+        "local" | "standalone" => Ok("http://localhost:8000/soroban/rpc".to_string()),
+        _ => anyhow::bail!(
+            "Unknown network '{}' and no --rpc-url or budget.toml rpc_url provided. Please specify a well-known network (testnet, futurenet, mainnet, local) or provide an explicit RPC endpoint URL.",
+            network
+        ),
+    }
+}
+
 fn main() -> Result<()> {
     let CargoCli::BudgetReport(args) = CargoCli::parse();
 
@@ -511,6 +551,12 @@ fn main() -> Result<()> {
         .source
         .or(toml_config.source)
         .context("missing --source or budget.toml source field")?;
+
+    let rpc_url = resolve_rpc_url(
+        args.rpc_url.as_deref(),
+        toml_config.rpc_url.as_deref(),
+        &network,
+    )?;
 
     eprintln!("Discovering workspace members...");
     let metadata = MetadataCommand::new()
@@ -631,7 +677,7 @@ fn main() -> Result<()> {
             let func_config = toml_config.functions.get(&function);
             let func_args = func_config.map(|c| c.args.clone()).unwrap_or_default();
 
-            match simulate_function(&contract_id, &source, &network, &function, &func_args)? {
+            match simulate_function(&contract_id, &source, &network, &function, &func_args, &rpc_url)? {
                 SimulationOutcome::Metrics {
                     instructions,
                     read_bytes,
@@ -761,7 +807,7 @@ fn main() -> Result<()> {
         println!("{}", table);
         println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
         println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
-        println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
+        println!("* Note: These are simulated numbers on {} and may vary slightly depending on ledger state.", network);
         println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
 
         if args.check {
@@ -1376,5 +1422,93 @@ mod tests {
         let reports: Vec<CostReport> = vec![];
         let csv = reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
+    }
+
+    // --- resolve_rpc_url tests ---
+
+    #[test]
+    fn resolve_rpc_url_cli_takes_precedence_over_all() {
+        let res = resolve_rpc_url(
+            Some("https://custom-cli-rpc.example.com"),
+            Some("https://custom-toml-rpc.example.com"),
+            "testnet",
+        )
+        .expect("resolution should succeed");
+        assert_eq!(res, "https://custom-cli-rpc.example.com");
+    }
+
+    #[test]
+    fn resolve_rpc_url_toml_takes_precedence_over_network_mapping() {
+        let res = resolve_rpc_url(
+            None,
+            Some("https://custom-toml-rpc.example.com"),
+            "testnet",
+        )
+        .expect("resolution should succeed");
+        assert_eq!(res, "https://custom-toml-rpc.example.com");
+    }
+
+    #[test]
+    fn resolve_rpc_url_well_known_networks() {
+        assert_eq!(
+            resolve_rpc_url(None, None, "testnet").unwrap(),
+            "https://soroban-testnet.stellar.org:443"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "TESTNET").unwrap(),
+            "https://soroban-testnet.stellar.org:443"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "futurenet").unwrap(),
+            "https://rpc-futurenet.stellar.org:443"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "FUTURENET").unwrap(),
+            "https://rpc-futurenet.stellar.org:443"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "mainnet").unwrap(),
+            "https://soroban-rpc.stellar.org:443"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "public").unwrap(),
+            "https://soroban-rpc.stellar.org:443"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "local").unwrap(),
+            "http://localhost:8000/soroban/rpc"
+        );
+        assert_eq!(
+            resolve_rpc_url(None, None, "standalone").unwrap(),
+            "http://localhost:8000/soroban/rpc"
+        );
+    }
+
+    #[test]
+    fn resolve_rpc_url_unknown_network_without_explicit_url_fails() {
+        let res = resolve_rpc_url(None, None, "custom_unknown_net");
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Unknown network 'custom_unknown_net'"));
+        assert!(err_msg.contains("--rpc-url or budget.toml rpc_url"));
+    }
+
+    #[test]
+    fn resolve_rpc_url_unknown_network_with_explicit_url_succeeds() {
+        let res = resolve_rpc_url(
+            Some("https://custom-net.example.com"),
+            None,
+            "custom_unknown_net",
+        )
+        .expect("explicit CLI rpc_url should allow unknown network");
+        assert_eq!(res, "https://custom-net.example.com");
+
+        let res_toml = resolve_rpc_url(
+            None,
+            Some("https://custom-net-toml.example.com"),
+            "custom_unknown_net",
+        )
+        .expect("explicit TOML rpc_url should allow unknown network");
+        assert_eq!(res_toml, "https://custom-net-toml.example.com");
     }
 }
