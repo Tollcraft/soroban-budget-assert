@@ -17,7 +17,7 @@ Based on open source repository standards, this document serves as a guide to br
 - [x] **Dedicated Docs Site**: Scaffolded under `docs/` using mdBook (`docs/book.toml`). The README also links to a published GitBook site at `https://tollcraft.gitbook.io/docs/budget-assert`. Contains end-user guides, developer guides, protocol mechanics, and a macro/CLI reference (`docs/src/`).
 
 ### Submission Assets (Phase 12)
-- [x] **Demo Video**: Linked in the README — an asciinema recording showing a contract exceeding its budget and failing, followed by a passing assertion (`README.md:9`).
+- [x] **Demo Video**: Linked in the README — an asciinema recording showing a contract exceeding its budget and failing, followed by a passing assertion. The embedded demo has been temporarily removed while the asciinema recording is refreshed.
 - [ ] **Submission Form Copy**: Structured paragraph for grant submission — not part of the repository working tree. Stored externally.
 
 ---
@@ -49,6 +49,6 @@ Based on open source repository standards, this document serves as a guide to br
   - **Developer Guide**: Local setup and extending the tool — `docs/src/developer_guide.md`
 
 ### Step 4: Submission Preparation
-- [x] Record a short demo video showing a contract exceeding its budget and failing, followed by a passing assertion. — Linked at `README.md:9` (`https://asciinema.org/a/qqC0RysuCDBvfUXC`).
+- [x] Record a short demo video showing a contract exceeding its budget and failing, followed by a passing assertion. — The embedded demo has been temporarily removed from the README while the asciinema recording is refreshed.
 - [ ] Draft the final submission descriptions (1-paragraph plain English description, repo relationships, and planned issue breakdown). — External submission materials; not in the repository.
 - [ ] Aggregate all links (live URLs, repo URLs, documentation site, demo video) for final submission. — External submission materials; not in the repository.

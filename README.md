@@ -2,12 +2,11 @@
   <h1>🛡️ Soroban Budget Assert</h1>
   <p><strong>Empirical cost measurement and assertion tooling for Soroban smart contracts.</strong></p>
   
-  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions)
+  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml)
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   <p>
     <a href="https://tollcraft.gitbook.io/docs/budget-assert"><strong>Documentation</strong></a> ·
-    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a> ·
-    <a href="https://asciinema.org/a/qqC0RysuCDBvfUXC"><strong>Demo</strong></a>
+    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a>
   </p>
 </div>
 
@@ -201,7 +200,7 @@ fn test_mem_budget() {
 
 ## 📊 Measurements
 
-The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/protocol-mechanics) cites this file as the source of truth for measured figures.
+The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/mechanics) cites this file as the source of truth for measured figures.
 
 ## 🤝 Community & Maintainers
 
