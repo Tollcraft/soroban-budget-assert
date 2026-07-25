@@ -157,3 +157,62 @@ fn test_budget_macro_mem_dynamic_env_invalid_value() {
     env.cost_estimate().budget().reset_unlimited();
     client.do_expensive_work(&10_000);
 }
+
+/// Fixture: contract invocation stays within the read bytes budget.
+///
+/// Runs a deposit + swap + withdraw cycle against the WASM contract and
+/// asserts that the ledger read bytes reported by
+/// `env.cost_estimate().resources().read_bytes` do not exceed a generous
+/// upper bound.  This test is expected to pass under normal conditions and
+/// acts as a regression guard that will fail if storage reads grow
+/// unexpectedly.
+#[test]
+fn test_read_bytes_budget_within_limit() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+
+    let read_bytes = env.cost_estimate().resources().read_bytes;
+    println!("Read bytes (WASM deposit+swap+withdraw): {read_bytes}");
+
+    // Generous upper bound — tighten once a clean baseline is recorded.
+    assert!(
+        read_bytes < 10_000,
+        "Read bytes {read_bytes} exceeded the expected limit of 10,000 \
+         - local estimate, real network cost may differ significantly in either direction"
+    );
+}
+
+/// Fixture: deliberate regression — contract exceeds the read bytes budget.
+///
+/// Sets an impossibly tight read bytes limit (1 byte) to demonstrate what a
+/// read-bytes budget breach looks like.  The `#[should_panic]` attribute
+/// documents the expected failure message so that the test suite treats this
+/// as a passing regression fixture rather than a real failure.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+fn test_read_bytes_budget_exceeds_limit() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+
+    let read_bytes = env.cost_estimate().resources().read_bytes;
+    println!("Read bytes (deliberate regression): {read_bytes}");
+
+    // Deliberately impossible limit: any real WASM invocation will read more
+    // than 1 byte from ledger storage, so this assertion always fires.
+    let limit: u32 = 1;
+    assert!(
+        read_bytes < limit,
+        "Read bytes {read_bytes} exceeded the expected limit of {limit} \
+         - local estimate, real network cost may differ significantly in either direction"
+    );
+}
