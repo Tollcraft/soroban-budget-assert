@@ -160,33 +160,121 @@ fn generate_budget_assert(
     })
 }
 
-/// Asserts that the CPU instructions used by `env` are less than N.
-/// Must be placed on a test function that has a local `env` variable.
+/// Asserts that the CPU instructions used by `env` are strictly less than a specified limit.
 ///
-/// This checks a *local* estimate. Real network cost can differ from it
-/// significantly in either direction depending on the build profile — see
-/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
-/// network ground truth.
+/// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
+/// The macro appends an assertion check to the body of the test function that measures
+/// `env.cost_estimate().budget().cpu_instruction_cost()`.
 ///
-/// When using `env = "VAR"`, an unset environment variable means "no limit"
-/// (the assertion will always pass). The test will panic if the variable is
-/// set but its value cannot be parsed as a `u64`.
+/// # Local Estimates vs Network Costs
+///
+/// This attribute checks a **local estimate** of CPU instruction consumption.
+/// Local estimates (such as raw Rust test execution or unoptimized local WASM builds) can
+/// strictly underestimate or differ significantly from real Testnet or Futurenet costs, which
+/// include host function overheads, VM metering, and protocol execution parameters.
+///
+/// Use local assertions as a fast local regression gate. For true network ground truth, use
+/// `cargo budget-report`.
+///
+/// # Usage Examples
+///
+/// ## Static Limit
+///
+/// Pass an integer literal representing the maximum allowed CPU instructions:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_cpu_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_cpu_lt(950_000)]
+/// fn test_cpu_budget() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// ## Dynamic Limit via Environment Variable (`env = "VAR_NAME"`)
+///
+/// Read the limit dynamically from an environment variable at test runtime:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_cpu_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_cpu_lt(env = "MAX_CPU_INSTRUCTIONS")]
+/// fn test_cpu_budget_dynamic() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// When using `env = "VAR_NAME"`:
+/// - If the environment variable is **unset**, the limit defaults to `u64::MAX` ("no limit"),
+///   allowing the test assertion to pass unconditionally.
+/// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
+///   the test panics at runtime with an explicit error naming the variable and invalid value.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::CpuInstructionCost)
 }
 
-/// Asserts that the memory bytes used by `env` are less than N.
-/// Must be placed on a test function that has a local `env` variable.
+/// Asserts that the memory bytes used by `env` are strictly less than a specified limit.
 ///
-/// This checks a *local* estimate. Real network cost can differ from it
-/// significantly in either direction depending on the build profile — see
-/// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
-/// network ground truth.
+/// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
+/// The macro appends an assertion check to the body of the test function that measures
+/// `env.cost_estimate().budget().memory_bytes_cost()`.
 ///
-/// When using `env = "VAR"`, an unset environment variable means "no limit"
-/// (the assertion will always pass). The test will panic if the variable is
-/// set but its value cannot be parsed as a `u64`.
+/// # Local Estimates vs Network Costs
+///
+/// This attribute checks a **local estimate** of memory byte consumption.
+/// Local estimates (such as raw Rust test execution or unoptimized local WASM builds) can
+/// strictly underestimate or differ significantly from real Testnet or Futurenet costs, which
+/// include host function overheads, VM heap/stack allocation overheads, and protocol execution parameters.
+///
+/// Use local assertions as a fast local regression gate. For true network ground truth, use
+/// `cargo budget-report`.
+///
+/// # Usage Examples
+///
+/// ## Static Limit
+///
+/// Pass an integer literal representing the maximum allowed memory bytes:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_mem_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_mem_lt(500_000)]
+/// fn test_memory_budget() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// ## Dynamic Limit via Environment Variable (`env = "VAR_NAME"`)
+///
+/// Read the limit dynamically from an environment variable at test runtime:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_mem_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_mem_lt(env = "MAX_MEMORY_BYTES")]
+/// fn test_memory_budget_dynamic() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// When using `env = "VAR_NAME"`:
+/// - If the environment variable is **unset**, the limit defaults to `u64::MAX` ("no limit"),
+///   allowing the test assertion to pass unconditionally.
+/// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
+///   the test panics at runtime with an explicit error naming the variable and invalid value.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::MemoryBytesCost)

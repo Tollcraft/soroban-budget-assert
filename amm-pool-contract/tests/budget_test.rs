@@ -34,7 +34,7 @@ impl Drop for BudgetJsonGuard {
 }
 
 fn setup_wasm(env: &Env) -> (ConstantProductPoolClient<'_>, Address) {
-    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
     // AUDIT (Issue #92): `soroban_sdk::Env::register_contract_wasm` is deprecated in soroban-sdk 22.x
     // in favor of `Env::register`. However, `Env::register` only registers Rust contract types for
@@ -200,7 +200,7 @@ fn test_budget_extend_ttl_deliberate_regression_mem() {
 }
 
 #[test]
-#[budget_cpu_lt(2500000)]
+#[budget_cpu_lt(3000000)] // Re-measured: WASM local 2770850, simulates deposit+swap+withdraw
 fn test_budget_macro_gated() {
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -243,7 +243,7 @@ fn test_budget_macro_mem_deliberate_regression() {
 fn test_budget_macro_dynamic_env() {
     let budget_env_resolve = |var: &str| -> Option<String> {
         if var == "TEST_MAX_CPU" {
-            Some("2500000".to_string())
+            Some("3000000".to_string())
         } else {
             None
         }

@@ -22,7 +22,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
-          target: wasm32-unknown-unknown
+          target: wasm32v1-none
 
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
@@ -33,7 +33,7 @@ jobs:
           mv stellar ~/.cargo/bin/
 
       - name: Build Contracts
-        run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+        run: cargo build -p amm-pool-contract --release --target wasm32v1-none
 
       - name: Run Budget Macros Test (Tier A)
         run: cargo test
@@ -69,7 +69,7 @@ jobs:
     - name: Download Budget Report
       uses: actions/download-artifact@v4
       with:
-        name: budget-report
+name: budget-report
 
     - name: Record History Dataset
       run: |
