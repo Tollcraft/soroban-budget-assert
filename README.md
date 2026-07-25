@@ -46,7 +46,7 @@ The fixture is a benchmark, not a product. It implements `initialize`, `deposit`
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
 * **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
 * **Corresponding Stellar Protocol**: **Protocol 22**
 
@@ -55,7 +55,7 @@ The fixture is a benchmark, not a product. It implements `initialize`, `deposit`
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
 | **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
 
 ---
