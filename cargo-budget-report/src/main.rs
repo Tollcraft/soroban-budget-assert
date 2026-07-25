@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn formatter_u32_max_cpu() {
         assert_eq!(
-            format_with_commas_and_units(u32::MAX, "CPU Instructions"),
+            format_with_commas_and_units(u64::from(u32::MAX), "CPU Instructions"),
             "4,294,967,295 inst."
         );
     }
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn formatter_u32_max_bytes() {
         assert_eq!(
-            format_with_commas_and_units(u32::MAX, "Read Bytes"),
+            format_with_commas_and_units(u64::from(u32::MAX), "Read Bytes"),
             "4,294,967,295 B"
         );
     }
