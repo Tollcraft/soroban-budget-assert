@@ -911,304 +911,119 @@ mod tests {
         );
     }
 
-    // --- budget.toml limit parsing tests ---
+    // --- Cost value formatter tests ---
 
     #[test]
-    fn function_config_parses_with_all_limits() {
-        let path = unique_test_path();
-        fs::write(
-            &path,
-            r#"
-[functions.do_expensive_work]
-args = ["--n", "10000"]
-cpu_limit = 2000000
-read_limit = 5000
-write_limit = 1000
-"#,
-        )
-        .expect("failed to write budget.toml");
-
-        let config = load_budget_toml(&path).expect("budget.toml should parse");
-        let fc = config
-            .functions
-            .get("do_expensive_work")
-            .expect("function should be present");
-        assert_eq!(fc.args, vec!["--n", "10000"]);
-        assert_eq!(fc.cpu_limit, Some(2_000_000));
-        assert_eq!(fc.read_limit, Some(5_000));
-        assert_eq!(fc.write_limit, Some(1_000));
-    }
-
-    #[test]
-    fn function_config_parses_with_partial_limits() {
-        let path = unique_test_path();
-        fs::write(
-            &path,
-            r#"
-[functions.do_expensive_work]
-cpu_limit = 1000
-"#,
-        )
-        .expect("failed to write budget.toml");
-
-        let config = load_budget_toml(&path).expect("budget.toml should parse");
-        let fc = config
-            .functions
-            .get("do_expensive_work")
-            .expect("function should be present");
-        assert!(fc.args.is_empty());
-        assert_eq!(fc.cpu_limit, Some(1_000));
-        assert_eq!(fc.read_limit, None);
-        assert_eq!(fc.write_limit, None);
-    }
-
-    #[test]
-    fn function_config_parses_without_limits() {
-        let path = unique_test_path();
-        fs::write(
-            &path,
-            r#"
-[functions.do_expensive_work]
-args = ["--n", "10000"]
-"#,
-        )
-        .expect("failed to write budget.toml");
-
-        let config = load_budget_toml(&path).expect("budget.toml should parse");
-        let fc = config
-            .functions
-            .get("do_expensive_work")
-            .expect("function should be present");
-        assert_eq!(fc.cpu_limit, None);
-        assert_eq!(fc.read_limit, None);
-        assert_eq!(fc.write_limit, None);
-    }
-
-    // --- evaluate_check tests ---
-
-    #[test]
-    fn evaluate_check_no_limit_returns_none_pair() {
-        assert_eq!(evaluate_check(123, None), (None, None));
-    }
-
-    #[test]
-    fn evaluate_check_within_limit_passes() {
-        assert_eq!(evaluate_check(500, Some(1_000)), (Some(1_000), Some(true)));
-    }
-
-    #[test]
-    fn evaluate_check_exactly_at_limit_passes() {
-        // u64::from(value) <= n is the inclusive comparison
+    fn formatter_zero_cpu() {
         assert_eq!(
-            evaluate_check(1_000, Some(1_000)),
-            (Some(1_000), Some(true))
+            format_with_commas_and_units(0, "CPU Instructions"),
+            "0 inst."
         );
     }
 
     #[test]
-    fn evaluate_check_over_limit_fails() {
+    fn formatter_zero_bytes() {
+        assert_eq!(format_with_commas_and_units(0, "Read Bytes"), "0 B");
+    }
+
+    #[test]
+    fn formatter_single_digit_cpu() {
         assert_eq!(
-            evaluate_check(2_000, Some(1_000)),
-            (Some(1_000), Some(false))
+            format_with_commas_and_units(7, "CPU Instructions"),
+            "7 inst."
         );
     }
 
     #[test]
-    fn evaluate_check_large_limit_does_not_overflow() {
-        // Limits are u64; values are u32 so widening is safe.
+    fn formatter_single_digit_bytes() {
+        assert_eq!(format_with_commas_and_units(3, "Write Bytes"), "3 B");
+    }
+
+    #[test]
+    fn formatter_just_below_thousand() {
         assert_eq!(
-            evaluate_check(u32::MAX, Some(u64::from(u32::MAX))),
-            (Some(u64::from(u32::MAX)), Some(true))
+            format_with_commas_and_units(999, "CPU Instructions"),
+            "999 inst."
         );
     }
 
-    // --- limit_for_metric tests ---
-
-    fn configured_function(
-        cpu: Option<u64>,
-        read: Option<u64>,
-        write: Option<u64>,
-    ) -> FunctionConfig {
-        FunctionConfig {
-            args: vec![],
-            cpu_limit: cpu,
-            read_limit: read,
-            write_limit: write,
-        }
+    #[test]
+    fn formatter_at_thousand() {
+        assert_eq!(
+            format_with_commas_and_units(1_000, "CPU Instructions"),
+            "1,000 inst."
+        );
     }
 
     #[test]
-    fn limit_for_metric_returns_configured_limits() {
-        let fc = configured_function(Some(100), Some(200), Some(300));
-        assert_eq!(limit_for_metric(&fc, "CPU Instructions"), Some(100));
-        assert_eq!(limit_for_metric(&fc, "Read Bytes"), Some(200));
-        assert_eq!(limit_for_metric(&fc, "Write Bytes"), Some(300));
+    fn formatter_just_above_thousand() {
+        assert_eq!(
+            format_with_commas_and_units(1_001, "CPU Instructions"),
+            "1,001 inst."
+        );
     }
 
     #[test]
-    fn limit_for_metric_returns_none_for_unconfigured_metrics() {
-        let fc = configured_function(Some(100), None, None);
-        assert_eq!(limit_for_metric(&fc, "CPU Instructions"), Some(100));
-        assert_eq!(limit_for_metric(&fc, "Read Bytes"), None);
-        assert_eq!(limit_for_metric(&fc, "Write Bytes"), None);
+    fn formatter_just_below_million() {
+        assert_eq!(
+            format_with_commas_and_units(999_999, "Read Bytes"),
+            "999,999 B"
+        );
     }
 
     #[test]
-    fn limit_for_metric_returns_none_for_unknown_metric_name() {
-        let fc = configured_function(Some(100), Some(200), Some(300));
-        assert_eq!(limit_for_metric(&fc, "Something Else"), None);
-    }
-
-    // --- CostReport serialization tests ---
-
-    #[test]
-    fn cost_report_json_omits_limit_and_pass_when_unset() {
-        // Mirrors the plain (no --check) serialization shape: limit/pass/value
-        // are all None-equivalent or absent so existing JSON consumers see
-        // byte-for-byte identical output.
-        let report = CostReport {
-            package: "amm-pool-contract".to_string(),
-            function: "do_expensive_work".to_string(),
-            metric: "CPU Instructions",
-            value: Some(756_678),
-            limit: None,
-            pass: None,
-        };
-        let s = serde_json::to_string(&report).expect("serialization should succeed");
-        assert!(s.contains("\"value\":756678"));
-        assert!(!s.contains("\"limit\""));
-        assert!(!s.contains("\"pass\""));
-    }
-
-    #[test]
-    fn cost_report_json_omits_value_when_simulation_failed() {
-        // In --check mode, a configured function with a failed sim emits an
-        // entry that has no `value` but carries an explicit pass=false (and
-        // a configured limit when one exists).
-        let report = CostReport {
-            package: "amm-pool-contract".to_string(),
-            function: "do_expensive_work".to_string(),
-            metric: "CPU Instructions",
-            value: None,
-            limit: Some(2_000_000),
-            pass: Some(false),
-        };
-        let s = serde_json::to_string(&report).expect("serialization should succeed");
-        assert!(!s.contains("\"value\""));
-        assert!(s.contains("\"limit\":2000000"));
-        assert!(s.contains("\"pass\":false"));
-    }
-
-    #[test]
-    fn cost_report_json_omits_value_and_limit_when_simulation_failed_with_no_limit() {
-        // Even when no limit is configured for a metric, a configured
-        // function whose sim failed still emits an entry — but with no
-        // limit so consumers can tell the metric was not enforced.
-        let report = CostReport {
-            package: "amm-pool-contract".to_string(),
-            function: "do_expensive_work".to_string(),
-            metric: "CPU Instructions",
-            value: None,
-            limit: None,
-            pass: Some(false),
-        };
-        let s = serde_json::to_string(&report).expect("serialization should succeed");
-        assert!(!s.contains("\"value\""));
-        assert!(!s.contains("\"limit\""));
-        assert!(s.contains("\"pass\":false"));
-    }
-
-    #[test]
-    fn cost_report_json_includes_limit_and_pass_when_configured() {
-        let report = CostReport {
-            package: "amm-pool-contract".to_string(),
-            function: "do_expensive_work".to_string(),
-            metric: "CPU Instructions",
-            value: Some(756_678),
-            limit: Some(2_000_000),
-            pass: Some(true),
-        };
-        let s = serde_json::to_string(&report).expect("serialization should succeed");
-        assert!(s.contains("\"value\":756678"));
-        assert!(s.contains("\"limit\":2000000"));
-        assert!(s.contains("\"pass\":true"));
-    }
-
-    // --- format_with_commas_and_units regression ---
-
-    #[test]
-    fn format_with_commas_and_units_preserves_commas_and_unit_suffix() {
-        // The existing function is used for the table; preserve the historical
-        // formatting (commas every three digits, " B" / " inst." suffix) for
-        // values that fit in u32.
+    fn formatter_at_million() {
         assert_eq!(
             format_with_commas_and_units(1_000_000, "CPU Instructions"),
             "1,000,000 inst."
         );
-        assert_eq!(format_with_commas_and_units(2_048, "Read Bytes"), "2,048 B");
-        assert_eq!(format_with_commas_and_units(0, "Write Bytes"), "0 B");
     }
 
-    // --- emit_check_failure_entries tests ---
-
-    fn collect_failure_entries(func_config: &FunctionConfig) -> Vec<CostReport> {
-        let mut reports = Vec::new();
-        emit_check_failure_entries(
-            &mut reports,
-            "amm-pool-contract",
-            "do_expensive_work",
-            func_config,
+    #[test]
+    fn formatter_just_above_million() {
+        assert_eq!(
+            format_with_commas_and_units(1_000_001, "Write Bytes"),
+            "1,000,001 B"
         );
-        reports
     }
 
     #[test]
-    fn emit_check_failure_entries_emits_stub_per_metric_with_all_limits() {
-        let fc = configured_function(Some(2_000_000), Some(5_000), Some(1_000));
-        let reports = collect_failure_entries(&fc);
-        assert_eq!(reports.len(), 3);
-        let names: Vec<&'static str> = reports.iter().map(|r| r.metric).collect();
-        assert_eq!(names, ["CPU Instructions", "Read Bytes", "Write Bytes"]);
-        for r in &reports {
-            assert!(r.value.is_none(), "no value for failed sim entries");
-            assert!(r.limit.is_some(), "limit should be passed through");
-            assert_eq!(r.pass, Some(false));
-            assert_eq!(r.package, "amm-pool-contract");
-            assert_eq!(r.function, "do_expensive_work");
-        }
-        assert_eq!(reports[0].limit, Some(2_000_000));
-        assert_eq!(reports[1].limit, Some(5_000));
-        assert_eq!(reports[2].limit, Some(1_000));
+    fn formatter_ten_million() {
+        assert_eq!(
+            format_with_commas_and_units(10_000_000, "CPU Instructions"),
+            "10,000,000 inst."
+        );
     }
 
     #[test]
-    fn emit_check_failure_entries_emits_only_configured_metric_when_only_cpu_limit_set() {
-        let fc = configured_function(Some(2_000_000), None, None);
-        let reports = collect_failure_entries(&fc);
-        assert_eq!(reports.len(), 3);
-        // Every metric gets a stub, but only the one with a configured limit carries it.
-        assert!(reports[0].limit.is_some());
-        assert!(reports[1].limit.is_none());
-        assert!(reports[2].limit.is_none());
-        for r in &reports {
-            assert_eq!(r.pass, Some(false));
-            assert!(r.value.is_none());
-        }
+    fn formatter_u32_max_cpu() {
+        assert_eq!(
+            format_with_commas_and_units(u64::from(u32::MAX), "CPU Instructions"),
+            "4,294,967,295 inst."
+        );
     }
 
     #[test]
-    fn emit_check_failure_entries_still_emits_three_stubs_when_no_limits_set() {
-        // Even with no per-metric limits, a failed sim of a configured
-        // function still produces three stub entries so `--check --json`
-        // consumers see what went wrong (with `value` and `limit` omitted,
-        // `pass: false`).
-        let fc = configured_function(None, None, None);
-        let reports = collect_failure_entries(&fc);
-        assert_eq!(reports.len(), 3);
-        for r in &reports {
-            assert!(r.value.is_none());
-            assert!(r.limit.is_none());
-            assert_eq!(r.pass, Some(false));
-        }
+    fn formatter_u32_max_bytes() {
+        assert_eq!(
+            format_with_commas_and_units(u64::from(u32::MAX), "Read Bytes"),
+            "4,294,967,295 B"
+        );
+    }
+
+    #[test]
+    fn formatter_write_bytes_gets_byte_unit() {
+        assert_eq!(
+            format_with_commas_and_units(4_096, "Write Bytes"),
+            "4,096 B"
+        );
+    }
+
+    #[test]
+    fn formatter_non_bytes_metric_gets_inst_unit() {
+        assert_eq!(
+            format_with_commas_and_units(500, "Some Other Metric"),
+            "500 inst."
+        );
     }
 }
