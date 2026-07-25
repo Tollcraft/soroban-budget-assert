@@ -141,3 +141,47 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::MemoryBytesCost)
 }
+
+#[cfg(test)]
+mod budget_limit_parser_proptest {
+    use super::BudgetLimit;
+    use proptest::prelude::*;
+    use quote::quote;
+
+    fn parse_budget_limit(tokens: proc_macro2::TokenStream) -> syn::Result<BudgetLimit> {
+        syn::parse2(tokens)
+    }
+
+    proptest! {
+        #[test]
+        fn integer_attribute_parses_as_same_u64(n in any::<u64>()) {
+            let parsed = parse_budget_limit(quote! { #n }).expect("integer limit should parse");
+            match parsed {
+                BudgetLimit::Int(value) => prop_assert_eq!(value, n),
+                BudgetLimit::EnvVar(_) => prop_assert!(false, "expected integer limit"),
+            }
+        }
+
+        #[test]
+        fn env_attribute_parses_var_name(
+            name in prop::string::string_regex(r"[A-Za-z_][A-Za-z0-9_]*").unwrap()
+        ) {
+            let lit = syn::LitStr::new(&name, proc_macro2::Span::call_site());
+            let parsed = parse_budget_limit(quote! { env = #lit }).expect("env limit should parse");
+            match parsed {
+                BudgetLimit::EnvVar(var) => prop_assert_eq!(var, name),
+                BudgetLimit::Int(_) => prop_assert!(false, "expected env limit"),
+            }
+        }
+
+        #[test]
+        fn non_env_ident_with_env_syntax_is_rejected(
+            ident in prop::string::string_regex(r"[A-Za-z_][A-Za-z0-9_]*").unwrap()
+        ) {
+            prop_assume!(ident != "env");
+            let id = prop_assume!(syn::parse_str::<syn::Ident>(&ident).ok());
+            let lit = syn::LitStr::new("BUDGET_LIMIT", proc_macro2::Span::call_site());
+            prop_assert!(parse_budget_limit(quote! { #id = #lit }).is_err());
+        }
+    }
+}
