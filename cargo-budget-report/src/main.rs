@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
@@ -25,6 +26,17 @@ struct BudgetReportArgs {
 
     #[arg(long, default_value_t = false)]
     json: bool,
+
+    /// Enforce per-function limits declared in `budget.toml`.
+    ///
+    /// When set, each measured metric is compared against its configured
+    /// `cpu_limit` / `read_limit` / `write_limit`. A missing limit means the
+    /// metric is reported but **not** enforced. The process exits with a
+    /// non-zero status when any limit is breached, or when a function that
+    /// has a `budget.toml` entry fails to simulate. Functions that are not
+    /// declared in `budget.toml` are reported only.
+    #[arg(long, default_value_t = false)]
+    check: bool,
 }
 
 #[derive(serde::Deserialize, Default, Debug)]
@@ -63,14 +75,35 @@ impl TransactionData {
 struct FunctionConfig {
     #[serde(default)]
     args: Vec<String>,
+    /// Inclusive upper bound on the measured CPU `Instructions` metric. `None`
+    /// means this metric is reported but not enforced by `--check`.
+    #[serde(default)]
+    cpu_limit: Option<u64>,
+    #[serde(default)]
+    read_limit: Option<u64>,
+    #[serde(default)]
+    write_limit: Option<u64>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct CostReport {
     package: String,
     function: String,
     metric: &'static str,
-    value: u32,
+    /// The measured value, or `None` if the simulation failed to produce one
+    /// (only emitted in `--check` mode for functions declared in
+    /// `budget.toml`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<u32>,
+    /// Configured upper bound for the metric, if any. Emitted in `--check`
+    /// mode only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<u64>,
+    /// `true` if the measured value is within the configured limit, `false`
+    /// if it exceeds the limit **or** the simulation failed for a configured
+    /// function. Emitted in `--check` mode only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pass: Option<bool>,
 }
 
 #[derive(Tabled)]
@@ -81,7 +114,65 @@ struct TableCostReport {
     value: String,
 }
 
-fn format_with_commas_and_units(value: u32, metric: &str) -> String {
+/// Returns the configured limit (if any) for the given metric name.
+fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
+    match metric {
+        "CPU Instructions" => func_config.cpu_limit,
+        "Read Bytes" => func_config.read_limit,
+        "Write Bytes" => func_config.write_limit,
+        _ => None,
+    }
+}
+
+/// Given a measured value and an optional configured limit, returns the
+/// `(limit, pass)` pair that should be attached to a `CostReport`.
+///
+/// * No limit configured → `(None, None)`; the metric is reported but not
+///   enforced.
+/// * Limit configured and value is within it → `(Some(limit), Some(true))`.
+/// * Limit configured and value exceeds it → `(Some(limit), Some(false))`;
+///   the caller should mark the check as failed.
+fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
+    match limit {
+        Some(n) => (Some(n), Some(u64::from(value) <= n)),
+        None => (None, None),
+    }
+}
+
+/// Emit one stub `CostReport` per metric (`CPU Instructions`, `Read Bytes`,
+/// `Write Bytes`) so that the `--check` JSON output and check summary make
+/// the failure visible per metric.
+///
+/// * Metrics with a configured `*_limit` get `value: None, limit: Some(n),
+///   pass: Some(false)` — the consumer can read the breached limit.
+/// * Metrics without a configured limit get `value: None, limit: None,
+///   pass: Some(false)` — still a hook for `--check --json` consumers, but
+///   the table filter (`value.is_some()`) keeps it out of the plain-text
+///   report and the summary lines remain unchanged.
+///
+/// The caller has already set the `checks_failed` flag for the function as a
+/// whole, so emitting one entry per metric — even metrics without a limit —
+/// does not change the exit-code semantics.
+fn emit_check_failure_entries(
+    reports: &mut Vec<CostReport>,
+    package_name: &str,
+    function: &str,
+    func_config: &FunctionConfig,
+) {
+    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
+        let limit = limit_for_metric(func_config, metric);
+        reports.push(CostReport {
+            package: package_name.to_string(),
+            function: function.to_string(),
+            metric,
+            value: None,
+            limit,
+            pass: Some(false),
+        });
+    }
+}
+
+fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let s = value.to_string();
     let mut result = String::new();
     let mut count = 0;
@@ -148,6 +239,7 @@ fn main() -> Result<()> {
 
     let mut reports = Vec::new();
     let mut has_errors = false;
+    let mut checks_failed = false;
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -284,85 +376,118 @@ fn main() -> Result<()> {
                     function,
                     String::from_utf8_lossy(&invoke_output.stderr)
                 );
-                continue;
-            }
-
-            let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
-                .trim()
-                .to_string();
-
-            let rpc_payload = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "simulateTransaction",
-                "params": {
-                    "transaction": b64_xdr
+                if let (true, Some(fc)) = (args.check, func_config) {
+                    // A configured function that won't simulate cannot satisfy
+                    // any of its declared limits; record this as a check failure
+                    // even if no `*_limit` is set on this row of budget.toml.
+                    checks_failed = true;
+                    emit_check_failure_entries(&mut reports, &package.name, &function, fc);
                 }
-            });
+            } else {
+                let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
+                    .trim()
+                    .to_string();
 
-            use std::io::Write;
-            let mut curl = Command::new("curl")
-                .args([
-                    "-s",
-                    "-X",
-                    "POST",
-                    "-H",
-                    "Content-Type: application/json",
-                    "-d",
-                    "@-",
-                    "https://soroban-testnet.stellar.org:443",
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .context("failed to execute curl")?;
+                let rpc_payload = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "simulateTransaction",
+                    "params": {
+                        "transaction": b64_xdr
+                    }
+                });
 
-            {
-                let stdin = curl.stdin.as_mut().context("Failed to open stdin")?;
-                stdin
-                    .write_all(rpc_payload.to_string().as_bytes())
-                    .context("Failed to write to stdin")?;
+                use std::io::Write;
+                let mut curl = Command::new("curl")
+                    .args([
+                        "-s",
+                        "-X",
+                        "POST",
+                        "-H",
+                        "Content-Type: application/json",
+                        "-d",
+                        "@-",
+                        "https://soroban-testnet.stellar.org:443",
+                    ])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .context("failed to execute curl")?;
+
+                {
+                    let stdin = curl.stdin.as_mut().context("Failed to open stdin")?;
+                    stdin
+                        .write_all(rpc_payload.to_string().as_bytes())
+                        .context("Failed to write to stdin")?;
+                }
+
+                let curl_output = curl
+                    .wait_with_output()
+                    .context("Failed to read curl output")?;
+                let rpc_resp: serde_json::Value = serde_json::from_slice(&curl_output.stdout)
+                    .context("Failed to parse RPC response")?;
+
+                if let Some(error) = rpc_resp.get("error") {
+                    has_errors = true;
+                    eprintln!("Warning: RPC error for {}: {}", function, error);
+                    if let (true, Some(fc)) = (args.check, func_config) {
+                        checks_failed = true;
+                        emit_check_failure_entries(&mut reports, &package.name, &function, fc);
+                    }
+                } else {
+                    match extract_metrics(&rpc_resp) {
+                        Ok((instructions, read_bytes, write_bytes)) => {
+                            // Build three CostReport entries for this function.
+                            // In --check mode, attach the configured limit and
+                            // pass/fail to each entry.
+                            for (metric, value) in [
+                                ("CPU Instructions", instructions),
+                                ("Read Bytes", read_bytes),
+                                ("Write Bytes", write_bytes),
+                            ] {
+                                let limit = func_config.and_then(|c| limit_for_metric(c, metric));
+                                let (entry_limit, pass) = evaluate_check(value, limit);
+                                if pass == Some(false) {
+                                    checks_failed = true;
+                                }
+                                reports.push(CostReport {
+                                    package: package.name.to_string(),
+                                    function: function.clone(),
+                                    metric,
+                                    value: Some(value),
+                                    limit: entry_limit,
+                                    pass,
+                                });
+                            }
+                        }
+                        Err(err) => {
+                            has_errors = true;
+                            eprintln!(
+                                "Warning: Failed to extract metrics for {}: {:#}",
+                                function, err
+                            );
+                            if let (true, Some(fc)) = (args.check, func_config) {
+                                // A configured function whose sim produced an
+                                // extractable-but-unparseable response cannot
+                                // satisfy any of its declared limits.
+                                checks_failed = true;
+                                emit_check_failure_entries(
+                                    &mut reports,
+                                    &package.name,
+                                    &function,
+                                    fc,
+                                );
+                            }
+                        }
+                    }
+                }
             }
-
-            let curl_output = curl
-                .wait_with_output()
-                .context("Failed to read curl output")?;
-            let rpc_resp: serde_json::Value = serde_json::from_slice(&curl_output.stdout)
-                .context("Failed to parse RPC response")?;
-
-            if let Some(error) = rpc_resp.get("error") {
-                has_errors = true;
-                eprintln!("Warning: RPC error for {}: {}", function, error);
-                continue;
-            }
-
-            let (instructions, read_bytes, write_bytes) = extract_metrics(&rpc_resp)
-                .context("Failed to extract metrics from RPC response")?;
-
-            reports.push(CostReport {
-                package: package.name.to_string(),
-                function: function.clone(),
-                metric: "CPU Instructions",
-                value: instructions,
-            });
-            reports.push(CostReport {
-                package: package.name.to_string(),
-                function: function.clone(),
-                metric: "Read Bytes",
-                value: read_bytes,
-            });
-            reports.push(CostReport {
-                package: package.name.to_string(),
-                function: function.clone(),
-                metric: "Write Bytes",
-                value: write_bytes,
-            });
         }
     }
 
     if reports.is_empty() {
         eprintln!("No successful simulations to report.");
-        if has_errors {
+        if has_errors || (args.check && checks_failed) {
             std::process::exit(1);
         }
         return Ok(());
@@ -373,14 +498,19 @@ fn main() -> Result<()> {
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
     } else {
+        // The plain text report path is preserved byte-for-byte when
+        // `--check` is not passed: only entries with a measured value are
+        // rendered in the table, and summary text is unchanged.
         println!("\n=== WORKSPACE BUDGET REPORT ===");
         let table_reports: Vec<TableCostReport> = reports
-            .into_iter()
+            .iter()
+            .filter(|r| r.value.is_some())
             .map(|r| {
-                let formatted = format_with_commas_and_units(r.value, r.metric);
+                let value = r.value.unwrap_or(0);
+                let formatted = format_with_commas_and_units(u64::from(value), r.metric);
                 TableCostReport {
-                    package: r.package,
-                    function: r.function,
+                    package: r.package.clone(),
+                    function: r.function.clone(),
                     metric: r.metric,
                     value: formatted,
                 }
@@ -392,9 +522,45 @@ fn main() -> Result<()> {
         println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
         println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
         println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
+
+        if args.check {
+            println!("\n=== BUDGET CHECKS ===");
+            let mut passed: usize = 0;
+            let mut failed: usize = 0;
+            for r in &reports {
+                let Some(pass) = r.pass else {
+                    continue;
+                };
+                let status = if pass { "PASS" } else { "FAIL" };
+                let value_str = match r.value {
+                    Some(v) => format_with_commas_and_units(u64::from(v), r.metric),
+                    None => "<simulation failed>".to_string(),
+                };
+                let limit_str = r
+                    .limit
+                    .map(|n| {
+                        // Limits wider than u32::MAX are not representable in
+                        // the table's units, but anything close to the
+                        // practical ceiling formats fine.
+                        let v = u32::try_from(n).unwrap_or(u32::MAX);
+                        format_with_commas_and_units(u64::from(v), r.metric)
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+                println!(
+                    "{}::{} [{}] value={} limit={} {}",
+                    r.package, r.function, r.metric, value_str, limit_str, status
+                );
+                if pass {
+                    passed += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+            println!("Summary: {} check(s) passed, {} failed", passed, failed);
+        }
     }
 
-    if has_errors {
+    if has_errors || (args.check && checks_failed) {
         std::process::exit(1);
     }
 
@@ -528,7 +694,7 @@ mod tests {
         let fixture_json: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&fixture_path).expect("failed to read malformed fixture file"),
         )
-        .expect("failed to parse malformed fixture JSON");
+        .expect("failed to parse malformed JSON");
 
         let result = extract_metrics(&fixture_json);
         assert!(
