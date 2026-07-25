@@ -45,12 +45,25 @@ fn generate_budget_assert(
 
     let stmts = &input_fn.block.stmts;
 
+    let metric_label = match &metric {
+        BudgetMetric::CpuInstructionCost => "budget_cpu_lt",
+        BudgetMetric::MemoryBytesCost => "budget_mem_lt",
+    };
+
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            budget_env_resolve(#var)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(u64::MAX)
+            match budget_env_resolve(#var) {
+                Some(s) => s.parse::<u64>().unwrap_or_else(|_| {
+                    panic!(
+                        "{}: env var {}={:?} is not a valid u64",
+                        #metric_label,
+                        #var,
+                        s
+                    )
+                }),
+                None => u64::MAX,
+            }
         },
     };
 
@@ -104,6 +117,10 @@ fn generate_budget_assert(
 /// significantly in either direction depending on the build profile — see
 /// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
 /// network ground truth.
+///
+/// When using `env = "VAR"`, an unset environment variable means "no limit"
+/// (the assertion will always pass). The test will panic if the variable is
+/// set but its value cannot be parsed as a `u64`.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::CpuInstructionCost)
@@ -116,6 +133,10 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// significantly in either direction depending on the build profile — see
 /// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
 /// network ground truth.
+///
+/// When using `env = "VAR"`, an unset environment variable means "no limit"
+/// (the assertion will always pass). The test will panic if the variable is
+/// set but its value cannot be parsed as a `u64`.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::MemoryBytesCost)

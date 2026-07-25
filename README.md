@@ -85,6 +85,64 @@ args = ["--n", "10000"]
 cargo budget-report
 ```
 
+**Enforce Regression Limits (`--check`):**
+
+Add per-function `cpu_limit`, `read_limit`, and/or `write_limit` to `budget.toml`.
+Then run `cargo budget-report --check` — the measured metrics are compared against
+the configured limits, a clear pass/fail line is printed per function+metric, and
+the process exits non-zero on any breach (or on any configured function whose
+simulation fails to run). Functions not declared in `budget.toml` are still
+reported but never checked.
+
+```toml
+# budget.toml
+network = "testnet"
+source = "alice"
+
+[functions.do_expensive_work]
+args = ["--n", "10000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
+```
+
+```bash
+# Plain text report + per-check pass/fail:
+cargo budget-report --check
+
+# Same, with machine-readable JSON entries that include `limit` and `pass`
+# fields per configured function+metric:
+cargo budget-report --check --json
+```
+
+### 🛡️ Blocking Network-Cost Regressions in CI
+
+```yaml
+# .github/workflows/budget.yml
+- name: Build contracts
+  run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+
+- name: Enforce budget limits against network-verified costs
+  # Exits non-zero on any limit breach or on any configured function
+  # whose simulation fails (so a broken sim cannot look like a pass).
+  run: cargo run --bin cargo-budget-report -- budget-report --check --json
+```
+
+A pull request that pushes `do_expensive_work` past its limit — for example by
+adding an unbounded loop — fails the job with output similar to:
+
+```text
+=== BUDGET CHECKS ===
+amm-pool-contract::do_expensive_work [CPU Instructions] value=5,400,123 inst. limit=5,000,000 inst. FAIL
+amm-pool-contract::do_expensive_work [Read Bytes] value=2,048 B limit=5,000 B PASS
+amm-pool-contract::do_expensive_work [Write Bytes] value=1,024 B limit=1,000 B FAIL
+Summary: 1 check(s) passed, 2 failed
+```
+
+CI surfaces the exact metric and limit on the failing run. Re-measure with
+`cargo budget-report` and either optimize the function or consciously raise
+the limit.
+
 **Use Macros in Tests:**
 
 The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
