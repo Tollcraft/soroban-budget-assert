@@ -15,9 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated GitHub Actions Pages deployment workflow to serve static site files from `./site`.
 - Contributors should add a short changelog entry with their pull request when the change is user-visible.
 
-### Changed
+### Fixed
 
-- Replaced the stringly-typed `metric` field in `cargo-budget-report` with a typed `Metric` enum. The unit for each metric now comes from the enum variant rather than substring matching on the display name. JSON output keys are unchanged.
+- Dynamic env-var budget limits (`env = "VAR"`) now panic with a clear message when the variable is set but contains an unparseable value (e.g. `1_000_000` or `"800000 "`), instead of silently falling back to `u64::MAX` and disabling the assertion.
 
 ## [0.1.0] - 2026-07-24
 
