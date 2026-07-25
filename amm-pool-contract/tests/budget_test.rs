@@ -7,6 +7,13 @@ use soroban_sdk::{testutils::Address as _, Address, Env};
 fn setup_wasm(env: &Env) -> (ConstantProductPoolClient<'_>, Address) {
     let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    // AUDIT (Issue #92): `soroban_sdk::Env::register_contract_wasm` is deprecated in soroban-sdk 22.x
+    // in favor of `Env::register`. However, `Env::register` only registers Rust contract types for
+    // in-memory host execution, whereas `register_contract_wasm` remains the sole API in soroban-sdk 22.x
+    // for registering raw precompiled `.wasm` byte slices into the test environment VM. Because WASM-level
+    // execution is required for accurate CPU/memory budget measurements (raw Rust estimates undercount costs),
+    // `register_contract_wasm` with `#[allow(deprecated)]` remains necessary until soroban-sdk provides
+    // a non-deprecated replacement for raw WASM byte registration.
     #[allow(deprecated)]
     let contract_id = env.register_contract_wasm(None, wasm.as_slice());
     let client = ConstantProductPoolClient::new(env, &contract_id);
