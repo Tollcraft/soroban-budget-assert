@@ -19,7 +19,9 @@ struct BudgetJsonGuard {
 
 impl BudgetJsonGuard {
     fn create(content: &str) -> Self {
-        let lock = BUDGET_JSON_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let lock = BUDGET_JSON_LOCK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         std::fs::write("budget.json", content).expect("failed to write budget.json");
         BudgetJsonGuard { _lock: lock }
     }
@@ -178,9 +180,7 @@ fn test_budget_macro_json_config_mem_valid() {
 }
 
 #[test]
-#[should_panic(
-    expected = "key 'non_existent_key' not found or invalid in budget.json"
-)]
+#[should_panic(expected = "key 'non_existent_key' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "non_existent_key")]
 fn test_budget_macro_json_config_missing_key() {
     let _guard = BudgetJsonGuard::create(r#"{"some_other_key": 100}"#);
@@ -208,9 +208,7 @@ fn test_budget_macro_json_config_deliberate_regression() {
 }
 
 #[test]
-#[should_panic(
-    expected = "key 'cpu_instructions' not found or invalid in budget.json"
-)]
+#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_missing_key_empty_config() {
     // Empty JSON object -> requested key won't be found -> macro panics.
@@ -224,9 +222,7 @@ fn test_budget_macro_json_config_missing_key_empty_config() {
 }
 
 #[test]
-#[should_panic(
-    expected = "key 'cpu_instructions' not found or invalid in budget.json"
-)]
+#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_invalid_json() {
     let _guard = BudgetJsonGuard::create(r#"this is not valid json at all"#);
