@@ -205,3 +205,118 @@ fn check_flag_fails_when_a_limit_is_exceeded() {
         .stdout(contains("mock-contract-a::ping [CPU Instructions]"))
         .stdout(contains("FAIL"));
 }
+
+// ── Quiet mode integration tests ────────────────────────────────────────
+
+#[test]
+fn quiet_mode_suppresses_stderr_progress_messages() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--quiet",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // In quiet mode, the tool's own progress messages should be suppressed.
+    // Child-process output (e.g. cargo build) may still appear on stderr.
+    assert!(
+        !stderr.contains("Discovering workspace members"),
+        "stderr should not contain progress messages in quiet mode, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("Simulating function"),
+        "stderr should not contain simulation progress in quiet mode, got: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("Contract deployed at:"),
+        "stderr should not contain deploy status in quiet mode, got: {stderr:?}"
+    );
+    // stdout should still contain the budget report.
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "stdout should contain the report header, got: {stdout}"
+    );
+    assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
+}
+
+#[test]
+fn quiet_mode_with_json_output_still_works() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--quiet",
+            "--json",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Tool's own progress messages should be suppressed.
+    assert!(
+        !stderr.contains("Discovering workspace members"),
+        "stderr should not contain progress messages in quiet mode, got: {stderr:?}"
+    );
+
+    // stdout should be valid JSON.
+    let reports: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    let reports = reports.as_array().expect("report should be a JSON array");
+    assert!(!reports.is_empty(), "JSON report should not be empty");
+}
+
+#[test]
+fn quiet_mode_with_check_still_enforces_limits() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[functions.ping]\n\
+         cpu_limit = 10\n",
+    )
+    .expect("failed to write budget.toml");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--quiet",
+            "--check",
+        ])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Tool's own progress messages should be suppressed even on failure.
+    assert!(
+        !stderr.contains("Discovering workspace members"),
+        "stderr should not contain progress messages in quiet mode, got: {stderr:?}"
+    );
+
+    // Check enforcement still works (FAIL appears in stdout).
+    assert!(
+        stdout.contains("FAIL"),
+        "stdout should contain check failure, got: {stdout}"
+    );
+}
