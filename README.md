@@ -136,6 +136,54 @@ cargo budget-report --check
 cargo budget-report --check --json
 ```
 
+### 📊 Network Resource Limits & Percentage Reporting
+
+`cargo-budget-report` reports each measured metric both as a raw number and as a percentage share of Soroban's per-transaction network resource limits:
+
+- **CPU Instructions**: 100,000,000 inst. (`100_000_000`)
+- **Read Bytes**: 200,000 B (`200_000`)
+- **Write Bytes**: 100,000 B (`100_000`)
+
+By default, these resource limits match **Soroban Protocol 21/22** per-transaction ceilings.
+
+#### Visual Warning Threshold (`⚠️`)
+Functions using at or above a configurable share of any network resource limit (default: **80.0%**) are visually flagged in table output with a `⚠️` warning indicator (e.g. `85,000,000 inst. (85.00% ⚠️)`).
+
+#### Configuring Network Limits & Warning Threshold
+You can customize network resource limits or the warning threshold via `budget.toml` or CLI flags:
+
+```toml
+# budget.toml
+network = "testnet"
+source = "alice"
+
+[network_limits]
+cpu_instructions = 100000000
+read_bytes = 200000
+write_bytes = 100000
+protocol_version = "Protocol 22"
+```
+
+Or via CLI arguments:
+```bash
+# Override network limits and set warning threshold to 75%
+cargo budget-report --max-instructions 100000000 --max-read-bytes 200000 --warning-threshold 75.0
+```
+
+#### Additive `--json` Output
+The `--json` output includes additive `network_limit` and `pct_network_limit` fields for each reported metric:
+
+```json
+{
+  "package": "amm-pool-contract",
+  "function": "swap",
+  "metric": "CPU Instructions",
+  "value": 5000000,
+  "network_limit": 100000000,
+  "pct_network_limit": 5.0
+}
+```
+
 ### 🛡️ Blocking Network-Cost Regressions in CI
 
 ```yaml

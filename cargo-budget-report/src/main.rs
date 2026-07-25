@@ -83,12 +83,82 @@ struct BudgetReportArgs {
     /// Emit the report as CSV instead of a table or JSON.
     #[arg(long, default_value_t = false)]
     csv: bool,
+
+    /// Override the max CPU instructions limit per transaction for the network (default: 100,000,000)
+    #[arg(long)]
+    max_instructions: Option<u64>,
+
+    /// Override the max read bytes limit per transaction for the network (default: 200,000)
+    #[arg(long)]
+    max_read_bytes: Option<u64>,
+
+    /// Override the max write bytes limit per transaction for the network (default: 100,000)
+    #[arg(long)]
+    max_write_bytes: Option<u64>,
+
+    /// Percentage threshold above which a metric is visually flagged in table output (default: 80.0)
+    #[arg(long, default_value_t = 80.0)]
+    warning_threshold: f64,
+}
+
+#[allow(dead_code)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+struct NetworkLimits {
+    #[serde(default = "default_cpu_instructions")]
+    cpu_instructions: u64,
+    #[serde(default = "default_read_bytes")]
+    read_bytes: u64,
+    #[serde(default = "default_write_bytes")]
+    write_bytes: u64,
+    #[serde(default = "default_protocol_version")]
+    protocol_version: String,
+}
+
+fn default_cpu_instructions() -> u64 {
+    100_000_000
+}
+
+fn default_read_bytes() -> u64 {
+    200_000
+}
+
+fn default_write_bytes() -> u64 {
+    100_000
+}
+
+fn default_protocol_version() -> String {
+    "Protocol 21/22".to_string()
+}
+
+impl Default for NetworkLimits {
+    fn default() -> Self {
+        Self {
+            cpu_instructions: default_cpu_instructions(),
+            read_bytes: default_read_bytes(),
+            write_bytes: default_write_bytes(),
+            protocol_version: default_protocol_version(),
+        }
+    }
+}
+
+impl NetworkLimits {
+    fn get_limit_for_metric(&self, metric: &str) -> u64 {
+        match metric {
+            "CPU Instructions" => self.cpu_instructions,
+            "Read Bytes" => self.read_bytes,
+            "Write Bytes" => self.write_bytes,
+            _ => u64::MAX,
+        }
+    }
+>>>>>>> 2cf2383 (feat: report each function's cost as a share of network resource limits)
 }
 
 #[derive(serde::Deserialize, Default, Debug)]
 struct BudgetToml {
     network: Option<String>,
     source: Option<String>,
+    #[serde(default)]
+    network_limits: Option<NetworkLimits>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
 }
@@ -150,6 +220,12 @@ struct CostReport {
     /// function. Emitted in `--check` mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pass: Option<bool>,
+    /// Network per-transaction resource limit for the metric.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network_limit: Option<u64>,
+    /// Measured value as a percentage share of the network resource limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pct_network_limit: Option<f64>,
 }
 
 #[derive(Tabled)]
@@ -204,17 +280,41 @@ fn emit_check_failure_entries(
     package_name: &str,
     function: &str,
     func_config: &FunctionConfig,
+    network_limits: &NetworkLimits,
 ) {
     for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
         let limit = limit_for_metric(func_config, metric);
+        let network_limit = network_limits.get_limit_for_metric(metric);
         reports.push(CostReport {
             package: package_name.to_string(),
             function: function.to_string(),
-            metric,
+            metric: metric,
             value: None,
-            limit,
+            limit: limit,
             pass: Some(false),
+            network_limit: Some(network_limit),
+            pct_network_limit: None,
         });
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn format_value_with_percentage(
+    value: u64,
+    metric: &str,
+    network_limit: u64,
+    warning_threshold: f64,
+) -> String {
+    let raw_formatted = format_with_commas_and_units(value, metric);
+    if network_limit == 0 {
+        return raw_formatted;
+    }
+
+    let pct = (value as f64 / network_limit as f64) * 100.0;
+    if pct >= warning_threshold {
+        format!("{} ({:.2}% ⚠️)", raw_formatted, pct)
+    } else {
+        format!("{} ({:.2}%)", raw_formatted, pct)
     }
 }
 
@@ -512,6 +612,17 @@ fn main() -> Result<()> {
         .or(toml_config.source)
         .context("missing --source or budget.toml source field")?;
 
+    let mut resolved_network_limits = toml_config.network_limits.unwrap_or_default();
+    if let Some(max_inst) = args.max_instructions {
+        resolved_network_limits.cpu_instructions = max_inst;
+    }
+    if let Some(max_read) = args.max_read_bytes {
+        resolved_network_limits.read_bytes = max_read;
+    }
+    if let Some(max_write) = args.max_write_bytes {
+        resolved_network_limits.write_bytes = max_write;
+    }
+
     eprintln!("Discovering workspace members...");
     let metadata = MetadataCommand::new()
         .no_deps()
@@ -637,7 +748,7 @@ fn main() -> Result<()> {
                     read_bytes,
                     write_bytes,
                 } => {
-                    // Build three CostReport entries for this function. In
+                    // Build four CostReport entries for this function. In
                     // --check mode, attach the configured limit and
                     // pass/fail to each entry.
                     for (metric, value) in [
@@ -651,6 +762,12 @@ fn main() -> Result<()> {
                         if pass == Some(false) {
                             checks_failed = true;
                         }
+                        let net_limit = resolved_network_limits.get_limit_for_metric(metric);
+                        let pct_network_limit = if net_limit > 0 && net_limit != u64::MAX {
+                            Some((u64::from(value) as f64 / net_limit as f64) * 100.0)
+                        } else {
+                            None
+                        };
                         reports.push(CostReport {
                             package: package.name.to_string(),
                             function: function.clone(),
@@ -658,6 +775,8 @@ fn main() -> Result<()> {
                             value: Some(value),
                             limit: entry_limit,
                             pass,
+                            network_limit: if net_limit != u64::MAX { Some(net_limit) } else { None },
+                            pct_network_limit,
                         });
                     }
                 }
@@ -683,7 +802,13 @@ fn main() -> Result<()> {
                         // a check failure even if no `*_limit` is set on
                         // this row of budget.toml.
                         checks_failed = true;
-                        emit_check_failure_entries(&mut reports, &package.name, &function, fc);
+                        emit_check_failure_entries(
+                            &mut reports,
+                            &package.name,
+                            &function,
+                            fc,
+                            &resolved_network_limits,
+                        );
                     }
                 }
             }
@@ -748,7 +873,15 @@ fn main() -> Result<()> {
             .filter(|r| r.value.is_some())
             .map(|r| {
                 let value = r.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), r.metric);
+                let net_limit = r
+                    .network_limit
+                    .unwrap_or_else(|| resolved_network_limits.get_limit_for_metric(r.metric));
+                let formatted = format_value_with_percentage(
+                    u64::from(value),
+                    r.metric,
+                    net_limit,
+                    args.warning_threshold,
+                );
                 TableCostReport {
                     package: r.package.clone(),
                     function: r.function.clone(),
@@ -1184,6 +1317,21 @@ mod tests {
         );
     }
 
+    // --- emit_check_failure_entries tests ---
+
+    fn collect_failure_entries(func_config: &FunctionConfig) -> Vec<CostReport> {
+        let mut reports = Vec::new();
+        let net_limits = NetworkLimits::default();
+        emit_check_failure_entries(
+            &mut reports,
+            "amm-pool-contract",
+            "do_expensive_work",
+            func_config,
+            &net_limits,
+        );
+        reports
+    }
+
     #[test]
     fn formatter_ten_million() {
         assert_eq!(
@@ -1376,5 +1524,83 @@ mod tests {
         let reports: Vec<CostReport> = vec![];
         let csv = reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
+    }
+
+    // --- Network limits and percentage formatting tests ---
+
+    #[test]
+    fn network_limits_defaults_and_lookup() {
+        let limits = NetworkLimits::default();
+        assert_eq!(limits.cpu_instructions, 100_000_000);
+        assert_eq!(limits.read_bytes, 200_000);
+        assert_eq!(limits.write_bytes, 100_000);
+        assert_eq!(limits.protocol_version, "Protocol 21/22");
+
+        assert_eq!(limits.get_limit_for_metric("CPU Instructions"), 100_000_000);
+        assert_eq!(limits.get_limit_for_metric("Read Bytes"), 200_000);
+        assert_eq!(limits.get_limit_for_metric("Write Bytes"), 100_000);
+        assert_eq!(limits.get_limit_for_metric("Unknown"), u64::MAX);
+    }
+
+    #[test]
+    fn network_limits_parsing_from_budget_toml() {
+        let path = unique_test_path();
+        fs::write(
+            &path,
+            r#"
+network = "testnet"
+
+[network_limits]
+cpu_instructions = 50000000
+read_bytes = 150000
+write_bytes = 80000
+protocol_version = "Protocol 22"
+"#,
+        )
+        .expect("failed to write budget.toml");
+
+        let config = load_budget_toml(&path).expect("budget.toml should parse");
+        let limits = config.network_limits.expect("network_limits should be parsed");
+        assert_eq!(limits.cpu_instructions, 50_000_000);
+        assert_eq!(limits.read_bytes, 150_000);
+        assert_eq!(limits.write_bytes, 80_000);
+        assert_eq!(limits.protocol_version, "Protocol 22");
+    }
+
+    #[test]
+    fn format_value_with_percentage_below_and_above_warning_threshold() {
+        // Value below default 80% threshold (e.g. 5% of 100M inst.)
+        let val_normal =
+            format_value_with_percentage(5_000_000, "CPU Instructions", 100_000_000, 80.0);
+        assert_eq!(val_normal, "5,000,000 inst. (5.00%)");
+        assert!(!val_normal.contains('⚠️'));
+
+        // Value at or above warning threshold (e.g. 85% of 100M inst.)
+        let val_warn =
+            format_value_with_percentage(85_000_000, "CPU Instructions", 100_000_000, 80.0);
+        assert_eq!(val_warn, "85,000,000 inst. (85.00% ⚠️)");
+        assert!(val_warn.contains('⚠️'));
+
+        // Value with custom warning threshold (e.g. 50% warning threshold)
+        let val_custom_threshold =
+            format_value_with_percentage(60_000, "Read Bytes", 100_000, 50.0);
+        assert_eq!(val_custom_threshold, "60,000 B (60.00% ⚠️)");
+    }
+
+    #[test]
+    fn cost_report_json_includes_network_limit_and_pct_network_limit() {
+        let report = CostReport {
+            package: "amm-pool-contract".to_string(),
+            function: "swap".to_string(),
+            metric: "CPU Instructions",
+            value: Some(5_000_000),
+            limit: None,
+            pass: None,
+            network_limit: Some(100_000_000),
+            pct_network_limit: Some(5.0),
+        };
+        let s = serde_json::to_string(&report).expect("serialization should succeed");
+        assert!(s.contains("\"network_limit\":100000000"));
+        assert!(s.contains("\"pct_network_limit\":5.0"));
     }
 }
