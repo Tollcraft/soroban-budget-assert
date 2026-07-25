@@ -411,6 +411,7 @@ fn main() -> Result<()> {
 
         // Parse WASM exports
         let wasm_bytes = std::fs::read(&wasm_path).context("failed to read wasm file")?;
+        let wasm_size: u32 = wasm_bytes.len().try_into().unwrap_or(u32::MAX);
         let mut exported_fns = Vec::new();
 
         for payload in WasmParser::new(0).parse_all(&wasm_bytes) {
@@ -573,6 +574,7 @@ fn main() -> Result<()> {
                                 ("CPU Instructions", instructions),
                                 ("Read Bytes", read_bytes),
                                 ("Write Bytes", write_bytes),
+                                ("WASM Bytes", wasm_size),
                             ] {
                                 let limit = func_config.and_then(|c| limit_for_metric(c, metric));
                                 let (entry_limit, pass) = evaluate_check(value, limit);
@@ -1048,6 +1050,14 @@ mod tests {
         assert_eq!(
             format_with_commas_and_units(500, "Some Other Metric"),
             "500 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_wasm_bytes() {
+        assert_eq!(
+            format_with_commas_and_units(12_345, "WASM Bytes"),
+            "12,345 B"
         );
     }
 }
