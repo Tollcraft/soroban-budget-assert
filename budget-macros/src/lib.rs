@@ -45,8 +45,14 @@ fn generate_budget_assert(
     let attr_tokens: proc_macro2::TokenStream = attr.into();
     let item_tokens: proc_macro2::TokenStream = item.into();
 
-    let limit = syn::parse2::<BudgetLimit>(attr_tokens.clone()).unwrap();
-    let mut input_fn = syn::parse2::<ItemFn>(item_tokens).unwrap();
+    let limit = match syn::parse2::<BudgetLimit>(attr_tokens.clone()) {
+        Ok(l) => l,
+        Err(e) => return TokenStream::from(e.into_compile_error()),
+    };
+    let mut input_fn = match syn::parse2::<ItemFn>(item_tokens) {
+        Ok(f) => f,
+        Err(e) => return TokenStream::from(e.into_compile_error()),
+    };
 
     let stmts = &input_fn.block.stmts;
 
