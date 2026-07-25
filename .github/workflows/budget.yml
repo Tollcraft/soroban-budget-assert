@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -35,7 +35,7 @@ jobs:
 
       - name: Cache Stellar CLI binary
         id: stellar-cli-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/stellar
           key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
@@ -79,7 +79,7 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@v7.0.1
       with:
         fetch-depth: 0
 
@@ -94,7 +94,7 @@ jobs:
 
     - name: Cache Stellar CLI binary
       id: stellar-cli-cache
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/bin/stellar
         key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
