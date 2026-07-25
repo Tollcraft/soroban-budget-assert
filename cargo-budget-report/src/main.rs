@@ -46,7 +46,6 @@ write_limit = 1000
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo", bin_name = "cargo")]
-#[allow(clippy::single_variant_enum)]
 enum CargoCli {
     BudgetReport(BudgetReportArgs),
 }
