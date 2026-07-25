@@ -69,13 +69,17 @@ cargo install --path cargo-budget-report
 ```
 
 ### 2. Configuration
-Create a `budget.toml` in your workspace root:
-```toml
-network = "testnet"
-source = "alice"
+Scaffold a `budget.toml` in your workspace root:
+```bash
+cargo budget-report --init
+```
 
-[functions.do_expensive_work]
-args = ["--n", "10000"]
+This writes a commented template with all available fields and an example
+function entry. Review and adjust the values for your project.
+
+To overwrite an existing file, add `--force`:
+```bash
+cargo budget-report --init --force
 ```
 
 ### 3. Usage

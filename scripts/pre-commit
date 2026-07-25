@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Pre-commit hook: enforce `cargo fmt` formatting before allowing a commit.
+#
+# Installed via `scripts/install-hooks.sh`. Runs on every `git commit`.
+# Only checks formatting (matches CONTRIBUTING.md's `cargo fmt --all -- --check`);
+# clippy and tests are intentionally left to CI / manual pre-PR checks since
+# they're slower and this hook should stay fast enough to run on every commit.
+
+set -euo pipefail
+
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "❌ Formatting check failed."
+    echo "   Run 'cargo fmt --all' to fix, then commit again."
+    exit 1
+fi

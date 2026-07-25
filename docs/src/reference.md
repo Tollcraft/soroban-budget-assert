@@ -46,6 +46,30 @@ fn test_with_env_limit() {
 
 If the environment variable is unset or not a valid `u64`, the limit defaults to `u64::MAX` (effectively disabling the assertion).
 
+**Config-driven limit** — read the limit from a JSON configuration file at test time:
+
+```rust
+#[test]
+#[budget_cpu_lt(config = "cpu_instructions")]
+fn test_with_json_config() {
+    let env = Env::default();
+    // ... test logic ...
+}
+```
+
+The macro reads `budget.json` from the current working directory and looks up the value for the given key. The expected file format is:
+
+{% code title="budget.json" %}
+```json
+{
+  "cpu_instructions": 2500000,
+  "memory_bytes": 500000
+}
+```
+{% endcode %}
+
+If the file does not exist, the key is missing, or the value is not a valid `u64`, the macro prints a warning and falls back to `u64::MAX` (effectively disabling the assertion). This preserves backwards compatibility — existing tests without a `budget.json` file are unaffected.
+
 On failure the test panics with:
 ```
 CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
@@ -77,6 +101,17 @@ fn test_memory_with_env_limit() {
     std::env::set_var("MY_MEM_LIMIT", "500000");
     let env = Env::default();
     // ... register contract as WASM, call client ...
+}
+```
+
+**Config-driven limit:**
+
+```rust
+#[test]
+#[budget_mem_lt(config = "memory_bytes")]
+fn test_memory_with_json_config() {
+    let env = Env::default();
+    // ... test logic ...
 }
 ```
 
