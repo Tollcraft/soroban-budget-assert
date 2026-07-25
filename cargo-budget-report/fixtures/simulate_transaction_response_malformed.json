@@ -1,0 +1,13 @@
+{
+  "_metadata": {
+    "network": "testnet",
+    "protocol_version": 21,
+    "generated_by": "soroban-budget-assert test fixture",
+    "description": "Malformed simulateTransaction response with missing transactionData field"
+  },
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "error": "No transaction data available"
+  }
+}

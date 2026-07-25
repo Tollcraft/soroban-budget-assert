@@ -5,8 +5,18 @@ source = "alice"
 # It exercises loops and instance storage without cross-contract calls, making it
 # the only function that can be invoked via `cargo budget-report` on testnet without
 # additional token contract deployments.
+#
+# Per-function limits below are enforced by `cargo budget-report --check` in CI.
+# A missing `*_limit` field means that metric is reported but not enforced.
+# On a regression, the offending metric is printed as `FAIL` and the process
+# exits non-zero.
+# Numbers are chosen as generous upper bounds for n=10000 on testnet; tighten
+# them once a clean baseline is recorded from a passing run.
 [functions.do_expensive_work]
 args = ["--n", "10000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
 
 # The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
 # local test-harness measurement and exercise multiple storage keys, authorization,
