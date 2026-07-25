@@ -7,6 +7,7 @@ use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token
 enum BudgetLimit {
     Int(u64),
     EnvVar(String),
+    Config(String),
     // TODO: Add support for parsing a default value if the env var is missing
 }
 
@@ -19,12 +20,16 @@ impl Parse for BudgetLimit {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         if input.peek(Ident) {
             let ident: Ident = input.parse()?;
-            if ident != "env" {
-                return Err(syn::Error::new(ident.span(), "expected `env`"));
-            }
             input.parse::<Token![=]>()?;
             let lit: LitStr = input.parse()?;
-            Ok(BudgetLimit::EnvVar(lit.value()))
+            match ident.to_string().as_str() {
+                "env" => Ok(BudgetLimit::EnvVar(lit.value())),
+                "config" => Ok(BudgetLimit::Config(lit.value())),
+                other => Err(syn::Error::new(
+                    ident.span(),
+                    format!("expected `env` or `config`, got `{}`", other),
+                )),
+            }
         } else {
             let lit: LitInt = input.parse()?;
             Ok(BudgetLimit::Int(lit.base10_parse()?))
@@ -45,12 +50,46 @@ fn generate_budget_assert(
 
     let stmts = &input_fn.block.stmts;
 
+    let metric_label = match &metric {
+        BudgetMetric::CpuInstructionCost => "budget_cpu_lt",
+        BudgetMetric::MemoryBytesCost => "budget_mem_lt",
+    };
+
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
-            budget_env_resolve(#var)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(u64::MAX)
+            match budget_env_resolve(#var) {
+                Some(s) => s.parse::<u64>().unwrap_or_else(|_| {
+                    panic!(
+                        "{}: env var {}={:?} is not a valid u64",
+                        #metric_label,
+                        #var,
+                        s
+                    )
+                }),
+                None => u64::MAX,
+            }
+        },
+        BudgetLimit::Config(key) => quote! {
+            {
+                let path = std::path::Path::new("budget.json");
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        #[allow(unused_parens)]
+                        match parse_config_value(&content, #key) {
+                            Some(v) => v,
+                            None => {
+                                panic!(
+                                    "{}: key '{}' not found or invalid in budget.json",
+                                    #metric_label,
+                                    #key,
+                                )
+                            }
+                        }
+                    }
+                    Err(_) => u64::MAX,
+                }
+            }
         },
     };
 
@@ -74,6 +113,24 @@ fn generate_budget_assert(
             #[allow(unused_variables)]
             let budget_env_resolve = |var: &str| -> Option<String> {
                 std::env::var(var).ok()
+            };
+
+            #[allow(unused_variables)]
+            let parse_config_value = |content: &str, key: &str| -> Option<u64> {
+                let key_pattern = format!("\"{}\"", key);
+                let key_start = content.find(&key_pattern)?;
+                let after_key = &content[key_start + key_pattern.len()..];
+                let colon_pos = after_key.find(':')?;
+                let after_colon = after_key[colon_pos + 1..].trim();
+                let num_end = after_colon
+                    .find(|c: char| !c.is_ascii_digit() && c != ',' && c != '}')
+                    .unwrap_or(after_colon.len());
+                let num_str = after_colon[..num_end]
+                    .trim()
+                    .trim_end_matches(',')
+                    .trim_end_matches('}')
+                    .trim_matches('"');
+                num_str.parse().ok()
             };
 
             #(#stmts)*
@@ -104,6 +161,10 @@ fn generate_budget_assert(
 /// significantly in either direction depending on the build profile — see
 /// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
 /// network ground truth.
+///
+/// When using `env = "VAR"`, an unset environment variable means "no limit"
+/// (the assertion will always pass). The test will panic if the variable is
+/// set but its value cannot be parsed as a `u64`.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::CpuInstructionCost)
@@ -116,6 +177,10 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// significantly in either direction depending on the build profile — see
 /// `docs/src/mechanics.md` for measurements. Use `cargo budget-report` for
 /// network ground truth.
+///
+/// When using `env = "VAR"`, an unset environment variable means "no limit"
+/// (the assertion will always pass). The test will panic if the variable is
+/// set but its value cannot be parsed as a `u64`.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     generate_budget_assert(attr, item, BudgetMetric::MemoryBytesCost)
