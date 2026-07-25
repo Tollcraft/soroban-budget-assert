@@ -121,3 +121,39 @@ fn test_budget_macro_dynamic_env_fallback() {
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
 }
+
+#[test]
+#[should_panic(expected = "budget_cpu_lt: env var BAD_CPU_LIMIT")]
+#[budget_cpu_lt(env = "BAD_CPU_LIMIT")]
+fn test_budget_macro_dynamic_env_invalid_value() {
+    let budget_env_resolve = |var: &str| -> Option<String> {
+        if var == "BAD_CPU_LIMIT" {
+            Some("1_000_000".to_string())
+        } else {
+            None
+        }
+    };
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+}
+
+#[test]
+#[should_panic(expected = "budget_mem_lt: env var BAD_MEM_LIMIT")]
+#[budget_mem_lt(env = "BAD_MEM_LIMIT")]
+fn test_budget_macro_mem_dynamic_env_invalid_value() {
+    let budget_env_resolve = |var: &str| -> Option<String> {
+        if var == "BAD_MEM_LIMIT" {
+            Some("not_a_number".to_string())
+        } else {
+            None
+        }
+    };
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+}
