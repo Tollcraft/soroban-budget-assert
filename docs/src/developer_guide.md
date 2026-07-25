@@ -13,7 +13,7 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 
 | Crate | Role |
 |---|---|
-| `budget-macros` | Proc-macro crate. `budget_cpu_lt` / `budget_mem_lt` rewrite a test function's block to append a budget assertion against its `env` variable. |
+| `budget-macros` | Proc-macro crate. `budget_cpu_lt` / `budget_mem_lt` / `budget_lt` / `budget_write_bytes_lt` rewrite a test function's block so a budget assertion against its `env` variable runs on every exit path. They all go through `instrument_exit_paths()`; `ReturnRewriter` handles the `return` cases. |
 | `cargo-budget-report` | The CLI (`cargo budget-report` subcommand). Uses `cargo_metadata` for workspace discovery, `wasmparser` for export scanning, shells out to `stellar` for deploy/invoke/XDR decode, and `tabled`/`serde_json` for output. |
 | `amm-pool-contract` | Reference contract (`do_expensive_work`) plus the integration tests that double as the research measurements. |
 
@@ -28,13 +28,17 @@ cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test
 ```
 
-`amm-pool-contract/tests/budget_test.rs` contains six tests:
+`amm-pool-contract/tests/budget_test.rs` covers the macros against the real SDK `Env`:
 
 - `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
 - `test_budget_macro_gated` — a passing assertion at the 950,000 CPU limit.
 - `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (600,000) and expects the macro's panic, proving the gate fires.
 - `test_budget_macro_dynamic_env` — asserts a CPU limit read from the `TEST_MAX_CPU` environment variable.
 - `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` and the assertion passes unconditionally.
+- `test_budget_macro_json_config_*` — the `config = "key"` limit form read from `budget.json`.
+- `test_budget_macro_result_returning` / `..._regression` / `test_budget_macro_early_return_still_asserts` — the `Result`-returning and early-`return` body shapes.
+
+`budget-macros/tests/ui.rs` is a `trybuild` suite that needs no WASM and no SDK. `tests/ui/*.rs` must fail to compile, with the diagnostic pinned in the matching `.stderr` — regenerate those with `TRYBUILD=overwrite cargo test -p budget-macros`. `tests/ui/pass/*.rs` must compile *and run*: each one exercises a test-body shape against the mock `env` in `tests/ui/support/mock_env.rs` (fixed costs) and asserts which cost and limit the injected check reports, so a body shape that silently stops being checked fails there.
 
 To exercise the CLI end-to-end against testnet (requires the funded `alice` identity):
 
@@ -44,7 +48,7 @@ cargo run -p cargo-budget-report -- budget-report
 
 ## Extending
 
-- **New assertion metrics** — follow the pattern in `budget-macros/src/lib.rs`: parse the limit literal, append a check on `env.cost_estimate().budget()`, keep the failure message explicit. Add a passing test and a `#[should_panic]` regression test in `amm-pool-contract`.
+- **New assertion metrics** — follow the pattern in `budget-macros/src/lib.rs`: build the metric's `assert!` with its accessor on `env.cost_estimate().budget()`, then hand the function and that assertion to `instrument_exit_paths()` so the check reaches every exit path. Keep the failure message explicit. Add a passing test and a `#[should_panic]` regression test in `amm-pool-contract`, plus a `tests/ui/pass/` UI case.
 - **CLI changes** — no panics; return `anyhow::Result` with `.context()` on every external call (network, `stellar` invocations, file I/O). Any new output must also work under `--json`.
 - **Docs** — this site is GitBook, synced from the repository via Git Sync (`.gitbook.yaml` points at `docs/src`). Edits merged to `main` publish automatically; no CI step is involved. Add pages to `docs/src/SUMMARY.md` (GitBook's table of contents). GitBook-specific blocks (`{% hint %}`, `{% code title %}`) are available in any page.
 

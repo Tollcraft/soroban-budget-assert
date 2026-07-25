@@ -4,6 +4,36 @@
 
 Both macros are attribute macros for test functions. They require a local variable named `env` (a `soroban_sdk::Env`) in the function body — the injected check reads `env.cost_estimate().budget()` after the original test statements run.
 
+The check runs on every path that leaves the test, so all of these body shapes work:
+
+```rust
+#[test]
+#[budget_cpu_lt(850000)]
+fn unit_test() {
+    let env = Env::default();
+    // ... the check runs after the last statement ...
+}
+
+#[test]
+#[budget_cpu_lt(850000)]
+fn result_test() -> Result<(), Box<dyn std::error::Error>> {
+    let env = Env::default();
+    let wasm = std::fs::read("../target/wasm32-unknown-unknown/release/my_contract.wasm")?;
+    // ... the check runs after `Ok(())` is evaluated, and it is still the test's value ...
+    Ok(())
+}
+
+#[test]
+#[budget_cpu_lt(850000)]
+fn early_return_test() {
+    let env = Env::default();
+    if std::env::var("SKIP_SLOW_PATH").is_ok() {
+        return; // the check runs here too
+    }
+    // ...
+}
+```
+
 ### `#[budget_cpu_lt(N)]`
 
 Asserts that the CPU instruction cost measured by the test's `env` is strictly less than `N`.
@@ -72,7 +102,7 @@ If the file does not exist, the key is missing, or the value is not a valid `u64
 
 On failure the test panics with:
 ```
-CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+CPU instruction cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction
 ```
 
 ### `#[budget_mem_lt(N)]`
@@ -117,7 +147,7 @@ fn test_memory_with_json_config() {
 
 Failure message format:
 ```
-Memory bytes cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+Memory bytes cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction
 ```
 
 ```rust
@@ -144,6 +174,9 @@ fn test_memory_budget() {
 
 {% hint style="warning" %}
 - The variable must be named `env`. The macro resolves the identifier by name.
+- A `?` that propagates an error leaves the test before the check runs. The test still fails on the returned error, so a regression cannot pass unnoticed — but the budget number is not measured on that path.
+- A `return` that comes from *another* macro's expansion (e.g. an `ensure!`/`bail!`-style macro) is invisible to the rewrite and skips the check. A `return` written directly inside macro invocation tokens is rejected with a compile error instead of being skipped silently; move it out of the macro call. This applies to every budget macro.
+- `return` inside a closure or `async` block in the test body is left alone — it exits that body, not the test.
 - Run the contract as WASM (`env.register_contract_wasm`) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.
 - Call `env.cost_estimate().budget().reset_unlimited()` before invoking the contract so measurement isn't cut short by the default test budget.
 - The macro checks the *local* estimate, which can sit above or below the real network cost depending on the build profile. Set `N` a few percent above the measured local number to catch regressions, and use `cargo budget-report` for the network ground truth (see the End-User Guide).
