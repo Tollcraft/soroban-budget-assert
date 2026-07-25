@@ -9,12 +9,15 @@ on:
 permissions:
   contents: read
 
+env:
+  STELLAR_CLI_VERSION: "21.5.3"
+
 jobs:
   budget-check:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -24,12 +27,23 @@ jobs:
           toolchain: 1.93.0
           target: wasm32-unknown-unknown
 
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+      
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+      - name: Cache Stellar CLI binary
+        id: stellar-cli-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/stellar
+          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+      
       - name: Install Stellar CLI
+        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
         run: |
-          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          curl -sL https://github.com/stellar/stellar-cli/releases/download/v${{ env.STELLAR_CLI_VERSION }}/stellar-cli-${{ env.STELLAR_CLI_VERSION }}-x86_64-unknown-linux-gnu.tar.gz | tar -xz
           mv stellar ~/.cargo/bin/
 
       - name: Build Contracts
@@ -49,7 +63,7 @@ jobs:
           echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
 
       - name: Upload Budget Report
-        uses: actions/upload-artifact@v4.2.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: budget-report
           path: current_report.json
@@ -65,7 +79,7 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7.0.1
       with:
         fetch-depth: 0
 
@@ -74,18 +88,23 @@ jobs:
       with:
         target: wasm32-unknown-unknown
         components: rustfmt, clippy
-       
+
     - name: Install System Dependencies
       run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
-    - name: Install cargo-binstall
-      uses: cargo-bins/cargo-binstall@main
-
+    - name: Cache Stellar CLI binary
+      id: stellar-cli-cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.cargo/bin/stellar
+        key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
+    
     - name: Install Stellar CLI
+      if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
       run: |
-        curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+        curl -sL https://github.com/stellar/stellar-cli/releases/download/v${{ env.STELLAR_CLI_VERSION }}/stellar-cli-${{ env.STELLAR_CLI_VERSION }}-x86_64-unknown-linux-gnu.tar.gz | tar -xz
         mv stellar ~/.cargo/bin/
-
+    
     - name: Build Contracts
       run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
 

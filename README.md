@@ -27,7 +27,7 @@ The tool is split into two primary components:
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
    - A CLI tool that automatically discovers all contracts in your workspace.
-   - Compiles WASM, simulates execution on testnet, and reports the simulated resource amounts (CPU instructions, read/write bytes).
+   - Compiles WASM, simulates execution on testnet, and reports the simulated resource amounts (CPU instructions, read/write bytes) plus the compiled WASM binary size.
    - These are inputs to the non-refundable resource fee — not a total cost. Rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured; see [Measurement scope](https://tollcraft.gitbook.io/docs/budget-assert/reference#measurement-scope).
    - Configurable via a central `budget.toml` file.
 
@@ -63,7 +63,7 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
 * **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
 * **Corresponding Stellar Protocol**: **Protocol 22**
 
@@ -72,7 +72,7 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
 | **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
 
 ---
@@ -86,13 +86,17 @@ cargo install --path cargo-budget-report
 ```
 
 ### 2. Configuration
-Create a `budget.toml` in your workspace root:
-```toml
-network = "testnet"
-source = "alice"
+Scaffold a `budget.toml` in your workspace root:
+```bash
+cargo budget-report --init
+```
 
-[functions.do_expensive_work]
-args = ["--n", "10000"]
+This writes a commented template with all available fields and an example
+function entry. Review and adjust the values for your project.
+
+To overwrite an existing file, add `--force`:
+```bash
+cargo budget-report --init --force
 ```
 
 ### 3. Usage

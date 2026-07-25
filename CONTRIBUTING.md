@@ -32,3 +32,17 @@ Before submitting a pull request, please ensure your code meets our quality stan
 - `cargo test --workspace`
 
 Please follow the styling and architectural patterns already used in the codebase.
+
+### Pre-commit hook
+
+To catch formatting issues automatically before they reach CI, install the
+repository's pre-commit hook once after cloning:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+This runs `cargo fmt --all -- --check` before every commit and blocks the
+commit if formatting is off. Fix with `cargo fmt --all` and commit again.
+The hook only checks formatting — clippy and tests are intentionally left
+to CI and the manual pre-PR checklist above, since they take longer to run.

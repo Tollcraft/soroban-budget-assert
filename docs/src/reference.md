@@ -46,6 +46,30 @@ fn test_with_env_limit() {
 
 If the environment variable is unset or not a valid `u64`, the limit defaults to `u64::MAX` (effectively disabling the assertion).
 
+**Config-driven limit** — read the limit from a JSON configuration file at test time:
+
+```rust
+#[test]
+#[budget_cpu_lt(config = "cpu_instructions")]
+fn test_with_json_config() {
+    let env = Env::default();
+    // ... test logic ...
+}
+```
+
+The macro reads `budget.json` from the current working directory and looks up the value for the given key. The expected file format is:
+
+{% code title="budget.json" %}
+```json
+{
+  "cpu_instructions": 2500000,
+  "memory_bytes": 500000
+}
+```
+{% endcode %}
+
+If the file does not exist, the key is missing, or the value is not a valid `u64`, the macro prints a warning and falls back to `u64::MAX` (effectively disabling the assertion). This preserves backwards compatibility — existing tests without a `budget.json` file are unaffected.
+
 On failure the test panics with:
 ```
 CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
@@ -77,6 +101,17 @@ fn test_memory_with_env_limit() {
     std::env::set_var("MY_MEM_LIMIT", "500000");
     let env = Env::default();
     // ... register contract as WASM, call client ...
+}
+```
+
+**Config-driven limit:**
+
+```rust
+#[test]
+#[budget_mem_lt(config = "memory_bytes")]
+fn test_memory_with_json_config() {
+    let env = Env::default();
+    // ... test logic ...
 }
 ```
 
@@ -271,7 +306,7 @@ write_limit = 1000
 
 ## Output
 
-Each simulated function produces three rows (or three JSON objects) when its simulation succeeds: `CPU Instructions`, `Read Bytes`, and `Write Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
+Each simulated function produces four rows (or four JSON objects) when its simulation succeeds: `CPU Instructions`, `Read Bytes`, `Write Bytes`, and `WASM Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
@@ -294,7 +329,8 @@ When `--check --json` is used, configured functions gain `limit` and `pass` (see
 
 `cargo budget-report` reports **resource amounts from a simulation, not fees**. It reads three
 fields out of the `SorobanTransactionData` returned by `simulateTransaction` —
-`resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — and prints
+`resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — plus the
+compiled WASM binary size from the build step, and prints
 them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
 total.
 
@@ -305,8 +341,9 @@ total.
 | `CPU Instructions` | `resources.instructions` — metered CPU instruction count |
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
+| `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
 
-These three quantities are *inputs* to the **non-refundable resource fee**. They are not the
+These four quantities are *inputs* to the **non-refundable resource fee**. They are not the
 whole of it.
 
 ### Not in scope
@@ -338,9 +375,6 @@ measures into a fee.
   and not a property of the contract at all. The `minResourceFee` field of a
   `simulateTransaction` response is the closest single number to "what the resources cost";
   reach for that, not for this report, when you need a figure in stroops.
-- **WASM binary size** — the size of the deployed contract binary is not reported. This is
-  coming: see issue #88.
-
 ### What the report is good for
 
 Comparing a function against itself over time. The three metrics are the ones that move when
@@ -361,7 +395,7 @@ answering "how much will my users pay".
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
 * **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
 * **Corresponding Stellar Protocol**: **Protocol 22**
 
@@ -370,5 +404,5 @@ answering "how much will my users pay".
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
 | **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
