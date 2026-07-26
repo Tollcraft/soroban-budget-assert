@@ -29,7 +29,7 @@
 //! A typical workflow chains all three traits together:
 //!
 //! ```rust
-//! # use soroban_budget_assert_core::{CostMeasurer, BudgetAssert, ResourceReport, ResourceReportable};
+//! # use soroban_budget_assert_core::{CostMeasurer, BudgetAssert, ResourceReportable, ResourceReport};
 //!
 //! /// A minimal contract invocation that tracks its own CPU and memory usage.
 //! struct MyContract {
@@ -46,7 +46,6 @@
 //!     }
 //!
 //!     fn invoke(&mut self, n: u64) {
-//!         // Simulate some work that consumes resources.
 //!         let mut acc: u64 = 0;
 //!         for i in 0..n {
 //!             acc = acc.wrapping_add(i);
@@ -62,11 +61,22 @@
 //!     fn memory_bytes(&self) -> u64 { self.memory_bytes }
 //! }
 //!
-//! impl BudgetAssert for MyContract {}
+//! impl ResourceReportable for MyContract {
+//!     fn to_report(&self, package: &str, function: &str) -> ResourceReport {
+//!         ResourceReport {
+//!             package: package.to_string(),
+//!             function: function.to_string(),
+//!             cpu_instructions: self.cpu_instructions(),
+//!             memory_bytes: self.memory_bytes(),
+//!             wasm_bytes: 0,
+//!         }
+//!     }
+//! }
 //!
 //! let mut contract = MyContract::new();
 //! contract.invoke(100);
 //!
+//! // BudgetAssert is provided by the blanket impl for all CostMeasurer impls.
 //! assert!(contract.cpu_within(2_000).is_ok());
 //! assert!(contract.memory_within(1_000).is_ok());
 //!
@@ -100,7 +110,7 @@ use std::fmt;
 /// The simplest implementation delegates to the Soroban SDK's [`Budget`]
 /// type:
 ///
-/// ```rust
+/// ```rust,ignore
 /// # use soroban_budget_assert_core::CostMeasurer;
 /// use soroban_sdk::{Env, budget::Budget};
 ///
@@ -194,8 +204,8 @@ pub trait CostMeasurer {
 /// All methods have default implementations that delegate to
 /// [`CostMeasurer::cpu_instructions`] and [`CostMeasurer::memory_bytes`].
 /// A blanket impl provides [`BudgetExceededError`] as the default error type
-/// for all [`CostMeasurer`] implementors, so `impl BudgetAssert for MyType {}`
-/// is sufficient for most use cases.
+/// for all [`CostMeasurer`] implementors, so simply implementing
+/// `CostMeasurer` is sufficient — no separate `impl BudgetAssert` is needed.
 ///
 /// # Example
 ///
@@ -209,15 +219,10 @@ pub trait CostMeasurer {
 ///     fn memory_bytes(&self) -> u64 { self.mem }
 /// }
 ///
-/// impl BudgetAssert for MyContract {}
-///
 /// let contract = MyContract { cpu: 100, mem: 200 };
 ///
-/// // These should pass.
 /// assert!(contract.cpu_within(200).is_ok());
 /// assert!(contract.memory_within(300).is_ok());
-///
-/// // These should fail.
 /// assert!(contract.cpu_within(50).is_err());
 /// assert!(contract.memory_within(100).is_err());
 /// ```
@@ -246,8 +251,6 @@ pub trait BudgetAssert: CostMeasurer {
     ///     fn cpu_instructions(&self) -> u64 { 5 }
     ///     fn memory_bytes(&self) -> u64 { 0 }
     /// }
-    ///
-    /// impl BudgetAssert for CheapOp {}
     ///
     /// assert!(CheapOp.cpu_within(10).is_ok());
     /// assert!(CheapOp.cpu_within(1).is_err());
@@ -279,8 +282,6 @@ pub trait BudgetAssert: CostMeasurer {
     ///     fn memory_bytes(&self) -> u64 { 512 }
     /// }
     ///
-    /// impl BudgetAssert for LightOp {}
-    ///
     /// assert!(LightOp.memory_within(1024).is_ok());
     /// assert!(LightOp.memory_within(256).is_err());
     /// ```
@@ -310,8 +311,6 @@ pub trait BudgetAssert: CostMeasurer {
     ///     fn cpu_instructions(&self) -> u64 { 100 }
     ///     fn memory_bytes(&self) -> u64 { 200 }
     /// }
-    ///
-    /// impl BudgetAssert for BalancedOp {}
     ///
     /// assert!(BalancedOp.within_budget(500, 500).is_ok());
     /// assert!(BalancedOp.within_budget(50, 500).is_err());
@@ -569,7 +568,6 @@ mod tests {
 
     // ── BudgetAssert tests ──────────────────────────────────────────────
 
-    /// A test type that receives the blanket `BudgetAssert` impl.
     struct WithinBudget(u64, u64);
 
     impl CostMeasurer for WithinBudget {
@@ -581,8 +579,7 @@ mod tests {
         }
     }
 
-    // The blanket impl provides BudgetAssert for all CostMeasurer impls,
-    // so WithinBudget automatically gets BudgetAssert<Error = BudgetExceededError>.
+    // The blanket impl provides BudgetAssert for all CostMeasurer impls.
 
     #[test]
     fn cpu_within_passes_when_below_limit() {
@@ -591,7 +588,6 @@ mod tests {
 
     #[test]
     fn cpu_within_fails_when_at_limit() {
-        // Limit is _strictly less than_, so equality should fail.
         let result = WithinBudget(200, 0).cpu_within(200);
         assert!(result.is_err());
         let err = result.unwrap_err();
