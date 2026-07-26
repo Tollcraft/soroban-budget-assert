@@ -56,12 +56,20 @@ read_limit = 5000
 write_limit = 1000
 "#;
 
+/// Top-level CLI entry point for `cargo budget-report`.
+///
+/// Wraps the binary in a `cargo <subcommand>` compatible enum so it can be
+/// invoked as `cargo budget-report [OPTIONS]`.
 #[derive(Parser, Debug)]
 #[command(name = "cargo", bin_name = "cargo")]
 enum CargoCli {
     BudgetReport(BudgetReportArgs),
 }
 
+/// CLI arguments for `cargo budget-report`.
+///
+/// All fields are optional; missing values fall back to the corresponding
+/// `budget.toml` configuration when available.
 #[derive(Parser, Debug)]
 struct BudgetReportArgs {
     /// Scaffold a commented `budget.toml` template and exit.
@@ -97,6 +105,10 @@ struct BudgetReportArgs {
     csv: bool,
 }
 
+/// Top-level configuration deserialized from `budget.toml`.
+///
+/// Contains optional network and source-account overrides, plus a map of
+/// per-function budget configurations keyed by exported function name.
 #[derive(serde::Deserialize, Default, Debug)]
 struct BudgetToml {
     network: Option<String>,
@@ -105,6 +117,10 @@ struct BudgetToml {
     functions: HashMap<String, FunctionConfig>,
 }
 
+/// Raw resource metrics returned by the Soroban `simulateTransaction` RPC.
+///
+/// Maps directly to the `resources` field of a `SorobanTransactionData` XDR
+/// object decoded from the RPC response.
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug)]
 struct Resources {
@@ -113,6 +129,11 @@ struct Resources {
     write_bytes: u64,
 }
 
+/// Top-level wrapper for the deserialized `simulateTransaction` response.
+///
+/// Currently only carries the `resources` sub-object, but exists as a
+/// named type so that additional RPC response fields can be added without
+/// changing the extraction call-site.
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug)]
 struct TransactionData {
@@ -129,6 +150,11 @@ impl TransactionData {
     }
 }
 
+/// Per-function configuration read from a `[functions.<name>]` section of
+/// `budget.toml`.
+///
+/// Controls which CLI arguments are forwarded to the contract invocation
+/// and which resource limits are enforced in `--check` mode.
 #[derive(serde::Deserialize, Default, Debug)]
 struct FunctionConfig {
     #[serde(default)]
@@ -143,6 +169,11 @@ struct FunctionConfig {
     write_limit: Option<u64>,
 }
 
+/// A single row in the budget report, representing one metric for one
+/// exported function of one workspace package.
+///
+/// In `--check` mode the `limit` and `pass` fields are populated so that
+/// consumers (table, JSON, CSV) can render per-metric pass/fail status.
 #[derive(Serialize)]
 struct CostReport {
     package: String,
@@ -164,6 +195,11 @@ struct CostReport {
     pass: Option<bool>,
 }
 
+/// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
+///
+/// Only rows with a measured value (`value.is_some()`) are included in the
+/// table; simulation failures and `--check`-only stubs are filtered out
+/// before this type is constructed.
 #[derive(Tabled)]
 struct TableCostReport {
     package: String,
@@ -230,6 +266,14 @@ fn emit_check_failure_entries(
     }
 }
 
+/// Formats a `u64` value with commas for readability and appends the
+/// appropriate unit suffix (`inst.` for instructions, `B` for bytes).
+///
+/// # Arguments
+///
+/// * `value` - The raw numeric value to format.
+/// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
+///   `B`, otherwise `inst.`.
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let s = value.to_string();
     let mut result = String::new();
@@ -251,6 +295,17 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     }
 }
 
+/// Extracts CPU instructions, read bytes, and write bytes from a
+/// `simulateTransaction` JSON-RPC response.
+///
+/// The response must contain a `result.transactionData` field holding a
+/// base64-encoded `SorobanTransactionData` XDR blob.
+///
+/// # Errors
+///
+/// Returns an error if the RPC response contains an `"error"` field, if
+/// `transactionData` is missing or not a string, or if the base64 XDR
+/// cannot be decoded.
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
     if let Some(error) = rpc_response.get("error") {
         anyhow::bail!("{}", error);
@@ -273,6 +328,9 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
 /// Why simulating a single exported function did not produce metrics.
 /// Carries the same text the caller previously logged inline, so extracting
 /// this out of the main loop doesn't change any user-facing diagnostics.
+///
+/// Each variant corresponds to a different failure point in the
+/// `stellar contract invoke --build-only` → `simulateTransaction` pipeline.
 enum SimulationFailure {
     /// `stellar contract invoke --build-only` exited non-zero.
     Invoke(String),
@@ -283,6 +341,10 @@ enum SimulationFailure {
 }
 
 /// Outcome of simulating one exported function.
+///
+/// Distinguishes between a successful simulation (with extracted resource
+/// metrics) and a recoverable failure so the caller can continue iterating
+/// over remaining functions instead of aborting the entire report.
 enum SimulationOutcome {
     Metrics {
         instructions: u32,
@@ -294,6 +356,16 @@ enum SimulationOutcome {
 
 /// Builds the `stellar contract invoke --build-only -- <function> [args..]`
 /// argument list for one exported function.
+///
+/// The resulting argument vector is passed directly to `Command::new("stellar")`.
+///
+/// # Arguments
+///
+/// * `contract_id` - The deployed contract ID (hex string).
+/// * `source` - The Stellar source account keypair name.
+/// * `network` - The target network passphrase or alias.
+/// * `function` - The exported function name to invoke.
+/// * `func_args` - Additional CLI arguments forwarded after the `--` separator.
 fn build_invoke_args(
     contract_id: &str,
     source: &str,
@@ -320,6 +392,14 @@ fn build_invoke_args(
 
 /// Builds the JSON-RPC `simulateTransaction` request body for a base64 XDR
 /// transaction envelope.
+///
+/// The request conforms to the Stellar JSON-RPC v2.0 specification and
+/// contains a single `params.transaction` field with the base64-encoded
+/// XDR envelope produced by `stellar contract invoke --build-only`.
+///
+/// # Arguments
+///
+/// * `b64_xdr` - The base64-encoded XDR transaction envelope.
 fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -333,6 +413,14 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 
 /// POSTs a `simulateTransaction` JSON-RPC request for `b64_xdr` and returns
 /// the parsed response body.
+///
+/// Uses `curl` to send the request to the Soroban RPC endpoint. The
+/// request body is piped via stdin to avoid shell-quoting issues.
+///
+/// # Errors
+///
+/// Returns an error if `curl` cannot be spawned, the request fails, or
+/// the response body is not valid JSON.
 fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
     let rpc_payload = build_rpc_payload(b64_xdr);
 
@@ -417,10 +505,30 @@ fn simulate_function(
     }
 }
 
+/// Loads and parses a `budget.toml` configuration file.
+///
+/// If the file does not exist, returns a default (empty) configuration
+/// so that callers can proceed without explicit error handling.
+///
+/// # Errors
+///
+/// Returns an error if the file exists but cannot be read or parsed.
 fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents)
-            .map_err(|err| anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)),
+        Ok(contents) => {
+            let trimmed = contents.trim();
+            if trimmed.is_empty()
+                || trimmed
+                    .lines()
+                    .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+            {
+                return Ok(BudgetToml::default());
+            }
+
+            toml::from_str(&contents).map_err(|err| {
+                anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)
+            })
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BudgetToml::default()),
         Err(err) => Err(err).with_context(|| format!("failed to read {}", path.as_ref().display())),
     }
@@ -1097,6 +1205,17 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let config = load_budget_toml(&path).expect("missing file should return default");
+        assert!(config.network.is_none());
+        assert!(config.source.is_none());
+        assert!(config.functions.is_empty());
+    }
+
+    #[test]
+    fn empty_budget_toml_returns_default() {
+        let path = unique_test_path();
+        fs::write(&path, "\n\n").expect("failed to write empty budget.toml");
+
+        let config = load_budget_toml(&path).expect("empty file should return default");
         assert!(config.network.is_none());
         assert!(config.source.is_none());
         assert!(config.functions.is_empty());
