@@ -402,7 +402,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   allowing the test assertion to pass unconditionally.
 /// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
 ///   the test panics at runtime with an explicit error naming the variable and invalid value.
-
+///
 /// Asserts that the ledger write bytes used by `env` are less than N.
 ///
 /// Write bytes represent the total bytes written to ledger storage during
