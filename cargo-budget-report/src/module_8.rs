@@ -389,6 +389,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn csv_output_with_zero_value_indicates_zero_resource_usage() {
         let reports = vec![CostReport {
+            kind: BudgetKind::Function,
             package: "my-contract".to_string(),
             function: "do_work".to_string(),
             metric: "CPU Instructions",
@@ -403,6 +404,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn csv_output_with_check_zero_value_passes_zero_limit() {
         let reports = vec![CostReport {
+            kind: BudgetKind::Function,
             package: "my-contract".to_string(),
             function: "do_work".to_string(),
             metric: "CPU Instructions",
