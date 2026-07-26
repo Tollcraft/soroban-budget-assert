@@ -164,6 +164,23 @@ CI surfaces the exact metric and limit on the failing run. Re-measure with
 `cargo budget-report` and either optimize the function or consciously raise
 the limit.
 
+### 💬 GitHub Actions Step Summary
+
+The report can be rendered as a GitHub-flavored Markdown table and published
+directly to the workflow run page and PR via `$GITHUB_STEP_SUMMARY`:
+
+```yaml
+# .github/workflows/budget.yml
+- name: Run Budget Report & Publish Step Summary
+  run: |
+    cargo run --bin cargo-budget-report -- budget-report --format md >> "$GITHUB_STEP_SUMMARY"
+```
+
+The `--format md` flag emits a Markdown table grouped by package, one row per
+function with CPU instructions, read bytes, and write bytes as columns. Piped
+to `$GITHUB_STEP_SUMMARY`, the table appears at the bottom of the workflow run
+page and, on pull requests, the "Summary" section of the PR.
+
 **Use Macros in Tests:**
 
 The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.

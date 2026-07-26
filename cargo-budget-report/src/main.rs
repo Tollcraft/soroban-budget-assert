@@ -62,6 +62,14 @@ enum CargoCli {
     BudgetReport(BudgetReportArgs),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    Table,
+    Json,
+    #[value(name = "md")]
+    Markdown,
+}
+
 #[derive(Parser, Debug)]
 struct BudgetReportArgs {
     /// Scaffold a commented `budget.toml` template and exit.
@@ -78,8 +86,13 @@ struct BudgetReportArgs {
     #[arg(long)]
     source: Option<String>,
 
-    #[arg(long, default_value_t = false)]
+    /// Deprecated alias for `--format json` (use `--format json` instead).
+    #[arg(long, hide = true)]
     json: bool,
+
+    /// Output format: table, json, or md (markdown).
+    #[arg(long, default_value = "table")]
+    format: OutputFormat,
 
     /// Enforce per-function limits declared in `budget.toml`.
     ///
@@ -170,6 +183,64 @@ struct TableCostReport {
     function: String,
     metric: &'static str,
     value: String,
+}
+
+struct FunctionMetrics {
+    cpu: u32,
+    read: u32,
+    write: u32,
+    wasm: u32,
+}
+
+fn build_markdown_report(reports: &[CostReport]) -> String {
+    use std::collections::BTreeMap;
+
+    let mut packages: BTreeMap<String, BTreeMap<String, FunctionMetrics>> = BTreeMap::new();
+
+    for r in reports {
+        let Some(value) = r.value else { continue };
+        let functions = packages.entry(r.package.clone()).or_default();
+        let metrics = functions
+            .entry(r.function.clone())
+            .or_insert(FunctionMetrics {
+                cpu: 0,
+                read: 0,
+                write: 0,
+                wasm: 0,
+            });
+        match r.metric {
+            "CPU Instructions" => metrics.cpu = value,
+            "Read Bytes" => metrics.read = value,
+            "Write Bytes" => metrics.write = value,
+            "WASM Bytes" => metrics.wasm = value,
+            _ => {}
+        }
+    }
+
+    let mut output = String::new();
+    output.push_str("# Workspace Budget Report\n\n");
+
+    for (pkg_name, functions) in &packages {
+        output.push_str(&format!("## {}\n\n", pkg_name));
+        output.push_str("| Function | CPU Instructions | Read Bytes | Write Bytes |\n");
+        output.push_str("|----------|-----------------|------------|-------------|\n");
+
+        for (func_name, m) in functions {
+            let cpu = format_with_commas_and_units(u64::from(m.cpu), "CPU Instructions");
+            let read = format_with_commas_and_units(u64::from(m.read), "Read Bytes");
+            let write = format_with_commas_and_units(u64::from(m.write), "Write Bytes");
+            output.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                func_name, cpu, read, write
+            ));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("---\n");
+    output.push_str("_The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee._\n");
+
+    output
 }
 
 /// Returns the configured limit (if any) for the given metric name.
@@ -746,6 +817,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
+
     if args.csv {
         let mut wtr = csv::Writer::from_writer(std::io::stdout());
         if args.check {
@@ -782,70 +859,73 @@ fn main() -> Result<()> {
             }
         }
         wtr.flush().context("Failed to flush CSV writer")?;
-    } else if args.json {
-        let json_output =
-            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
-        println!("{}", json_output);
     } else {
-        // The plain text report path is preserved byte-for-byte when
-        // `--check` is not passed: only entries with a measured value are
-        // rendered in the table, and summary text is unchanged.
-        println!("\n=== WORKSPACE BUDGET REPORT ===");
-        let table_reports: Vec<TableCostReport> = reports
-            .iter()
-            .filter(|r| r.value.is_some())
-            .map(|r| {
-                let value = r.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), r.metric);
-                TableCostReport {
-                    package: r.package.clone(),
-                    function: r.function.clone(),
-                    metric: r.metric,
-                    value: formatted,
-                }
-            })
-            .collect();
-        let table = Table::new(table_reports).to_string();
-        println!("{}", table);
-        println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
-        println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
-        println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
-        println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
-
-        if args.check {
-            println!("\n=== BUDGET CHECKS ===");
-            let mut passed: usize = 0;
-            let mut failed: usize = 0;
-            for r in &reports {
-                let Some(pass) = r.pass else {
-                    continue;
-                };
-                let status = if pass { "PASS" } else { "FAIL" };
-                let value_str = match r.value {
-                    Some(v) => format_with_commas_and_units(u64::from(v), r.metric),
-                    None => "<simulation failed>".to_string(),
-                };
-                let limit_str = r
-                    .limit
-                    .map(|n| {
-                        // Limits wider than u32::MAX are not representable in
-                        // the table's units, but anything close to the
-                        // practical ceiling formats fine.
-                        let v = u32::try_from(n).unwrap_or(u32::MAX);
-                        format_with_commas_and_units(u64::from(v), r.metric)
+        match format {
+            OutputFormat::Json => {
+                let json_output = serde_json::to_string_pretty(&reports)
+                    .context("Failed to serialize report to JSON")?;
+                println!("{}", json_output);
+            }
+            OutputFormat::Markdown => {
+                let md = build_markdown_report(&reports);
+                println!("{}", md);
+            }
+            OutputFormat::Table => {
+                println!("\n=== WORKSPACE BUDGET REPORT ===");
+                let table_reports: Vec<TableCostReport> = reports
+                    .iter()
+                    .filter(|r| r.value.is_some())
+                    .map(|r| {
+                        let value = r.value.unwrap_or(0);
+                        let formatted = format_with_commas_and_units(u64::from(value), r.metric);
+                        TableCostReport {
+                            package: r.package.clone(),
+                            function: r.function.clone(),
+                            metric: r.metric,
+                            value: formatted,
+                        }
                     })
-                    .unwrap_or_else(|| "-".to_string());
-                println!(
-                    "{}::{} [{}] value={} limit={} {}",
-                    r.package, r.function, r.metric, value_str, limit_str, status
-                );
-                if pass {
-                    passed += 1;
-                } else {
-                    failed += 1;
+                    .collect();
+                let table = Table::new(table_reports).to_string();
+                println!("{}", table);
+                println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
+                println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
+                println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
+                println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
+
+                if args.check {
+                    println!("\n=== BUDGET CHECKS ===");
+                    let mut passed: usize = 0;
+                    let mut failed: usize = 0;
+                    for r in &reports {
+                        let Some(pass) = r.pass else {
+                            continue;
+                        };
+                        let status = if pass { "PASS" } else { "FAIL" };
+                        let value_str = match r.value {
+                            Some(v) => format_with_commas_and_units(u64::from(v), r.metric),
+                            None => "<simulation failed>".to_string(),
+                        };
+                        let limit_str = r
+                            .limit
+                            .map(|n| {
+                                let v = u32::try_from(n).unwrap_or(u32::MAX);
+                                format_with_commas_and_units(u64::from(v), r.metric)
+                            })
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{}::{} [{}] value={} limit={} {}",
+                            r.package, r.function, r.metric, value_str, limit_str, status
+                        );
+                        if pass {
+                            passed += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    }
+                    println!("Summary: {} check(s) passed, {} failed", passed, failed);
                 }
             }
-            println!("Summary: {} check(s) passed, {} failed", passed, failed);
         }
     }
 
