@@ -261,8 +261,13 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
 
             #(#stmts)*
 
-            let budget = #env_ident.cost_estimate().budget();
-            #(#asserts)*
+            // Wrap injected temporaries in their own scope so they never
+            // collide with user-declared `budget`, `cpu_cost`, `mem_cost`,
+            // or `limit_u64` names in the test function body.
+            {
+                let budget = #env_ident.cost_estimate().budget();
+                #(#asserts)*
+            }
         }
     };
 
@@ -452,15 +457,20 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
         {
             #(#stmts)*
 
-            let budget = #env_ident.cost_estimate().budget();
-            let write_bytes_cost = budget.memory_bytes_cost();
-            let limit_u64: u64 = #limit_expr;
-            assert!(
-                write_bytes_cost < limit_u64,
-                "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
-                write_bytes_cost,
-                limit_u64
-            );
+            // Wrap injected temporaries in their own scope so they never
+            // collide with user-declared `budget`, `write_bytes_cost`,
+            // or `limit_u64` names in the test function body.
+            {
+                let budget = #env_ident.cost_estimate().budget();
+                let write_bytes_cost = budget.memory_bytes_cost();
+                let limit_u64: u64 = #limit_expr;
+                assert!(
+                    write_bytes_cost < limit_u64,
+                    "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
+                    write_bytes_cost,
+                    limit_u64
+                );
+            }
         }
     };
 
