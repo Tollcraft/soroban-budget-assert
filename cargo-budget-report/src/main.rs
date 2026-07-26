@@ -859,29 +859,6 @@ fn main() -> Result<()> {
                             pass,
                         });
                     }
-                });
-
-                let mut curl = Command::new("curl")
-                    .args([
-                        "-s",
-                        "-X",
-                        "POST",
-                        "-H",
-                        "Content-Type: application/json",
-                        "-d",
-                        "@-",
-                        "https://soroban-testnet.stellar.org:443",
-                    ])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .spawn()
-                    .context("failed to execute curl")?;
-
-                {
-                    let stdin = curl.stdin.as_mut().context("Failed to open stdin")?;
-                    stdin
-                        .write_all(rpc_payload.to_string().as_bytes())
-                        .context("Failed to write to stdin")?;
                 }
                 SimulationOutcome::Failed(failure) => {
                     has_errors = true;
