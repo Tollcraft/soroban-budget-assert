@@ -127,7 +127,7 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
             // When `budget.json` exists during compilation, the value is injected
             // directly as a literal — zero runtime overhead (O(1) HashMap lookup
             // done once during macro expansion).
-            match resolve_config_value(&key) {
+            match resolve_config_value(key) {
                 ConfigResolution::Value(n) => quote! { #n },
                 // Fall back to runtime resolution when `budget.json` is not
                 // available at compile time (e.g. tests that create the file
