@@ -419,8 +419,20 @@ fn simulate_function(
 
 fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents)
-            .map_err(|err| anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)),
+        Ok(contents) => {
+            let trimmed = contents.trim();
+            if trimmed.is_empty()
+                || trimmed
+                    .lines()
+                    .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+            {
+                return Ok(BudgetToml::default());
+            }
+
+            toml::from_str(&contents).map_err(|err| {
+                anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)
+            })
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BudgetToml::default()),
         Err(err) => Err(err).with_context(|| format!("failed to read {}", path.as_ref().display())),
     }
@@ -1035,7 +1047,7 @@ mod tests {
         });
         let result = extract_metrics(&rpc_json);
         assert!(result.is_err());
-        let err = format!("{:#}", result.as_ref().unwrap_err());
+        let err = format!("{:#}", result.unwrap_err());
         assert!(
             err.contains("transactionData"),
             "error should mention transactionData, got: {}",
@@ -1103,6 +1115,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_budget_toml_returns_default() {
+        let path = unique_test_path();
+        fs::write(&path, "\n\n").expect("failed to write empty budget.toml");
+
+        let config = load_budget_toml(&path).expect("empty file should return default");
+        assert!(config.network.is_none());
+        assert!(config.source.is_none());
+        assert!(config.functions.is_empty());
+    }
+
+    #[test]
     fn malformed_budget_toml_errors_with_parse_message() {
         let path = unique_test_path();
         fs::write(
@@ -1135,7 +1158,7 @@ mod tests {
         let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048}}"#;
         let result = TransactionData::parse_json(json_str);
         assert!(result.is_err(), "Parsing should fail on missing field");
-        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("write_bytes"),
             "Error should mention missing field, got: {}",
@@ -1148,7 +1171,7 @@ mod tests {
         let json_str = r#"{"resources": {"instructions": "not-a-number", "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
         let result = TransactionData::parse_json(json_str);
         assert!(result.is_err(), "Parsing should fail on non-numeric field");
-        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("invalid type") || err_msg.contains("not-a-number"),
             "Error should mention type mismatch, got: {}",
