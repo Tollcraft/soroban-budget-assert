@@ -1023,6 +1023,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+mod module_2;
+
 #[cfg(test)]
 mod module_8;
 
