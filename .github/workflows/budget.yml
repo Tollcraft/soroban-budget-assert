@@ -43,7 +43,7 @@ jobs:
         # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
         
         # Mocking the JSON output for the demo so CI passes without testnet secrets:
-        echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+        echo '[{"kind":"function","package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"kind":"function","package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096},{"kind":"subtotal","package":"amm-pool-contract","function":"","metric":"CPU Instructions","value":1000000},{"kind":"subtotal","package":"amm-pool-contract","function":"","metric":"Read Bytes","value":4096},{"kind":"total","package":"","function":"","metric":"CPU Instructions","value":1000000},{"kind":"total","package":"","function":"","metric":"Read Bytes","value":4096}]' > current_report.json
 
     - name: Record History Dataset
       if: github.ref == 'refs/heads/main'

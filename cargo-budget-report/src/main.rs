@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::Command;
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
@@ -39,8 +39,17 @@ struct FunctionConfig {
     args: Vec<String>,
 }
 
+#[derive(serde::Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum BudgetKind {
+    Function,
+    Subtotal,
+    Total,
+}
+
 #[derive(serde::Serialize)]
 struct CostReport {
+    kind: BudgetKind,
     package: String,
     function: String,
     metric: &'static str,
@@ -100,6 +109,7 @@ fn main() -> Result<()> {
         .context("failed to execute cargo metadata")?;
 
     let mut reports = Vec::new();
+    let mut failed_simulations: u32 = 0;
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -235,6 +245,7 @@ fn main() -> Result<()> {
                     function,
                     String::from_utf8_lossy(&invoke_output.stderr)
                 );
+                failed_simulations += 1;
                 continue;
             }
 
@@ -283,6 +294,7 @@ fn main() -> Result<()> {
 
             if let Some(error) = rpc_resp.get("error") {
                 eprintln!("Warning: RPC error for {}: {}", function, error);
+                failed_simulations += 1;
                 continue;
             }
 
@@ -316,18 +328,21 @@ fn main() -> Result<()> {
             let write_bytes = parsed["resources"]["write_bytes"].as_u64().unwrap_or(0) as u32;
 
             reports.push(CostReport {
+                kind: BudgetKind::Function,
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "CPU Instructions",
                 value: instructions,
             });
             reports.push(CostReport {
+                kind: BudgetKind::Function,
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "Read Bytes",
                 value: read_bytes,
             });
             reports.push(CostReport {
+                kind: BudgetKind::Function,
                 package: package.name.to_string(),
                 function: function.clone(),
                 metric: "Write Bytes",
@@ -337,8 +352,50 @@ fn main() -> Result<()> {
     }
 
     if reports.is_empty() {
-        eprintln!("No successful simulations to report.");
+        if failed_simulations > 0 {
+            eprintln!(
+                "Note: {} function simulation(s) failed. No successful simulations to report.",
+                failed_simulations
+            );
+        } else {
+            eprintln!("No successful simulations to report.");
+        }
         return Ok(());
+    }
+
+    // ── Compute per-package subtotals (per metric) ──────────────────────────
+    // Only function-level rows contribute; aggregates are never double-counted.
+    let mut pkg_metric_sums: BTreeMap<(String, &str), u32> = BTreeMap::new();
+    for r in &reports {
+        *pkg_metric_sums
+            .entry((r.package.clone(), r.metric))
+            .or_insert(0) += r.value;
+    }
+    for ((pkg, metric), total) in &pkg_metric_sums {
+        reports.push(CostReport {
+            kind: BudgetKind::Subtotal,
+            package: pkg.clone(),
+            function: String::new(),
+            metric,
+            value: *total,
+        });
+    }
+
+    // ── Compute workspace totals (per metric) ───────────────────────────────
+    let mut workspace_totals: BTreeMap<&str, u32> = BTreeMap::new();
+    for r in &reports {
+        if r.kind == BudgetKind::Function {
+            *workspace_totals.entry(r.metric).or_insert(0) += r.value;
+        }
+    }
+    for (metric, total) in &workspace_totals {
+        reports.push(CostReport {
+            kind: BudgetKind::Total,
+            package: String::new(),
+            function: String::new(),
+            metric,
+            value: *total,
+        });
     }
 
     if args.json {
@@ -346,14 +403,35 @@ fn main() -> Result<()> {
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
     } else {
+        // ── Sort: function rows first, then subtotals, then totals ──────────
+        fn kind_order(k: &BudgetKind) -> u8 {
+            match k {
+                BudgetKind::Function => 0,
+                BudgetKind::Subtotal => 1,
+                BudgetKind::Total => 2,
+            }
+        }
+        reports.sort_by(|a, b| {
+            kind_order(&a.kind)
+                .cmp(&kind_order(&b.kind))
+                .then_with(|| a.package.cmp(&b.package))
+                .then_with(|| a.function.cmp(&b.function))
+                .then_with(|| a.metric.cmp(b.metric))
+        });
+
         println!("\n=== WORKSPACE BUDGET REPORT ===");
         let table_reports: Vec<TableCostReport> = reports
             .into_iter()
             .map(|r| {
                 let formatted = format_with_commas_and_units(r.value, r.metric);
+                let (pkg_display, func_display) = match r.kind {
+                    BudgetKind::Subtotal => (r.package, "\u{2014} SUBTOTAL \u{2014}".to_string()),
+                    BudgetKind::Total => ("\u{2014} TOTAL \u{2014}".to_string(), String::new()),
+                    BudgetKind::Function => (r.package, r.function),
+                };
                 TableCostReport {
-                    package: r.package,
-                    function: r.function,
+                    package: pkg_display,
+                    function: func_display,
                     metric: r.metric,
                     value: formatted,
                 }
@@ -362,6 +440,13 @@ fn main() -> Result<()> {
         let table = Table::new(table_reports).to_string();
         println!("{}", table);
         println!("\nSummary: The metrics above represent the total unrefundable network execution costs required to run your contract functions.");
+        println!("  Subtotals show per-package sums; totals show the entire workspace.");
+        if failed_simulations > 0 {
+            println!(
+                "  * {} function simulation(s) failed and are excluded from all aggregates.",
+                failed_simulations
+            );
+        }
         println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
     }
 

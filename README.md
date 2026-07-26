@@ -56,6 +56,42 @@ args = ["--n", "10000"]
 cargo budget-report
 ```
 
+Example table output:
+```
+=== WORKSPACE BUDGET REPORT ===
+| package            | function             | metric          | value        |
+| amm-pool-contract  | do_expensive_work    | CPU Instructions | 756,678 inst.|
+| amm-pool-contract  | do_expensive_work    | Read Bytes       | 4,096 B     |
+| amm-pool-contract  | do_expensive_work    | Write Bytes      | 0 B         |
+| amm-pool-contract  | — SUBTOTAL —        | CPU Instructions | 756,678 inst.|
+| amm-pool-contract  | — SUBTOTAL —        | Read Bytes       | 4,096 B     |
+| amm-pool-contract  | — SUBTOTAL —        | Write Bytes      | 0 B         |
+| — TOTAL —          |                     | CPU Instructions | 756,678 inst.|
+| — TOTAL —          |                     | Read Bytes       | 4,096 B     |
+| — TOTAL —          |                     | Write Bytes      | 0 B         |
+
+Summary: The metrics above represent the total unrefundable network
+  execution costs required to run your contract functions.
+  Subtotals show per-package sums; totals show the entire workspace.
+* Note: These are simulated numbers on testnet and may vary slightly
+  depending on ledger state.
+```
+
+Example JSON output (with `--json`):
+```json
+[
+  { "kind": "function", "package": "amm-pool-contract", "function": "do_expensive_work", "metric": "CPU Instructions", "value": 756678 },
+  { "kind": "function", "package": "amm-pool-contract", "function": "do_expensive_work", "metric": "Read Bytes", "value": 4096 },
+  { "kind": "function", "package": "amm-pool-contract", "function": "do_expensive_work", "metric": "Write Bytes", "value": 0 },
+  { "kind": "subtotal", "package": "amm-pool-contract", "function": "", "metric": "CPU Instructions", "value": 756678 },
+  { "kind": "subtotal", "package": "amm-pool-contract", "function": "", "metric": "Read Bytes", "value": 4096 },
+  { "kind": "subtotal", "package": "amm-pool-contract", "function": "", "metric": "Write Bytes", "value": 0 },
+  { "kind": "total", "package": "", "function": "", "metric": "CPU Instructions", "value": 756678 },
+  { "kind": "total", "package": "", "function": "", "metric": "Read Bytes", "value": 4096 },
+  { "kind": "total", "package": "", "function": "", "metric": "Write Bytes", "value": 0 }
+]
+```
+
 **Use Macros in Tests:**
 ```rust
 use budget_macros::budget_cpu_lt;
