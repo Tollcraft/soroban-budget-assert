@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = [
+    "mock_contract_a",
+    "mock_contract_b",
+]

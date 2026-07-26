@@ -2,13 +2,14 @@
 name = "amm-pool-contract"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = "22.0.0"
+soroban-sdk = "22.0.11"
 
 [dev-dependencies]
-soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+soroban-sdk = { version = "22.0.11", features = ["testutils"] }
 budget-macros = { path = "../budget-macros" }

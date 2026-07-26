@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Deterministic stand-in for `curl`. cargo-budget-report shells out to `curl`
+# to POST a `simulateTransaction` JSON-RPC request to a live Stellar RPC
+# endpoint; `tests/integration.rs` prepends this directory to PATH so that
+# call is intercepted here instead of reaching the network.
+set -euo pipefail
+
+# Drain stdin (the JSON-RPC payload piped in via `-d @-`) so the real
+# process's pipe never blocks or breaks.
+cat >/dev/null
+
+# `transactionData` is a base64 SorobanTransactionData XDR blob that decodes
+# to instructions=1000000, read_bytes=2048, write_bytes=4096 — the same
+# fixture value used by cargo-budget-report's own unit tests
+# (see fixtures/simulate_transaction_response_valid.json).
+cat <<'JSON'
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "transactionData": "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA=",
+    "minResourceFee": "1000"
+  }
+}
+JSON

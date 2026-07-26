@@ -1,0 +1,44 @@
+sequenceDiagram
+    autonumber
+    participant Dev as Developer
+    participant CLI as cargo budget-report
+    participant Cargo as Cargo / rustc
+    participant WASM as WASM Binary
+    participant Parser as WASM Parser
+    participant Stellar as Stellar CLI
+    participant RPC as Soroban RPC
+    participant Report as Budget Report
+
+    Dev->>CLI: cargo budget-report [--check] [--json]
+    CLI->>Cargo: cargo build -p <contract> --release\n--target wasm32-unknown-unknown
+    Cargo-->>WASM: amm_pool_contract.wasm (cdylib)
+
+    CLI->>Parser: wasmparser: scan exports
+    Parser-->>CLI: exported function names list
+
+    CLI->>CLI: Read budget.toml\n(network, source, per-function args/limits)
+
+    loop For each exported function in budget.toml
+        CLI->>Stellar: stellar contract invoke\n--function <fn> --args <args>
+        Stellar->>RPC: simulateTransaction (XDR)
+        RPC-->>Stellar: SimulateTransactionResponse\n(transactionData XDR)
+        Stellar-->>CLI: stdout JSON response
+
+        CLI->>CLI: Decode transactionData XDR\nExtract: CPU instructions,\nread bytes, write bytes
+
+        alt --check mode and limit configured
+            CLI->>CLI: Compare value vs cpu_limit /\nread_limit / write_limit
+            CLI-->>Report: PASS or FAIL per metric
+        else report-only mode
+            CLI-->>Report: Record value (no enforcement)
+        end
+    end
+
+    CLI->>Report: Render table (tabled) or\nemit JSON (--json flag)
+    Report-->>Dev: Console output +\ncurrent_report.json artifact
+
+    alt Any limit breached or simulation failed
+        CLI-->>Dev: exit code 1 (CI fails)
+    else All checks pass
+        CLI-->>Dev: exit code 0 (CI passes)
+    end
