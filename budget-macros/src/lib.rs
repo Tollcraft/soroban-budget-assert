@@ -37,6 +37,40 @@ impl Parse for BudgetLimit {
     }
 }
 
+/// Outcome of resolving a config value from `budget.json` at compile time.
+enum ConfigResolution {
+    /// Value found and parsed successfully.
+    Value(u64),
+    /// `budget.json` does not exist — caller should fall back to `u64::MAX`
+    /// for backward compatibility.
+    MissingFile,
+    /// File exists but could not be parsed as valid JSON.
+    MalformedJson,
+    /// File exists, is valid JSON, but the requested key was not found or
+    /// its value is not a valid u64.
+    KeyNotFound,
+}
+
+/// Resolve a config value from `budget.json` at compile time using serde_json.
+///
+/// This replaces the previous runtime linear scan (`content.find()`) with a
+/// single O(1) HashMap lookup performed during macro expansion.
+fn resolve_config_value(key: &str) -> ConfigResolution {
+    let path = std::path::Path::new("budget.json");
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return ConfigResolution::MissingFile,
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return ConfigResolution::MalformedJson,
+    };
+    match parsed.get(key).and_then(|v| v.as_u64()) {
+        Some(n) => ConfigResolution::Value(n),
+        None => ConfigResolution::KeyNotFound,
+    }
+}
+
 fn generate_budget_assert(
     attr: TokenStream,
     item: TokenStream,
@@ -76,28 +110,40 @@ fn generate_budget_assert(
                 None => u64::MAX,
             }
         },
-        BudgetLimit::Config(key) => quote! {
-            {
-                let path = std::path::Path::new("budget.json");
-                match std::fs::read_to_string(path) {
-                    Ok(content) => {
-                        #[allow(unused_parens)]
-                        match parse_config_value(&content, #key) {
-                            Some(v) => v,
-                            None => {
-                                panic!(
-                                    "{}: key '{}' not found or invalid in budget.json",
-                                    #metric_label,
-                                    #key,
-                                )
-                            }
-                        }
+        BudgetLimit::Config(key) => {
+            // Resolve the config value at compile time using serde_json.
+            // This replaces the previous runtime linear scan with a single
+            // O(1) HashMap lookup, performed during macro expansion.
+            match resolve_config_value(&key) {
+                ConfigResolution::Value(n) => quote! { #n },
+                // Preserve backward compatibility: missing file → u64::MAX (no limit).
+                ConfigResolution::MissingFile => quote! { u64::MAX },
+                // File exists but is malformed → panic with descriptive message.
+                ConfigResolution::MalformedJson => quote! {
+                    {
+                        panic!(
+                            "{}: budget.json is malformed and could not be parsed",
+                            #metric_label,
+                        )
                     }
-                    Err(_) => u64::MAX,
-                }
+                },
+                // File exists, valid JSON, but key not found → panic with descriptive message.
+                ConfigResolution::KeyNotFound => quote! {
+                    {
+                        panic!(
+                            "{}: key '{}' not found in budget.json",
+                            #metric_label,
+                            #key,
+                        )
+                    }
+                },
             }
-        },
+        }
     };
+
+    // The `Config` variant is now resolved at compile time, so the inline
+    // `parse_config_value` closure was removed. `budget_env_resolve` is
+    // still needed for the `EnvVar` variant below.
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
 
@@ -119,24 +165,6 @@ fn generate_budget_assert(
             #[allow(unused_variables)]
             let budget_env_resolve = |var: &str| -> Option<String> {
                 std::env::var(var).ok()
-            };
-
-            #[allow(unused_variables)]
-            let parse_config_value = |content: &str, key: &str| -> Option<u64> {
-                let key_pattern = format!("\"{}\"", key);
-                let key_start = content.find(&key_pattern)?;
-                let after_key = &content[key_start + key_pattern.len()..];
-                let colon_pos = after_key.find(':')?;
-                let after_colon = after_key[colon_pos + 1..].trim();
-                let num_end = after_colon
-                    .find(|c: char| !c.is_ascii_digit() && c != ',' && c != '}')
-                    .unwrap_or(after_colon.len());
-                let num_str = after_colon[..num_end]
-                    .trim()
-                    .trim_end_matches(',')
-                    .trim_end_matches('}')
-                    .trim_matches('"');
-                num_str.parse().ok()
             };
 
             #(#stmts)*
