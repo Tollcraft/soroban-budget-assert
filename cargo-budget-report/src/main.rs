@@ -1051,10 +1051,10 @@ fn main() -> Result<()> {
                 let formatted = format_with_commas_and_units(u64::from(value), report.metric);
                 let (pkg_display, func_display) = match report.kind {
                     BudgetKind::Subtotal => {
-                        (report.package.clone(), "\u{2014} SUBTOTAL \u{2014}".to_string())
+                        (report.package.clone(), "-- SUBTOTAL --".to_string())
                     }
                     BudgetKind::Total => {
-                        ("\u{2014} TOTAL \u{2014}".to_string(), String::new())
+                        ("-- TOTAL --".to_string(), String::new())
                     }
                     BudgetKind::Function => (report.package.clone(), report.function.clone()),
                 };
