@@ -7,9 +7,21 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
+
+/// Maximum number of total deployment attempts (1 initial + 3 retries)
+/// when friendbot funding is suspected to have failed transiently
+/// (rate-limiting, network hiccups, or the account not being fully
+/// confirmed on-ledger yet).
+const MAX_DEPLOY_ATTEMPTS: u32 = 4;
+
+/// Initial backoff delay between deployment retries. Doubles on each
+/// subsequent attempt (2 s → 4 s → 8 s).
+const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 
 /// Commented budget.toml template written by `cargo budget-report --init`.
 const BUDGET_TOML_TEMPLATE: &str = r#"# -- Budget report configuration ---------------------------------------------
@@ -497,37 +509,62 @@ fn run_preflight_checks() -> Result<()> {
     Ok(())
 }
 
-/// Resolves the Soroban RPC endpoint URL based on CLI arguments, TOML configuration,
-/// and well-known network mappings.
+/// Deploys a contract WASM to the network with automatic retry on
+/// friendbot-related transient failures.
 ///
-/// Precedence order:
-/// 1. Explicit CLI `--rpc-url`
-/// 2. Explicit `rpc_url` in `budget.toml`
-/// 3. Well-known network mapping (`testnet`, `futurenet`, `mainnet`/`public`, `local`/`standalone`)
-/// 4. Errors out if the network is unknown and no explicit `rpc_url` is provided.
-fn resolve_rpc_url(
-    cli_rpc_url: Option<&str>,
-    toml_rpc_url: Option<&str>,
+/// The `stellar contract deploy` command implicitly triggers friendbot
+/// funding for the source account on testnet. Friendbot may return 429
+/// (rate-limited) or the account may not be confirmed on-ledger yet.
+/// This function makes up to `MAX_DEPLOY_ATTEMPTS` total attempts with
+/// exponential backoff before giving up.
+fn deploy_contract_with_retry(
+    wasm_path: &Path,
+    source: &str,
     network: &str,
+    package_name: &str,
 ) -> Result<String> {
-    if let Some(url) = cli_rpc_url.filter(|s| !s.trim().is_empty()) {
-        return Ok(url.trim().to_string());
+    let mut last_error = String::new();
+
+    for attempt in 0..MAX_DEPLOY_ATTEMPTS {
+        if attempt > 0 {
+            let delay = INITIAL_RETRY_DELAY_SECS * 2u64.pow(attempt - 1);
+            eprintln!(
+                "Deploy attempt {}/{} failed. Retrying in {} s...",
+                attempt, MAX_DEPLOY_ATTEMPTS, delay
+            );
+            thread::sleep(Duration::from_secs(delay));
+        }
+
+        let deploy_output = Command::new("stellar")
+            .args([
+                "contract",
+                "deploy",
+                "--wasm",
+                wasm_path.to_str().context("wasm path is not valid UTF-8")?,
+                "--source",
+                source,
+                "--network",
+                network,
+            ])
+            .output()
+            .context("failed to execute stellar-cli deploy")?;
+
+        if deploy_output.status.success() {
+            let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
+                .trim()
+                .to_string();
+            return Ok(contract_id);
+        }
+
+        last_error = String::from_utf8_lossy(&deploy_output.stderr).to_string();
     }
 
-    if let Some(url) = toml_rpc_url.filter(|s| !s.trim().is_empty()) {
-        return Ok(url.trim().to_string());
-    }
-
-    match network.trim().to_lowercase().as_str() {
-        "testnet" => Ok("https://soroban-testnet.stellar.org:443".to_string()),
-        "futurenet" => Ok("https://rpc-futurenet.stellar.org:443".to_string()),
-        "mainnet" | "public" => Ok("https://soroban-rpc.stellar.org:443".to_string()),
-        "local" | "standalone" => Ok("http://localhost:8000/soroban/rpc".to_string()),
-        _ => anyhow::bail!(
-            "Unknown network '{}' and no --rpc-url or budget.toml rpc_url provided. Please specify a well-known network (testnet, futurenet, mainnet, local) or provide an explicit RPC endpoint URL.",
-            network
-        ),
-    }
+    anyhow::bail!(
+        "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
+        package_name,
+        MAX_DEPLOY_ATTEMPTS,
+        last_error
+    )
 }
 
 fn main() -> Result<()> {
@@ -642,33 +679,11 @@ fn main() -> Result<()> {
         spinner.set_message(package.name.to_string());
         spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
-        let deploy_output = Command::new("stellar")
-            .args([
-                "contract",
-                "deploy",
-                "--wasm",
-                wasm_path.as_str(),
-                "--source",
-                &source,
-                "--network",
-                &network,
-            ])
-            .output()
-            .context("failed to execute stellar-cli deploy")?;
+        let contract_id =
+            deploy_contract_with_retry(wasm_path.as_std_path(), &source, &network, &package.name)?;
 
         spinner.finish_and_clear();
 
-        if !deploy_output.status.success() {
-            anyhow::bail!(
-                "Failed to deploy {}. Ensure your source account is funded.\nError: {}",
-                package.name,
-                String::from_utf8_lossy(&deploy_output.stderr)
-            );
-        }
-
-        let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
-            .trim()
-            .to_string();
         eprintln!("Contract deployed at: {}", contract_id);
 
         for function in exported_fns {
@@ -1033,7 +1048,7 @@ mod tests {
         });
         let result = extract_metrics(&rpc_json);
         assert!(result.is_err());
-        let err = format!("{:#}", result.as_ref().unwrap_err());
+        let err = format!("{:#}", result.unwrap_err());
         assert!(
             err.contains("transactionData"),
             "error should mention transactionData, got: {}",
@@ -1133,7 +1148,7 @@ mod tests {
         let json_str = r#"{"resources": {"instructions": 1000, "disk_read_bytes": 2048}}"#;
         let result = TransactionData::parse_json(json_str);
         assert!(result.is_err(), "Parsing should fail on missing field");
-        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("write_bytes"),
             "Error should mention missing field, got: {}",
@@ -1146,7 +1161,7 @@ mod tests {
         let json_str = r#"{"resources": {"instructions": "not-a-number", "disk_read_bytes": 2048, "write_bytes": 3072}}"#;
         let result = TransactionData::parse_json(json_str);
         assert!(result.is_err(), "Parsing should fail on non-numeric field");
-        let err_msg = format!("{:#}", result.as_ref().unwrap_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
         assert!(
             err_msg.contains("invalid type") || err_msg.contains("not-a-number"),
             "Error should mention type mismatch, got: {}",

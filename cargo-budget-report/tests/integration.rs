@@ -205,3 +205,67 @@ fn check_flag_fails_when_a_limit_is_exceeded() {
         .stdout(contains("mock-contract-a::ping [CPU Instructions]"))
         .stdout(contains("FAIL"));
 }
+
+// ── Retry mechanism integration tests ───────────────────────────────────
+
+#[test]
+fn retry_mechanism_succeeds_after_transient_deploy_failures() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .env("MOCK_STELLAR_FAIL_COUNT", "3")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should still produce a valid report even after 3 retries.
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "report should succeed after transient failures, got: {stdout}"
+    );
+    assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
+
+    // The stderr should contain retry messages.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Retrying in"),
+        "stderr should contain retry messages, got: {stderr:?}"
+    );
+}
+
+#[test]
+fn retry_mechanism_fails_after_exhausting_all_attempts() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_2");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .env("MOCK_STELLAR_FAIL_COUNT", "10")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should fail after MAX_DEPLOY_ATTEMPTS attempts.
+    assert!(
+        stderr.contains("after 4 attempts"),
+        "stderr should mention exhausted retries, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("source account is funded"),
+        "stderr should mention source account funding, got: {stderr:?}"
+    );
+}

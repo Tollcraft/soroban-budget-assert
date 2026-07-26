@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env, Symbol, Val, Vec};
 
 const RESERVE_A: Symbol = symbol_short!("resA");
 const RESERVE_B: Symbol = symbol_short!("resB");
@@ -7,6 +7,16 @@ const TOTAL_SHARES: Symbol = symbol_short!("shares");
 const BAL_A: Symbol = symbol_short!("balA");
 const BAL_B: Symbol = symbol_short!("balB");
 const LP_BAL: Symbol = symbol_short!("lpBl");
+
+#[contract]
+pub struct HelperContract;
+
+#[contractimpl]
+impl HelperContract {
+    pub fn multiply(_env: Env, a: u32, b: u32) -> u32 {
+        a.wrapping_mul(b)
+    }
+}
 
 #[contract]
 pub struct ConstantProductPool;
@@ -171,6 +181,19 @@ impl ConstantProductPool {
         }
         env.storage().instance().set(&symbol_short!("vec"), &vec);
 
+        result
+    }
+
+    pub fn do_cross_contract_work(env: Env, other: Address, n: u32) -> u32 {
+        let mut result: u32 = 0;
+        for i in 0..n {
+            let product: u32 = env.invoke_contract(
+                &other,
+                &symbol_short!("multiply"),
+                vec![&env, Val::from(i), Val::from(i)],
+            );
+            result = result.wrapping_add(product);
+        }
         result
     }
 }
