@@ -630,8 +630,23 @@ fn main() -> Result<()> {
             anyhow::bail!("Failed to build {}", package.name);
         }
 
-        // Locate wasm
-        let wasm_name = package.name.replace('-', "_");
+        // Locate the cdylib target to derive the correct WASM filename.
+        // A crate's [lib] name may differ from its package name, so we
+        // cannot rely on package.name.replace('-', "_").
+        let cdylib_target = package
+            .targets
+            .iter()
+            .find(|t| t.crate_types.iter().any(|ct| *ct == "cdylib"));
+        let wasm_name = match cdylib_target {
+            Some(target) => target.name.clone(),
+            None => {
+                eprintln!(
+                    "Warning: no cdylib target found for package '{}' — skipping",
+                    package.name
+                );
+                continue;
+            }
+        };
         let wasm_path = metadata
             .target_directory
             .join("wasm32-unknown-unknown")
@@ -639,7 +654,13 @@ fn main() -> Result<()> {
             .join(format!("{}.wasm", wasm_name));
 
         if !wasm_path.exists() {
-            eprintln!("Warning: WASM not found at {}", wasm_path);
+            eprintln!(
+                "Error: WASM not found at {}\n  Package: {} (lib target: {})\n  The `cargo build` step above should have produced a cdylib WASM at this path.",
+                wasm_path.as_str(),
+                package.name,
+                wasm_name,
+            );
+            has_errors = true;
             continue;
         }
 
