@@ -1257,10 +1257,9 @@ mod tests {
 
     #[test]
     fn unknown_function_keys_produce_error() {
-        let err = toml::from_str::<BudgetToml>(
-            "[functions.do_expensive_work]\ncpu_lmit = 5000000\n",
-        )
-        .unwrap_err();
+        let err =
+            toml::from_str::<BudgetToml>("[functions.do_expensive_work]\ncpu_lmit = 5000000\n")
+                .unwrap_err();
         let err_text = err.to_string();
         assert!(
             err_text.contains("unknown field") || err_text.contains("cpu_lmit"),
