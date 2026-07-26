@@ -1,7 +1,7 @@
 //! Utility functions and unit tests for edge-case coverage (task-28).
 /// Returns the index where `val` should be inserted into `arr` (sorted
 /// ascending) to maintain the sort order. If `arr` is empty returns `0`.
-pub fn find_insert_pos(arr: &[i32], val: i32) -> usize {
+fn find_insert_pos(arr: &[i32], val: i32) -> usize {
     let mut lo = 0usize;
     let mut hi = arr.len();
     while lo < hi {
@@ -17,7 +17,7 @@ pub fn find_insert_pos(arr: &[i32], val: i32) -> usize {
 
 /// Sums `u64` values returning `None` on overflow. For an empty slice
 /// returns `Some(0)`.
-pub fn sum_u64_checked(items: &[u64]) -> Option<u64> {
+fn sum_u64_checked(items: &[u64]) -> Option<u64> {
     let mut acc: u128 = 0;
     for &v in items {
         acc += v as u128;
