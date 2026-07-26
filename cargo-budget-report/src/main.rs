@@ -4,12 +4,15 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
+
+mod module_35;
+use module_35::FilterSet;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
@@ -672,8 +675,7 @@ fn main() -> Result<()> {
         .exec()
         .context("failed to execute cargo metadata")?;
 
-    let requested_packages: Vec<String> = args.package;
-    let requested_functions: Vec<String> = args.function;
+    let filter = FilterSet::new(args.package, args.function);
     let force_deploy = args.force_deploy;
     let mut cache = load_cache();
 
@@ -691,7 +693,7 @@ fn main() -> Result<()> {
             continue;
         }
 
-        if !requested_packages.is_empty() && !requested_packages.contains(&package.name) {
+        if !filter.wants_package(&package.name) {
             continue;
         }
 
@@ -775,7 +777,7 @@ fn main() -> Result<()> {
         eprintln!("Contract deployed at: {}", contract_id);
 
         for function in exported_fns {
-            if !requested_functions.is_empty() && !requested_functions.contains(&function) {
+            if !filter.wants_function(&function) {
                 continue;
             }
 
@@ -844,8 +846,8 @@ fn main() -> Result<()> {
     }
 
     // Validate requested package names
-    if !requested_packages.is_empty() {
-        let cdylib_names: Vec<&str> = metadata
+    if filter.has_packages() {
+        let cdylib_names: HashSet<&str> = metadata
             .packages
             .iter()
             .filter(|p| {
@@ -855,19 +857,16 @@ fn main() -> Result<()> {
             })
             .map(|p| p.name.as_str())
             .collect();
-        let unknown_pkgs: Vec<&String> = requested_packages
-            .iter()
-            .filter(|p| !cdylib_names.contains(&p.as_str()))
-            .collect();
+        let unknown_pkgs = filter.unknown_packages(&cdylib_names);
         if !unknown_pkgs.is_empty() {
             anyhow::bail!(
                 "Unknown package(s): {}\nAvailable cdylib packages: {}",
-                unknown_pkgs
+                unknown_pkgs.join(", "),
+                cdylib_names
                     .iter()
-                    .map(|p| p.as_str())
+                    .map(|s| *s)
                     .collect::<Vec<_>>()
                     .join(", "),
-                cdylib_names.join(", ")
             );
         }
     }
