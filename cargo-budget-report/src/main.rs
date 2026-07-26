@@ -5,7 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -417,6 +417,26 @@ fn simulate_function(
     }
 }
 
+/// Walk upward from the current directory looking for `budget.toml`.
+///
+/// Returns the path to the first `budget.toml` found, or `"budget.toml"`
+/// (relative to the original CWD) when no ancestor contains one—which
+/// lets `load_budget_toml` fall back to its default-empty behaviour.
+fn find_budget_toml() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("budget.toml");
+        if candidate.exists() {
+            return candidate;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return PathBuf::from("budget.toml"),
+        }
+    }
+}
+
 fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
         Ok(contents) => toml::from_str(&contents)
@@ -571,7 +591,8 @@ fn main() -> Result<()> {
     // ── Preflight environment checks ──────────────────────────────────
     run_preflight_checks()?;
 
-    let toml_config = load_budget_toml("budget.toml")?;
+    let budget_toml_path = find_budget_toml();
+    let toml_config = load_budget_toml(&budget_toml_path)?;
 
     let network = args
         .network
