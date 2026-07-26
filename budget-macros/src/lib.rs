@@ -347,62 +347,6 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     )
 }
 
-/// Asserts that the memory bytes used by `env` are strictly less than a specified limit.
-///
-/// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
-/// The macro appends an assertion check to the body of the test function that measures
-/// `env.cost_estimate().budget().memory_bytes_cost()`.
-///
-/// # Local Estimates vs Network Costs
-///
-/// This attribute checks a **local estimate** of memory byte consumption.
-/// Local estimates (such as raw Rust test execution or unoptimized local WASM builds) can
-/// strictly underestimate or differ significantly from real Testnet or Futurenet costs, which
-/// include host function overheads, VM heap/stack allocation overheads, and protocol execution parameters.
-///
-/// Use local assertions as a fast local regression gate. For true network ground truth, use
-/// `cargo budget-report`.
-///
-/// # Usage Examples
-///
-/// ## Static Limit
-///
-/// Pass an integer literal representing the maximum allowed memory bytes:
-///
-/// ```rust,ignore
-/// use budget_macros::budget_mem_lt;
-/// use soroban_sdk::Env;
-///
-/// #[test]
-/// #[budget_mem_lt(500_000)]
-/// fn test_memory_budget() {
-///     let env = Env::default();
-///     // ... setup contract client and invoke contract function ...
-/// }
-/// ```
-///
-/// ## Dynamic Limit via Environment Variable (`env = "VAR_NAME"`)
-///
-/// Read the limit dynamically from an environment variable at test runtime:
-///
-/// ```rust,ignore
-/// use budget_macros::budget_mem_lt;
-/// use soroban_sdk::Env;
-///
-/// #[test]
-/// #[budget_mem_lt(env = "MAX_MEMORY_BYTES")]
-/// fn test_memory_budget_dynamic() {
-///     let env = Env::default();
-///     // ... setup contract client and invoke contract function ...
-/// }
-/// ```
-///
-/// When using `env = "VAR_NAME"`:
-/// - If the environment variable is **unset**, the limit defaults to `u64::MAX` ("no limit"),
-///   allowing the test assertion to pass unconditionally.
-/// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
-///   the test panics at runtime with an explicit error naming the variable and invalid value.
-
 /// Asserts that the ledger write bytes used by `env` are less than N.
 ///
 /// Write bytes represent the total bytes written to ledger storage during
@@ -470,6 +414,62 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
         #input_fn
     })
 }
+
+/// Asserts that the memory bytes used by `env` are strictly less than a specified limit.
+///
+/// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
+/// The macro appends an assertion check to the body of the test function that measures
+/// `env.cost_estimate().budget().memory_bytes_cost()`.
+///
+/// # Local Estimates vs Network Costs
+///
+/// This attribute checks a **local estimate** of memory byte consumption.
+/// Local estimates (such as raw Rust test execution or unoptimized local WASM builds) can
+/// strictly underestimate or differ significantly from real Testnet or Futurenet costs, which
+/// include host function overheads, VM heap/stack allocation overheads, and protocol execution parameters.
+///
+/// Use local assertions as a fast local regression gate. For true network ground truth, use
+/// `cargo budget-report`.
+///
+/// # Usage Examples
+///
+/// ## Static Limit
+///
+/// Pass an integer literal representing the maximum allowed memory bytes:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_mem_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_mem_lt(500_000)]
+/// fn test_memory_budget() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// ## Dynamic Limit via Environment Variable (`env = "VAR_NAME"`)
+///
+/// Read the limit dynamically from an environment variable at test runtime:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_mem_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_mem_lt(env = "MAX_MEMORY_BYTES")]
+/// fn test_memory_budget_dynamic() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// When using `env = "VAR_NAME"`:
+/// - If the environment variable is **unset**, the limit defaults to `u64::MAX` ("no limit"),
+///   allowing the test assertion to pass unconditionally.
+/// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
+///   the test panics at runtime with an explicit error naming the variable and invalid value.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = match syn::parse2::<BudgetLimit>(attr.into()) {
