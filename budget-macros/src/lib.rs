@@ -77,6 +77,36 @@ impl Parse for BudgetSpec {
     }
 }
 
+/// Outcome of resolving a config value from `budget.json` at compile time.
+enum ConfigResolution {
+    /// Value found and parsed successfully.
+    Value(u64),
+    /// `budget.json` does not exist — caller should fall back to `u64::MAX`
+    /// for backward compatibility.
+    MissingFile,
+    /// File exists but could not be parsed as valid JSON.
+    MalformedJson,
+    /// File exists, is valid JSON, but the requested key was not found.
+    KeyNotFound,
+}
+
+/// Resolve a config value from `budget.json` at compile time using serde_json.
+fn resolve_config_value(key: &str) -> ConfigResolution {
+    let path = std::path::Path::new("budget.json");
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return ConfigResolution::MissingFile,
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return ConfigResolution::MalformedJson,
+    };
+    match parsed.get(key).and_then(|v| v.as_u64()) {
+        Some(n) => ConfigResolution::Value(n),
+        None => ConfigResolution::KeyNotFound,
+    }
+}
+
 fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::TokenStream {
     match limit {
         BudgetLimit::Int(n) => quote! { #n },
@@ -92,20 +122,79 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                 }))
                 .unwrap_or(u64::MAX)
         },
-        BudgetLimit::Config(key) => quote! {
-            std::fs::read_to_string(std::path::Path::new("budget.json"))
-                .ok()
-                .map(|content| {
-                    parse_config_value(&content, #key).unwrap_or_else(|| {
-                        panic!(
-                            "{}: key '{}' not found or invalid in budget.json",
-                            #metric_label,
-                            #key,
-                        )
-                    })
-                })
-                .unwrap_or(u64::MAX)
-        },
+        BudgetLimit::Config(key) => {
+            // Try to resolve the config value at compile time using serde_json.
+            // When `budget.json` exists during compilation, the value is injected
+            // directly as a literal — zero runtime overhead (O(1) HashMap lookup
+            // done once during macro expansion).
+            match resolve_config_value(&key) {
+                ConfigResolution::Value(n) => quote! { #n },
+                // Fall back to runtime resolution when `budget.json` is not
+                // available at compile time (e.g. tests that create the file
+                // dynamically). Uses std-only code for maximum compatibility.
+                _ => quote! {
+                    {
+                        let path = ::std::path::Path::new("budget.json");
+                        match ::std::fs::read_to_string(path) {
+                            Ok(content) => {
+                                let config_map: ::std::collections::HashMap<String, u64> = {
+                                    let mut map = ::std::collections::HashMap::new();
+                                    let bytes = content.as_bytes();
+                                    let mut i = 0;
+                                    while i < bytes.len() {
+                                        match bytes[i] {
+                                            b'{' | b',' | b' ' | b'\n' | b'\t' | b'\r' => {
+                                                i += 1;
+                                            }
+                                            b'}' => break,
+                                            b'"' => {
+                                                i += 1;
+                                                let key_start = i;
+                                                while i < bytes.len() && bytes[i] != b'"' {
+                                                    i += 1;
+                                                }
+                                                let key = ::std::string::String::from_utf8_lossy(
+                                                    &bytes[key_start..i]
+                                                ).into_owned();
+                                                i += 1;
+                                                while i < bytes.len()
+                                                    && (bytes[i] == b':' || bytes[i] == b' '
+                                                        || bytes[i] == b'\n' || bytes[i] == b'\t')
+                                                {
+                                                    i += 1;
+                                                }
+                                                let val_start = i;
+                                                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                                                    i += 1;
+                                                }
+                                                if val_start < i {
+                                                    if let Ok(n) = ::std::string::String::from_utf8_lossy(
+                                                        &bytes[val_start..i]
+                                                    ).parse::<u64>() {
+                                                        map.insert(key, n);
+                                                    }
+                                                }
+                                            }
+                                            _ => { i += 1; }
+                                        }
+                                    }
+                                    map
+                                };
+                                match config_map.get(#key).copied() {
+                                    Some(v) => v,
+                                    None => ::std::panic!(
+                                        "{}: key '{}' not found or invalid in budget.json",
+                                        #metric_label,
+                                        #key,
+                                    ),
+                                }
+                            }
+                            Err(_) => u64::MAX,
+                        }
+                    }
+                },
+            }
+        }
     }
 }
 
@@ -172,7 +261,7 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
 
     *input_fn.block = match syn::parse2(new_block) {
         Ok(block) => block,
-        Err(e) => return TokenStream::from(e.into_compile_error()),
+        Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
     TokenStream::from(quote! {
