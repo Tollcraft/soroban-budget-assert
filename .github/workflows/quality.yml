@@ -22,3 +22,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check for unused dependencies
+        run: |
+          cargo install cargo-machete --version 0.6.2 --locked
+          cargo machete
