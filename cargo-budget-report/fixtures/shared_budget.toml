@@ -1,0 +1,24 @@
+# -- Shared budget.toml -------------------------------------------------------
+# This file exercises the full shared schema consumed by both Tollcraft tools:
+#
+#   cargo-budget-report  -- network, source, [functions.*]
+#   soroban-cost-linter  -- [lints] (and any other foreign top-level sections)
+#
+# Foreign sections are silently accepted so that a single file can serve both
+# tools without parse errors.
+
+network = "testnet"
+source = "alice"
+
+[functions.do_expensive_work]
+args = ["--n", "10000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
+
+[functions.require_auth_only]
+args = ["--addr", "alice"]
+
+# -- Linter configuration (consumed by soroban-cost-linter) -------------------
+[lints]
+complexity = "warn"

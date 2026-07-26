@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `cargo budget-report --check` flag: enforces per-function `cpu_limit`, `read_limit`, and `write_limit` declared in `budget.toml` against network-verified simulation costs. Prints a pass/fail line per function+metric and exits non-zero on any breach (or on any configured function whose simulation fails). Compiles with `--json` so entries gain `limit` and `pass` fields; the plain text and JSON output stay byte-for-byte identical to previous releases when `--check` is not passed.
+- Retry mechanism for friendbot funding during contract deployment: `cargo budget-report` now automatically retries `stellar contract deploy` up to 3 additional times (4 total attempts) with exponential backoff (2s → 4s → 8s) when friendbot funding is suspected to have failed transiently due to rate-limiting or network latency. This reduces CI flakes and manual re-runs when using testnet.
+
+- `cargo budget-report --csv` flag: emits the budget report as CSV instead of a table or JSON. Without `--check`, produces four columns (`package`, `function`, `metric`, `value`); with `--check`, produces six columns (`package`, `function`, `metric`, `value`, `limit`, `pass`). Includes simulation-failure rows in `--check` mode so CI consumers see every configured function. Composes with `--check` and can replace `--json` in shell pipelines that prefer CSV. enforces per-function `cpu_limit`, `read_limit`, and `write_limit` declared in `budget.toml` against network-verified simulation costs. Prints a pass/fail line per function+metric and exits non-zero on any breach (or on any configured function whose simulation fails). Compiles with `--json` so entries gain `limit` and `pass` fields; the plain text and JSON output stay byte-for-byte identical to previous releases when `--check` is not passed.
 - Per-function `cpu_limit`, `read_limit`, and `write_limit` fields on `[functions.<name>]` entries in `budget.toml`. Any field omitted means the metric is reported but not enforced.
 - Single-page landing site under `site/` with empirical cost-gap breakdown, two-tier architecture overview, quick-start guide, asciinema demo embed, and project resources.
 - Updated GitHub Actions Pages deployment workflow to serve static site files from `./site`.
@@ -17,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive unit tests for the cost-value formatter covering zero, single digits, thousands/millions boundaries, and `u32::MAX` across both unit suffixes.
 - Contributors should add a short changelog entry with their pull request when the change is user-visible.
 - Budget assertion tests for `require_auth` host calls: isolated `require_auth_only` contract function with CPU/memory budget assertions, plus per-operation deposit/swap/withdraw granular budget checks.
+- Budget assertion tests for `extend_ttl` operations: isolated `extend_instance_ttl` contract function with CPU/memory budget assertions and deliberate-regression fixtures, demonstrating how to budget-test ledger-rent operations.
 
 ### Fixed
 

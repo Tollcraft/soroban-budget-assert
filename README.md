@@ -27,7 +27,7 @@ The tool is split into two primary components:
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
    - A CLI tool that automatically discovers all contracts in your workspace.
-   - Compiles WASM, simulates execution on testnet, and reports the simulated resource amounts (CPU instructions, read/write bytes).
+   - Compiles WASM, simulates execution on testnet, and reports the simulated resource amounts (CPU instructions, read/write bytes) plus the compiled WASM binary size.
    - These are inputs to the non-refundable resource fee — not a total cost. Rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured; see [Measurement scope](https://tollcraft.gitbook.io/docs/budget-assert/reference#measurement-scope).
    - Configurable via a central `budget.toml` file.
 
@@ -97,6 +97,30 @@ function entry. Review and adjust the values for your project.
 To overwrite an existing file, add `--force`:
 ```bash
 cargo budget-report --init --force
+```
+
+The `budget.toml` file is shared between both Tollcraft tools —
+`cargo-budget-report` and `soroban-cost-linter` — so a single file at the
+workspace root serves both tools. Each tool silently ignores sections it
+does not own. Unknown keys inside `[functions.*]` blocks produce an error
+pointing to the offending key.
+
+Full shared schema:
+
+```toml
+# -- cargo-budget-report configuration ----------------------------------------
+network = "testnet"           # Target network: "testnet", "futurenet", "local"
+source = "alice"              # Stellar source account keypair name
+
+[functions.do_expensive_work]
+args = ["--n", "10000"]       # CLI arguments forwarded to the function
+cpu_limit = 5000000           # Optional CPU instruction limit (--check)
+read_limit = 5000             # Optional read-bytes limit (--check)
+write_limit = 1000            # Optional write-bytes limit (--check)
+
+# -- soroban-cost-linter configuration ----------------------------------------
+[lints]                       # Consumed by soroban-cost-linter; silently
+complexity = "warn"           # accepted by cargo-budget-report.
 ```
 
 ### 3. Usage

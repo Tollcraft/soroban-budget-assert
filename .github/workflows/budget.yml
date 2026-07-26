@@ -9,15 +9,12 @@ on:
 permissions:
   contents: read
 
-env:
-  STELLAR_CLI_VERSION: "21.5.3"
-
 jobs:
   budget-check:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
 
@@ -25,45 +22,46 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
-          target: wasm32-unknown-unknown
+          targets: wasm32v1-none wasm32-unknown-unknown
 
-      - name: Cache Rust dependencies and build artifacts
-        uses: Swatinem/rust-cache@v2
-      
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
-      - name: Cache Stellar CLI binary
-        id: stellar-cli-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/stellar
-          key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
-      
       - name: Install Stellar CLI
-        if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
         run: |
-          curl -sL https://github.com/stellar/stellar-cli/releases/download/v${{ env.STELLAR_CLI_VERSION }}/stellar-cli-${{ env.STELLAR_CLI_VERSION }}-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
           mv stellar ~/.cargo/bin/
 
+      - name: Configure Stellar Identity
+        run: stellar keys add alice --secret-key "${{ secrets.ALICE_SECRET_KEY }}"
+        env:
+          STELLAR_ACCOUNT: alice
+
       - name: Build Contracts
-        run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+        run: cargo build -p amm-pool-contract --release --target wasm32v1-none
 
       - name: Run Budget Macros Test (Tier A)
         run: cargo test
 
       - name: Run Budget Report (Tier B)
         run: |
-          # Optionally, this uses budget.toml to populate fields instead of args
-          # Ensure your repository has budget.toml configured for this to work
-          # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-          # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
-
-          # Mocking the JSON output for the demo so CI passes without testnet secrets:
-          echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+          set -e
+          attempt=0
+          max_attempts=4
+          delay=5
+          until cargo run --bin cargo-budget-report -- budget-report --json > current_report.json; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "cargo-budget-report failed after $max_attempts attempts. Aborting."
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts failed. Retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+          done
 
       - name: Upload Budget Report
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4.2.0
         with:
           name: budget-report
           path: current_report.json
@@ -72,57 +70,20 @@ jobs:
     needs: budget-check
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    concurrency:
-      group: gh-pages-deploy
-      cancel-in-progress: false
     permissions:
       contents: write
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Install Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Download Budget Report
+      uses: actions/download-artifact@v4
       with:
-        target: wasm32-unknown-unknown
-        components: rustfmt, clippy
-
-    - name: Install System Dependencies
-      run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
-
-    - name: Cache Stellar CLI binary
-      id: stellar-cli-cache
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/bin/stellar
-        key: ${{ runner.os }}-stellar-cli-${{ env.STELLAR_CLI_VERSION }}
-    
-    - name: Install Stellar CLI
-      if: steps.stellar-cli-cache.outputs.cache-hit != 'true'
-      run: |
-        curl -sL https://github.com/stellar/stellar-cli/releases/download/v${{ env.STELLAR_CLI_VERSION }}/stellar-cli-${{ env.STELLAR_CLI_VERSION }}-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-        mv stellar ~/.cargo/bin/
-    
-    - name: Build Contracts
-      run: cargo build --locked -p amm-pool-contract --release --target wasm32-unknown-unknown
-
-    - name: Run Budget Macros Test (Tier A)
-      run: cargo test --workspace
-
-    - name: Run Budget Report (Tier B)
-      run: |
-        # Optionally, this uses budget.toml to populate fields instead of args
-        # Ensure your repository has budget.toml configured for this to work
-        # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-        # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
-        
-        # Mocking the JSON output for the demo so CI passes without testnet secrets:
-        echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+name: budget-report
 
     - name: Record History Dataset
-      if: github.ref == 'refs/heads/main'
       run: |
         # Configure Git for the bot
         git config user.name "github-actions[bot]"
