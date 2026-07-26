@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Env, Symbol, Val, Vec};
+use soroban_sdk::{contract, contractimpl, symbol_short, vec, Address, Bytes, Env, Symbol, Val, Vec};
 
 const RESERVE_A: Symbol = symbol_short!("resA");
 const RESERVE_B: Symbol = symbol_short!("resB");
@@ -260,5 +260,25 @@ impl ConstantProductPool {
             result = result.wrapping_add(product);
         }
         result
+    }
+
+    /// Writes `n` large byte blobs into temporary storage, exercising
+    /// ledger write-bytes budget. Each entry is 256 bytes, so `n = 100`
+    /// produces ~25 600 bytes of ledger writes — enough to exceed a tight
+    /// write-bytes limit when asserted in tests.
+    pub fn do_write_heavy_work(env: Env, n: u32) {
+        for i in 0..n {
+            // Build a 256-byte payload for each entry so the write footprint
+            // grows quickly and is easy to reason about in assertions.
+            let mut payload = Bytes::new(&env);
+            for _ in 0..256_u32 {
+                payload.push_back(i as u8);
+            }
+            // Use temporary storage so ledger entries are created fresh on
+            // every invocation, maximising the measured write bytes.
+            env.storage()
+                .temporary()
+                .set(&(symbol_short!("wh"), i), &payload);
+        }
     }
 }
