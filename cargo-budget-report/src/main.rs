@@ -1050,10 +1050,8 @@ fn main() -> Result<()> {
                 let value = report.value.unwrap_or(0);
                 let formatted = format_with_commas_and_units(u64::from(value), report.metric);
                 let (pkg_display, func_display) = match report.kind {
-                    BudgetKind::Subtotal =>
-                        (report.package.clone(), "-- SUBTOTAL --".to_string()),
-                    BudgetKind::Total =>
-                        ("-- TOTAL --".to_string(), String::new()),
+                    BudgetKind::Subtotal => (report.package.clone(), "-- SUBTOTAL --".to_string()),
+                    BudgetKind::Total => ("-- TOTAL --".to_string(), String::new()),
                     BudgetKind::Function => (report.package.clone(), report.function.clone()),
                 };
                 TableCostReport {
