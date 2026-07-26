@@ -16,8 +16,7 @@ fn check_url_scheme_host(url: &str, expected_scheme: &str, expected_host: &str) 
 }
 
 pub fn is_github_repo_url(url: &str) -> bool {
-    check_url_scheme_host(url, "https", "github.com")
-        && url.contains("/Tollcraft/")
+    check_url_scheme_host(url, "https", "github.com") && url.contains("/Tollcraft/")
 }
 
 pub fn is_stellar_docs_url(url: &str) -> bool {
@@ -25,8 +24,7 @@ pub fn is_stellar_docs_url(url: &str) -> bool {
 }
 
 pub fn is_stellar_github_url(url: &str) -> bool {
-    check_url_scheme_host(url, "https", "github.com")
-        && url.contains("/stellar/")
+    check_url_scheme_host(url, "https", "github.com") && url.contains("/stellar/")
 }
 
 pub fn is_tollcraft_docs_url(url: &str) -> bool {
@@ -53,9 +51,7 @@ mod tests {
 
     #[test]
     fn github_repo_url_missing_org() {
-        assert!(!is_github_repo_url(
-            "https://github.com/other-org/repo"
-        ));
+        assert!(!is_github_repo_url("https://github.com/other-org/repo"));
     }
 
     #[test]
@@ -67,16 +63,12 @@ mod tests {
 
     #[test]
     fn stellar_docs_url_wrong_domain() {
-        assert!(!is_stellar_docs_url(
-            "https://stellar.org/docs"
-        ));
+        assert!(!is_stellar_docs_url("https://stellar.org/docs"));
     }
 
     #[test]
     fn stellar_docs_url_http_rejected() {
-        assert!(!is_stellar_docs_url(
-            "http://developers.stellar.org/docs"
-        ));
+        assert!(!is_stellar_docs_url("http://developers.stellar.org/docs"));
     }
 
     #[test]
@@ -95,9 +87,7 @@ mod tests {
 
     #[test]
     fn tollcraft_docs_url_wrong_host() {
-        assert!(!is_tollcraft_docs_url(
-            "https://other.gitbook.io/docs"
-        ));
+        assert!(!is_tollcraft_docs_url("https://other.gitbook.io/docs"));
     }
 
     #[test]
