@@ -17,17 +17,24 @@ Two conclusions drive the tool's design:
 
 ## Tier A: Local fast fail (`budget-macros`)
 
-Two attribute macros gate tests on local cost estimates. Each rewrites the test function's body: the original statements run first, then the macro appends a cost check against the test's local `env` variable.
+Two attribute macros gate tests on local cost estimates. Each rewrites the test function's body so a cost check against the test's local `env` variable runs on every path that leaves the test.
 
 ### `#[budget_cpu_lt(N)]` — CPU instruction assertion
 
-Appends the equivalent of:
+Injects the equivalent of:
 
-{% code title="appended by #[budget_cpu_lt(N)]" %}
+{% code title="injected by #[budget_cpu_lt(N)]" %}
 ```rust
-let budget = env.cost_estimate().budget();
-let cpu_cost = budget.cpu_instruction_cost();
-assert!(cpu_cost < N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cost, N);
+// ... original statements, with each `return e` rewritten to
+//     `return { let v = e; <check>; v }` ...
+
+let __budget_value = /* original trailing expression, if any */;
+{
+    let budget = env.cost_estimate().budget();
+    let cpu_cost = budget.cpu_instruction_cost();
+    assert!(cpu_cost < N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cost, N);
+}
+__budget_value
 ```
 {% endcode %}
 
@@ -35,13 +42,15 @@ assert!(cpu_cost < N, "CPU instruction cost {} exceeded limit {} - ...", cpu_cos
 
 Same shape, checks `budget.memory_bytes_cost()`:
 
-{% code title="appended by #[budget_mem_lt(N)]" %}
+{% code title="injected by #[budget_mem_lt(N)]" %}
 ```rust
 let budget = env.cost_estimate().budget();
 let mem_cost = budget.memory_bytes_cost();
 assert!(mem_cost < N, "Memory bytes cost {} exceeded limit {} - ...", mem_cost, N);
 ```
 {% endcode %}
+
+Binding the trailing expression keeps it as the function's value, so `fn test() -> Result<(), Error>` bodies ending in `Ok(())` compile; rewriting `return` keeps an early exit from skipping the check. The check stays inside the body's scope, so the limit expression still resolves against the body's own bindings. Two paths out of the body are not instrumented: a `?` that propagates an error (the test already fails on that error) and a `return` produced by another macro's expansion. A `return` written directly in macro invocation tokens is a compile error rather than a silent skip — see the [Reference](reference.md).
 
 Both assertions are strict (`<`). If the local estimate reaches the limit, the test panics and `cargo test` fails, which blocks CI. This tier is fast (no network) and deterministic, so it is safe to run on every push and pull request.
 
@@ -53,7 +62,7 @@ Either macro can read its limit from an environment variable at test time instea
 #[budget_cpu_lt(env = "MY_CPU_LIMIT")]
 ```
 
-When the variable is unset or not a valid `u64`, the limit defaults to `u64::MAX`, making the assertion pass unconditionally. This lets you raise or disable limits without recompiling — useful for CI matrix builds where different runners have different budgets.
+When the variable is unset, the limit defaults to `u64::MAX`, making the assertion pass unconditionally; a set-but-unparsable value panics. This lets you raise or disable limits without recompiling — useful for CI matrix builds where different runners have different budgets.
 
 ## Tier B: Network simulation (`cargo-budget-report`)
 
