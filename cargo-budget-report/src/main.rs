@@ -48,6 +48,10 @@ source = "alice"
 #
 # A missing `*_limit` field means that metric is reported but not enforced.
 # See `cargo budget-report --check` for limit enforcement.
+# Unknown keys inside a [functions.*] block produce an error.
+#
+# Foreign top-level sections (e.g. [lints] for soroban-cost-linter) are
+# silently accepted so that both tools can share a single budget.toml.
 
 [functions.do_expensive_work]
 args = ["--n", "10000"]
@@ -156,6 +160,7 @@ impl TransactionData {
 /// Controls which CLI arguments are forwarded to the contract invocation
 /// and which resource limits are enforced in `--check` mode.
 #[derive(serde::Deserialize, Default, Debug)]
+#[serde(deny_unknown_fields)]
 struct FunctionConfig {
     #[serde(default)]
     args: Vec<String>,
@@ -972,6 +977,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use stellar_xdr::curr::WriteXdr;
 
+    const SHARED_BUDGET_TOML: &str = include_str!("../fixtures/shared_budget.toml");
+
     fn unique_test_path() -> PathBuf {
         let mut path = std::env::temp_dir();
         let nanos = SystemTime::now()
@@ -1236,6 +1243,46 @@ mod tests {
         assert!(err_text.contains("failed to parse"));
         assert!(err_text.contains("line") || err_text.contains("Line"));
         assert!(err_text.contains("column") || err_text.contains("Column"));
+    }
+
+    #[test]
+    fn shared_budget_toml_parses_with_foreign_sections() {
+        let config: BudgetToml = toml::from_str(SHARED_BUDGET_TOML)
+            .expect("shared budget.toml with foreign [lints] section should parse");
+        assert_eq!(config.network.as_deref(), Some("testnet"));
+        assert_eq!(config.source.as_deref(), Some("alice"));
+        assert!(config.functions.contains_key("do_expensive_work"));
+        assert!(config.functions.contains_key("require_auth_only"));
+    }
+
+    #[test]
+    fn unknown_function_keys_produce_error() {
+        let err = toml::from_str::<BudgetToml>(
+            "[functions.do_expensive_work]\ncpu_lmit = 5000000\n",
+        )
+        .unwrap_err();
+        let err_text = err.to_string();
+        assert!(
+            err_text.contains("unknown field") || err_text.contains("cpu_lmit"),
+            "expected error mentioning unknown field or the offending key, got: {err_text}"
+        );
+    }
+
+    #[test]
+    fn known_function_key_spelling_produces_correct_deserialization() {
+        let config: BudgetToml = toml::from_str(
+            r#"
+[functions.do_expensive_work]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
+"#,
+        )
+        .expect("valid function config should parse");
+        let func = &config.functions["do_expensive_work"];
+        assert_eq!(func.cpu_limit, Some(5000000));
+        assert_eq!(func.read_limit, Some(5000));
+        assert_eq!(func.write_limit, Some(1000));
     }
 
     // --- TransactionData deserialization tests ---
