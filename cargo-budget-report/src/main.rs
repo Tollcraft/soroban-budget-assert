@@ -1,3 +1,6 @@
+use crate::derive::{self, DerivationConfig, Margin};
+use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
+use anyhow::Context;
 mod compare;
 mod module_10;
 mod module_30;
@@ -148,6 +151,58 @@ struct BudgetReportArgs {
     /// `release-opt`) must be defined in the project's `Cargo.toml`.
     #[arg(long)]
     profile: Option<String>,
+
+    /// Derive local (Tier A) test limits from a Tier B JSON report and
+    /// exit. Reads the Tier B report from `--from <PATH>` (or stdin if
+    /// `--from -`) and writes the chosen `KEY=VALUE` shape to the file
+    /// at `<OUT>`.
+    ///
+    /// The Tier B report is the same JSON shape `cargo budget-report
+    /// --json` emits — either the bare array of `CostReport`-shaped
+    /// rows or the `{schema_version, snapshots}` wrapped form. The
+    /// `--margin-{cpu,memory,read,write}` flags (or the `[margin]`
+    /// section of `budget.toml`) supply the per-metric multipliers
+    /// applied to the Tier B values; the resulting ceilings become
+    /// Tier A test limits.
+    ///
+    /// The function-to-scenario mapping is recorded under
+    /// `[[scenarios.<name>]]` blocks in `budget.toml` so component
+    /// limits can be summed under a single Tier A `KEY=VALUE` for
+    /// tests that exercise multi-step workflows.
+    #[arg(long, value_name = "OUT")]
+    derive_limits: Option<String>,
+
+    /// Source Tier B JSON report for `--derive-limits`. Use `-` to
+    /// read JSON from stdin (so `cargo budget-report --json | cargo
+    /// budget-report --derive-limits tier-a-limits.env` composes).
+    #[arg(long, value_name = "PATH")]
+    from: Option<String>,
+
+    /// Per-metric multiplier applied to Tier B CPU values. Required
+    /// unless `[margin].cpu_margin` is set in `budget.toml`; no
+    /// default is applied because the project deliberately treats the
+    /// margin as data (issue #45) and silently picking a value would
+    /// defeat the audit trail.
+    #[arg(long, value_name = "F")]
+    margin_cpu: Option<String>,
+
+    /// Per-metric multiplier applied to Tier B memory values.
+    #[arg(long, value_name = "F")]
+    margin_memory: Option<String>,
+
+    /// Per-metric multiplier applied to Tier B read-bytes values.
+    #[arg(long, value_name = "F")]
+    margin_read: Option<String>,
+
+    /// Per-metric multiplier applied to Tier B write-bytes values.
+    #[arg(long, value_name = "F")]
+    margin_write: Option<String>,
+
+    /// Path to write the Markdown provenance table next to the env
+    /// file. Defaults to `<OUT>` with `.env` replaced by `.md` (e.g.
+    /// `tier-a-limits.provenance.md` for `tier-a-limits.env`).
+    #[arg(long, value_name = "PATH")]
+    provenance_out: Option<String>,
 }
 
 /// Top-level configuration deserialized from `budget.toml`.
@@ -162,7 +217,78 @@ struct BudgetToml {
     #[serde(default)]
     tolerance: Option<f64>,
     #[serde(default)]
+    margin: Option<MarginToml>,
+    /// Per-function `[[scenarios.<name>]]` table mapping a scenario to
+    /// the list of component function names it sums over. Keys mirror
+    /// the `(package, scenario_name)` namespace used by
+    /// `derive::env_var_scenario_key`.
+    #[serde(default)]
+    scenarios: HashMap<String, ScenarioToml>,
+    #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
+}
+
+/// Per-metric margin multipliers persisted in `budget.toml`.
+///
+/// All four fields are independently optional, but `Margin::new`
+/// rejects any incomplete configuration at use-time — the
+/// `cargo budget-report --derive-limits` flow propagates that error so
+/// a half-set `[margin]` block cannot silently degrade to no margin.
+#[derive(serde::Deserialize, Default, Debug, Clone, Copy)]
+struct MarginToml {
+    #[serde(default)]
+    cpu_margin: Option<f64>,
+    #[serde(default)]
+    memory_margin: Option<f64>,
+    #[serde(default)]
+    read_margin: Option<f64>,
+    #[serde(default)]
+    write_margin: Option<f64>,
+}
+
+impl MarginToml {
+    /// Build a [`Margin`] from this record. None of the fields are
+    /// allowed to be missing — the caller is responsible for sourcing
+    /// missing values from the CLI / failing the run.
+    fn into_margin(self) -> Result<Margin> {
+        let cpu = self
+            .cpu_margin
+            .ok_or_else(|| Error::Message("missing margin.cpu_margin in budget.toml".into()))?;
+        let memory = self
+            .memory_margin
+            .ok_or_else(|| Error::Message("missing margin.memory_margin in budget.toml".into()))?;
+        let read = self
+            .read_margin
+            .ok_or_else(|| Error::Message("missing margin.read_margin in budget.toml".into()))?;
+        let write = self.write_margin.ok_or_else(|| {
+            Error::Message("missing margin.write_margin in budget.toml".into())
+        })?;
+        Margin::new(cpu, memory, read, write)
+    }
+
+    /// True when every margin field is set. Used by `derive-mode` to
+    /// reject a half-configured file before falling back to CLI args.
+    fn is_complete(&self) -> bool {
+        self.cpu_margin.is_some()
+            && self.memory_margin.is_some()
+            && self.read_margin.is_some()
+            && self.write_margin.is_some()
+    }
+}
+
+/// One scenario declaration in the `[[scenarios]]` table.
+#[derive(serde::Deserialize, Default, Debug, Clone)]
+struct ScenarioToml {
+    /// (package, scenario_name) namespace prefix used to scope this
+    /// scenario. Without a package, the scenario is treated as package
+    /// `""`, which is rarely what callers want — the error path
+    /// surfaces that problem.
+    #[serde(default)]
+    package: Option<String>,
+    /// Names of component functions whose Tier B values sum into this
+    /// scenario's Tier A limit.
+    #[serde(default)]
+    functions: Vec<String>,
 }
 
 /// Raw resource metrics returned by the Soroban `simulateTransaction` RPC.
@@ -861,12 +987,226 @@ fn deploy_contract_with_retry(
     )))
 }
 
+fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<()> {
+    let Mode::Derive(out_env, out_provenance) = Mode::from_args(args) else {
+        return Err(Error::Message(
+            "internal: run_derive_mode called outside Derive mode".into(),
+        ));
+    };
+
+    // 1) Read the Tier B JSON report.
+    let from_path = args.from.as_deref().unwrap_or("-");
+    let source_label = if from_path == "-" {
+        "<stdin>".to_string()
+    } else {
+        from_path.to_string()
+    };
+    let from_pathbuf = std::path::PathBuf::from(from_path);
+    let measurements = derive::load_tier_b_report(&from_pathbuf)?;
+
+    // 2) Resolve the margin. CLI overrides win over `budget.toml`.
+    //    Detect missing-vs-present on the CLI side first so a partial
+    //    CLI override errors out instead of falling through to the
+    //    toml fallback (which would silently change behaviour).
+    fn parse_cli_margin(field: &str, raw: Option<&String>) -> Result<Option<f64>> {
+        match raw {
+            None => Ok(None),
+            Some(text) => text.trim().parse::<f64>().map(Some).map_err(|e| {
+                Error::Message(format!("invalid --margin-{field} `{text}`: {e}"))
+            }),
+        }
+    }
+    let cli_parts = [
+        ("cpu", parse_cli_margin("cpu", args.margin_cpu.as_ref())?),
+        (
+            "memory",
+            parse_cli_margin("memory", args.margin_memory.as_ref())?,
+        ),
+        ("read", parse_cli_margin("read", args.margin_read.as_ref())?),
+        (
+            "write",
+            parse_cli_margin("write", args.margin_write.as_ref())?,
+        ),
+    ];
+    let cli_any = cli_parts.iter().any(|(_, v)| v.is_some());
+
+    let margin = if cli_any {
+        let missing: Vec<&str> = cli_parts
+            .iter()
+            .filter_map(|(name, v)| if v.is_none() { Some(*name) } else { None })
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::Message(format!(
+                "CLI margin is partially set; supply all four \
+                 --margin-{{cpu,memory,read,write}} flags or none of them \
+                 (missing: {missing:?})"
+            )));
+        }
+        let cpu = cli_parts[0].1.unwrap();
+        let memory = cli_parts[1].1.unwrap();
+        let read = cli_parts[2].1.unwrap();
+        let write = cli_parts[3].1.unwrap();
+        Margin::new(cpu, memory, read, write)?
+    } else {
+        match toml_config
+            .margin
+            .and_then(|m| if m.is_complete() { Some(m) } else { None })
+        {
+            Some(m) => m.into_margin()?,
+            None => {
+                return Err(Error::Message(
+                    "no margin supplied; pass --margin-cpu / --margin-memory / \
+                     --margin-read / --margin-write, or add a complete [margin] \
+                     section to budget.toml"
+                        .into(),
+                ));
+            }
+        }
+    };
+
+    // 3) Lift budget.toml scenarios into the derivation config.
+    let scenarios: BTreeMap<String, Vec<String>> = toml_config
+        .scenarios
+        .iter()
+        .map(|(name, s)| {
+            let key = match &s.package {
+                Some(pkg) => format!("{pkg}::{name}"),
+                None => format!("::{name}"),
+            };
+            (key, s.functions.clone())
+        })
+        .collect();
+    let config = DerivationConfig { margin, scenarios };
+
+    // 4) Run the derivation and write the outputs atomically.
+    let derivation = derive::Derivation::from_report(&measurements, &config)?;
+    let timestamp_utc = build_utc_timestamp();
+    let provenance = out_provenance.unwrap_or_else(|| default_provenance_path(&out_env));
+    derive::write_outputs(
+        &out_env,
+        Some(&provenance),
+        &derivation,
+        &source_label,
+        &margin,
+        args.profile.as_deref(),
+        &timestamp_utc,
+    )?;
+
+    if !args.quiet {
+        eprintln!(
+            "Wrote {} ({} limits) and {}",
+            out_env.display(),
+            derivation.limits.len(),
+            provenance.display(),
+        );
+    }
+    Ok(())
+}
+
+/// Replace `tier-a-limits.env` / `tier-a-limits.json` / etc. with the
+/// matching `*.provenance.md` sibling. The split keeps the standard
+/// env/provenance pairing intuitive for the common case.
+fn default_provenance_path(out_env: &std::path::Path) -> std::path::PathBuf {
+    out_env.with_extension("provenance.md")
+}
+
+/// UTC ISO-8601 timestamp at second precision — enough granularity
+/// for the provenance header without depending on `chrono`.
+fn build_utc_timestamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| Error::Message(format!("system time error: {e}")))
+        .and_then(|d| {
+            // Approximate UTC seconds-since-epoch using a 0-based
+            // bijection: 86400 seconds/day, 365.25 days/year. Good
+            // enough for an audit-trail timestamp; rounding to days
+            // would also be acceptable.
+            let secs = d.as_secs();
+            Ok(secs)
+        })
+        .unwrap_or(0);
+    // The header timestamp is descriptive, not asserted, so it is
+    // fine to format it loosely. The string-form here is the
+    // seconds-since-epoch expressed in ISO-8601 by hand: the
+    // calendar math below is intentionally simple (no leap rules
+    // beyond the standard 4/100/400-year rule) and is sufficient
+    // for human-readable audit trail of when the derivation ran.
+    format_unix_timestamp_as_iso8601(now)
+}
+
+fn format_unix_timestamp_as_iso8601(secs: u64) -> String {
+    // Split into days + remainder; convert days to Y-M-D.
+    let days = secs / 86_400;
+    let rem_secs = secs % 86_400;
+    let hh = rem_secs / 3600;
+    let mm = (rem_secs % 3600) / 60;
+    let ss = rem_secs % 60;
+    let (y, m, d) = days_to_ymd(days);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+/// Days-since-epoch → (year, month, day). Uses the proleptic Gregorian
+/// calendar with the standard century-leap corrections.
+fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
+    let mut year: u64 = 1970;
+    let mut remaining = days_since_epoch;
+    loop {
+        let leap = is_leap(year);
+        let len = if leap { 366 } else { 365 };
+        if remaining < len {
+            break;
+        }
+        remaining -= len;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let month_lengths = [
+        31u64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    for &len in &month_lengths {
+        if remaining < len {
+            break;
+        }
+        remaining -= len;
+        month += 1;
+    }
+    let day = remaining + 1;
+    (year, month, day)
+}
+
+fn is_leap(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
 fn main() -> anyhow::Result<()> {
     let CargoCli::BudgetReport(args) = CargoCli::parse();
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
         scaffold_init(args.force, args.quiet)?;
+        return Ok(());
+    }
+
+    // ── --derive-limits: read Tier B JSON → write env file, no simulation ──
+    // Must run *before* the preflight checks because derivation does
+    // not need the `stellar` CLI, network access, or a built WASM.
+    // Splitting here keeps the otherwise-expensive setup out of the
+    // derivation path entirely.
+    if matches!(Mode::from_args(&args), Mode::Derive(..)) {
+        let toml_config = load_budget_toml("budget.toml")?;
+        run_derive_mode(&args, &toml_config)?;
         return Ok(());
     }
 
@@ -1281,10 +1621,19 @@ enum Mode {
     Report,
     Record(PathBuf),
     Check(PathBuf),
+    /// Tier A limit derivation. The path is the destination env file.
+    /// The optional secondary path, when present, is the destination
+    /// for the Markdown provenance sidecar (or `None` to derive the
+    /// default `<OUT>.provenance.md` next to it).
+    Derive(PathBuf, Option<PathBuf>),
 }
 
 impl Mode {
     fn from_args(args: &BudgetReportArgs) -> Self {
+        if let Some(out) = &args.derive_limits {
+            let provenance = args.provenance_out.as_deref().map(PathBuf::from);
+            return Mode::Derive(PathBuf::from(out), provenance);
+        }
         if let Some(p) = &args.record_baseline {
             Mode::Record(PathBuf::from(p))
         } else if let Some(p) = &args.check_baseline {
@@ -1677,6 +2026,14 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            profile: None,
+            derive_limits: None,
+            from: None,
+            margin_cpu: None,
+            margin_memory: None,
+            margin_read: None,
+            margin_write: None,
+            provenance_out: None,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -1695,6 +2052,14 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            profile: None,
+            derive_limits: None,
+            from: None,
+            margin_cpu: None,
+            margin_memory: None,
+            margin_read: None,
+            margin_write: None,
+            provenance_out: None,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -1713,11 +2078,48 @@ mod tests {
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
             quiet: false,
+            profile: None,
+            derive_limits: None,
+            from: None,
+            margin_cpu: None,
+            margin_memory: None,
+            margin_read: None,
+            margin_write: None,
+            provenance_out: None,
         };
         assert_eq!(
             Mode::from_args(&check),
             Mode::Check(PathBuf::from("custom.toml"))
         );
+    }
+
+    #[test]
+    fn mode_detects_derive() {
+        let args = BudgetReportArgs {
+            init: false,
+            force: false,
+            network: None,
+            source: None,
+            json: false,
+            check: false,
+            csv: false,
+            record_baseline: None,
+            check_baseline: None,
+            tolerance: None,
+            quiet: false,
+            profile: None,
+            derive_limits: Some("tier-a-limits.env".to_string()),
+            from: None,
+            margin_cpu: None,
+            margin_memory: None,
+            margin_read: None,
+            margin_write: None,
+            provenance_out: None,
+        };
+        match Mode::from_args(&args) {
+            Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),
+            other => panic!("expected Derive mode, got {other:?}"),
+        }
     }
 
     #[test]
