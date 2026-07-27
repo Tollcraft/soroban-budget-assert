@@ -33,7 +33,7 @@ fn fake_bin_dir() -> PathBuf {
 /// Recursively copies `src` into `dst`, creating `dst` if needed.
 ///
 /// The mock workspace is copied into a fresh tempdir per test because
-/// `cargo build` writes `Cargo.lock` and `target/` into its working
+/// `cargo build` writes Cargo.lock and target/ into its working
 /// directory; running in place would leave build artifacts next to the
 /// checked-in fixture.
 fn copy_dir_all(src: &Path, dst: &Path) {
@@ -358,5 +358,61 @@ fn validate_flag_reports_skip_when_cli_lacks_xdr_decode() {
     assert!(
         stderr.contains("validation skipped"),
         "stderr should mention validation skipped, got: {stderr}"
+    );
+}
+
+// ── Build profile integration tests ────────────────────────────────────
+
+#[test]
+fn profile_flag_explicit_release_produces_same_report() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--profile",
+            "release",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "expected report header, got: {stdout}"
+    );
+    assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
+    assert!(stdout.contains("mock-contract-b"), "got: {stdout}");
+    assert!(stdout.contains("CPU Instructions"), "got: {stdout}");
+    assert!(stdout.contains("1,000,000 inst."), "got: {stdout}");
+}
+
+#[test]
+fn profile_flag_invalid_profile_fails_build() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--profile",
+            "nonexistent-profile",
+        ])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("Failed to build") || stderr.contains("error"),
+        "stderr should indicate a build failure with the invalid profile, got: {stderr:?}"
     );
 }

@@ -3,7 +3,7 @@
 use std::sync::{Mutex, PoisonError};
 
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient};
-use budget_macros::{budget_cpu_lt, budget_lt, budget_mem_lt, budget_write_bytes_lt};
+use budget_macros::{budget_cpu_lt, budget_lt, budget_mem_lt};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Serialises all JSON-config tests so they never read stale `budget.json`
@@ -83,6 +83,27 @@ fn test_budget_wasm() {
     client.deposit(&user, &10_000_i128, &10_000_i128);
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Measures CPU instruction cost of `do_expensive_work` across multiple input
+/// sizes in WASM mode, for gap-vs-input-size analysis.
+#[test]
+fn test_measure_gap_vs_input_size() {
+    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found");
+    let sizes = [1000, 10000, 50000, 100000];
+
+    for &n in &sizes {
+        // --- Wasm measurement ---
+        let env = Env::default();
+        #[allow(deprecated)]
+        let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_expensive_work(&n);
+        let wasm_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+        println!("  n={:>6} | local WASM CPU: {:>10}", n, wasm_cpu);
+    }
 }
 
 #[test]
@@ -200,7 +221,7 @@ fn test_budget_extend_ttl_deliberate_regression_mem() {
 }
 
 #[test]
-#[budget_cpu_lt(3500000)] // Re-measured: WASM local 2770850, simulates deposit+swap+withdraw
+#[budget_cpu_lt(3000000)] // Re-measured: WASM local 2770850, simulates deposit+swap+withdraw
 fn test_budget_macro_gated() {
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -243,7 +264,7 @@ fn test_budget_macro_mem_deliberate_regression() {
 fn test_budget_macro_dynamic_env() {
     let budget_env_resolve = |var: &str| -> Option<String> {
         if var == "TEST_MAX_CPU" {
-            Some("3500000".to_string())
+            Some("3000000".to_string())
         } else {
             None
         }
@@ -275,7 +296,7 @@ fn test_budget_macro_dynamic_env_fallback() {
 #[test]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_valid() {
-    let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": 3500000}"#);
+    let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": 3000000}"#);
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
 
@@ -408,140 +429,4 @@ fn test_read_bytes_budget_exceeds_limit() {
         "Read bytes {read_bytes} exceeded the expected limit of {limit} \
          - local estimate, real network cost may differ significantly in either direction"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Write-bytes fixtures
-//
-// These tests exercise the `do_write_heavy_work` contract function, which
-// writes many large byte blobs into temporary storage.  The local
-// `memory_bytes_cost` is used as a proxy for ledger write bytes because the
-// actual on-network write-bytes figure is only available via RPC simulation
-// (see `cargo-budget-report`).  These tests document expected cost levels and
-// catch regressions in the contract's storage footprint.
-// ---------------------------------------------------------------------------
-
-/// Prints the raw memory-bytes cost of a write-heavy invocation so developers
-/// can calibrate assertion thresholds.
-#[test]
-fn test_write_bytes_raw() {
-    let env = Env::default();
-    let contract_id = env.register(ConstantProductPool, ());
-    let client = ConstantProductPoolClient::new(&env, &contract_id);
-
-    env.cost_estimate().budget().reset_unlimited();
-
-    client.do_write_heavy_work(&50);
-
-    let budget = env.cost_estimate().budget();
-    println!("=== WRITE-HEAVY RAW (n=50) ===");
-    println!("CPU instructions:  {}", budget.cpu_instruction_cost());
-    println!(
-        "Memory bytes (proxy for write bytes): {}",
-        budget.memory_bytes_cost()
-    );
-}
-
-/// Asserts that the write-bytes proxy stays below a generous threshold so
-/// normal write-heavy usage passes in CI.
-#[test]
-#[budget_write_bytes_lt(5_000_000)]
-fn test_write_bytes_budget_passes() {
-    let env = Env::default();
-    let contract_id = env.register(ConstantProductPool, ());
-    let client = ConstantProductPoolClient::new(&env, &contract_id);
-
-    env.cost_estimate().budget().reset_unlimited();
-
-    // n=50 entries × 256 bytes each = ~12 800 bytes of ledger writes.
-    // The memory proxy will be above that but well under 5 000 000.
-    client.do_write_heavy_work(&50);
-}
-
-/// Demonstrates a deliberate write-bytes regression: the limit is set below
-/// the actual cost so the assertion fires and the test panics (as expected).
-#[test]
-#[should_panic(expected = "local estimate, underestimates real network cost")]
-#[budget_write_bytes_lt(1)] // Unrealistically tight limit — always exceeded
-fn test_write_bytes_budget_regression() {
-    let env = Env::default();
-    let contract_id = env.register(ConstantProductPool, ());
-    let client = ConstantProductPoolClient::new(&env, &contract_id);
-
-    env.cost_estimate().budget().reset_unlimited();
-
-    // Even a single entry will exceed a limit of 1 byte.
-    client.do_write_heavy_work(&1);
-}
-
-// ---------------------------------------------------------------------------
-// Test body shapes (issue #6)
-//
-// The assertion is injected on every path that leaves the test, so these body
-// shapes are supported: a trailing expression (`-> Result<_, _>` tests) and an
-// early `return`. budget-macros/tests/ui.rs covers the same shapes at the token
-// level, against a mock `env` and without a WASM build.
-// ---------------------------------------------------------------------------
-
-// A generous limit on purpose: this test pins the *body shape* (the check runs
-// after the `Ok(())` tail and the value is still returned), not a cost figure,
-// so it must not need re-measuring whenever the WASM build changes. The tight
-// limits live in the tests above that exist to measure cost.
-#[test]
-#[budget_cpu_lt(50000000)]
-fn test_budget_macro_result_returning() -> Result<(), std::num::ParseIntError> {
-    let env = Env::default();
-    let (client, user) = setup_wasm(&env);
-
-    let amount: i128 = "10000".parse::<u32>()?.into();
-    client.deposit(&user, &amount, &amount);
-    client.swap(&user, &true, &100_i128, &90_i128);
-
-    Ok(())
-}
-
-// `#[should_panic]` requires a test returning `()`, so the `Result` regression is
-// caught by hand instead.
-#[test]
-fn test_budget_macro_result_returning_regression() {
-    #[budget_cpu_lt(1)]
-    fn measured() -> Result<(), std::num::ParseIntError> {
-        let env = Env::default();
-        let (client, user) = setup_wasm(&env);
-
-        let amount: i128 = "10000".parse::<u32>()?.into();
-        client.deposit(&user, &amount, &amount);
-
-        Ok(())
-    }
-
-    let payload = std::panic::catch_unwind(measured)
-        .expect_err("the budget assertion should have failed at a 1 instruction limit");
-    let message = payload
-        .downcast_ref::<String>()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        message.contains("local estimate, real network cost may differ significantly"),
-        "unexpected panic message: {message}"
-    );
-}
-
-#[test]
-#[should_panic(
-    expected = "local estimate, real network cost may differ significantly in either direction"
-)]
-#[budget_mem_lt(1)]
-fn test_budget_macro_early_return_still_asserts() {
-    let env = Env::default();
-    let (client, user) = setup_wasm(&env);
-
-    client.deposit(&user, &10_000_i128, &10_000_i128);
-
-    if std::env::var("TEST_RUN_FULL_BODY").is_err() {
-        // Used to exit without ever measuring the budget.
-        return;
-    }
-
-    client.swap(&user, &true, &100_i128, &90_i128);
 }

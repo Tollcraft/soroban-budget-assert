@@ -114,6 +114,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         assert_eq!(
             limit_for_metric(&config, "CPU Instructions"),
@@ -128,6 +129,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Read Bytes"), Some(1_000));
     }
@@ -139,6 +141,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Write Bytes"), Some(500));
     }
@@ -150,6 +153,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         // An empty or unknown metric string should return None.
         assert_eq!(limit_for_metric(&config, ""), None);
@@ -162,6 +166,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "WASM Bytes"), None);
         assert_eq!(limit_for_metric(&config, "Unknown Metric"), None);
@@ -174,6 +179,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: None,
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), None);
         assert_eq!(limit_for_metric(&config, "Read Bytes"), None);
@@ -303,6 +309,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
         assert_eq!(reports.len(), 3);
@@ -316,6 +323,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
+            tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
         for r in &reports {
@@ -431,6 +439,7 @@ mod off_by_one_and_zero_length_tests {
     // These tests create a temporary working directory and change the
     // process CWD into it so that `scaffold_init`'s hard-coded
     // `Path::new("budget.toml")` does not clobber the real project file.
+    // A shared lock prevents races with other CWD-mutating tests.
 
     /// Change into a newly-created temp directory and return the old CWD
     /// so the caller can restore it with [`restore_cwd`].
@@ -448,6 +457,9 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn scaffold_init_creates_file_when_not_exists() {
+        let _guard = crate::TEST_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
 
         let result = scaffold_init(false, false);
@@ -469,6 +481,9 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn scaffold_init_errors_when_exists_without_force() {
+        let _guard = crate::TEST_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
@@ -492,6 +507,9 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn scaffold_init_overwrites_with_force_flag() {
+        let _guard = crate::TEST_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
@@ -616,6 +634,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, " CPU Instructions"), None);
         assert_eq!(limit_for_metric(&config, "  Read Bytes"), None);
@@ -628,6 +647,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions "), None);
         assert_eq!(limit_for_metric(&config, "Write Bytes\t"), None);
@@ -640,6 +660,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         // The function should do exact case-sensitive matching.
         assert_eq!(limit_for_metric(&config, "cpu instructions"), None);
@@ -741,6 +762,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
+            tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
         assert_eq!(reports.len(), 3);
