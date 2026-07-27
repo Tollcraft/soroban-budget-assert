@@ -531,8 +531,12 @@ pub fn write_outputs(
     let env_body = derivation.render_env_file(source_label, margin, build_profile, timestamp_utc);
     atomic_write(out_env, &env_body)?;
     if let Some(path) = out_provenance {
-        let md_body =
-            derivation.render_provenance_markdown(source_label, margin, build_profile, timestamp_utc);
+        let md_body = derivation.render_provenance_markdown(
+            source_label,
+            margin,
+            build_profile,
+            timestamp_utc,
+        );
         atomic_write(path, &md_body)?;
     }
     Ok(())
@@ -578,8 +582,13 @@ mod tests {
 
     #[test]
     fn margin_rejects_non_finite() {
-        let err = Margin::new(f64::NAN, 1.0, 1.0, 1.0).unwrap_err().to_string();
-        assert!(err.contains("margin.cpu must be a finite number"), "got: {err}");
+        let err = Margin::new(f64::NAN, 1.0, 1.0, 1.0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("margin.cpu must be a finite number"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -755,10 +764,17 @@ mod tests {
         let body = Derivation {
             limits: vec![limit],
         }
-        .render_env_file("build/budget-report.json", &margin(), Some("release"), "2026-01-01T00:00:00Z");
+        .render_env_file(
+            "build/budget-report.json",
+            &margin(),
+            Some("release"),
+            "2026-01-01T00:00:00Z",
+        );
         assert!(body.contains("# tier-a-limits.env"));
         assert!(body.contains("# Source Tier B JSON: build/budget-report.json"));
-        assert!(body.contains("# Margins (cpu, memory, read, write): 1.2500, 1.1000, 1.5000, 2.0000"));
+        assert!(
+            body.contains("# Margins (cpu, memory, read, write): 1.2500, 1.1000, 1.5000, 2.0000")
+        );
         assert!(body.contains("# Build profile of source WASM: release"));
         assert!(body.contains("# Generated at (UTC): 2026-01-01T00:00:00Z"));
         assert!(body.contains("TIER_A__AMM_POOL__REQUIRE_AUTH_ONLY__CPU=12500"));
@@ -789,7 +805,10 @@ mod tests {
     #[test]
     fn env_var_scenario_key_inserts_scenario_marker() {
         let key = env_var_scenario_key("amm-pool-contract", "full_workflow", "CPU Instructions");
-        assert_eq!(key, "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU");
+        assert_eq!(
+            key,
+            "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU"
+        );
     }
 
     // -- helpers --------------------------------------------------------------
