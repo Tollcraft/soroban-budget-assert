@@ -21,7 +21,21 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 6. Issue that pull request!
 
 ## Local Development
+
+### Unix (Linux / macOS)
 - Install Rust and the Soroban CLI. The repository includes a `rust-toolchain.toml` file, so `rustup` will automatically install and use the correct toolchain and target when you run cargo commands.
+- Run `cargo test` in the workspace root to run macro tests.
+- Run `cargo run --bin cargo-budget-report` (or `cargo build`) to test the CLI locally.
+
+### Windows (PowerShell)
+- Install Rust by downloading and running [rustup-init.exe](https://rustup.rs/). Open a **new** PowerShell window, then add the WASM target:
+  ```powershell
+  rustup target add wasm32-unknown-unknown
+  ```
+- Install the Stellar CLI:
+  ```powershell
+  cargo install --locked stellar-cli
+  ```
 - Run `cargo test` in the workspace root to run macro tests.
 - Run `cargo run --bin cargo-budget-report` (or `cargo build`) to test the CLI locally.
 

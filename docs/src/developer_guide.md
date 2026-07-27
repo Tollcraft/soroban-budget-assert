@@ -4,10 +4,60 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 
 ## Local setup
 
+### Unix (Linux / macOS)
+
 1. Clone the repository.
 2. Install Rust with the WASM target: `rustup target add wasm32-unknown-unknown`.
 3. Install the Stellar CLI: `cargo install --locked stellar-cli` (on Debian/Ubuntu, first `sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev`).
 4. Create and fund a testnet identity: `stellar keys generate alice --network testnet --fund`.
+
+### Windows (PowerShell)
+
+1. Clone the repository:
+   ```powershell
+   git clone https://github.com/Tollcraft/soroban-budget-assert.git
+   cd soroban-budget-assert
+   ```
+
+2. Install Rust:
+   - Download and run [rustup-init.exe](https://rustup.rs/) from rustup.rs.
+   - Open a **new** PowerShell window, then add the WASM target:
+     ```powershell
+     rustup target add wasm32-unknown-unknown
+     ```
+
+3. Install the Stellar CLI:
+   ```powershell
+   cargo install --locked stellar-cli
+   ```
+   > **Note:** On Windows, the `stellar-cli` build may require [Build Tools for Visual Studio](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022). Install the "Desktop development with C++" workload, then retry the `cargo install` command in a fresh **Developer PowerShell for VS 2022** terminal.
+
+4. Create and fund a testnet identity:
+   ```powershell
+   stellar keys generate alice --network testnet --fund
+   ```
+
+### PATH considerations
+
+On Windows, ensure the following directories are in your `PATH` (the Rust installer usually adds them automatically):
+- `%USERPROFILE%\.cargo\bin` — for `cargo`, `rustup`, and `stellar`
+- `%USERPROFILE%\.rustup` — for `rustup`
+
+To verify after installation:
+```powershell
+cargo --version
+rustup --version
+stellar --version
+```
+
+If any command is not found, add it to your PATH manually:
+```powershell
+# Add to the current session
+$env:Path += ";$env:USERPROFILE\.cargo\bin"
+
+# Make it permanent for future sessions
+[Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:USERPROFILE\.cargo\bin", "User")
+```
 
 ## Workspace structure
 
