@@ -69,6 +69,35 @@ impl Parse for BudgetLimit {
         }
 
         while !input.is_empty() {
+            // When called from BudgetSpec::parse the input may contain
+            // tokens for other spec keys (`cpu`, `mem`, `env_ident`).
+            // Only consume key=value pairs whose key is a known
+            // BudgetLimit key; stop before anything else.
+            if input.peek(Token![,]) {
+                let ahead = input.clone();
+                let _ = ahead.parse::<Token![,]>();
+                if !(ahead.peek(Ident)
+                    && matches!(
+                        ahead.clone().parse::<Ident>().unwrap().to_string().as_str(),
+                        "env" | "env_file" | "config"
+                    ))
+                {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+            } else if input.peek(Ident) {
+                let ahead = input.clone();
+                let key: Ident = ahead.parse().unwrap();
+                if !matches!(
+                    key.to_string().as_str(),
+                    "env" | "env_file" | "config"
+                ) {
+                    break;
+                }
+            } else {
+                break;
+            }
+
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
             let ident_str = ident.to_string();
@@ -96,9 +125,6 @@ impl Parse for BudgetLimit {
                         ));
                     }
                 }
-            }
-            if !input.is_empty() {
-                input.parse::<Token![,]>()?;
             }
         }
 

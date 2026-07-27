@@ -1135,13 +1135,12 @@ fn build_utc_timestamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| Error::Message(format!("system time error: {e}")))
-        .and_then(|d| {
+        .map(|d| {
             // Approximate UTC seconds-since-epoch using a 0-based
             // bijection: 86400 seconds/day, 365.25 days/year. Good
             // enough for an audit-trail timestamp; rounding to days
             // would also be acceptable.
-            let secs = d.as_secs();
-            Ok(secs)
+            d.as_secs()
         })
         .unwrap_or(0);
     // The header timestamp is descriptive, not asserted, so it is

@@ -129,6 +129,7 @@ pub struct DerivationConfig {
 
 impl DerivationConfig {
     /// Construct a derivation config with no scenarios.
+    #[allow(dead_code)]
     pub fn margin_only(margin: Margin) -> Self {
         Self {
             margin,
