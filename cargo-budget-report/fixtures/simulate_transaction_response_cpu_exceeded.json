@@ -1,0 +1,13 @@
+{
+  "_metadata": {
+    "network": "testnet",
+    "protocol_version": 21,
+    "generated_by": "soroban-budget-assert test fixture",
+    "description": "simulateTransaction response where contract exceeds CPU budget"
+  },
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "error": "simulation failed: HostError: Error(WasmVm, InvalidAction)\n\nCPU budget exceeded"
+  }
+}
