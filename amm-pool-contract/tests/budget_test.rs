@@ -545,3 +545,75 @@ fn test_write_bytes_budget_regression() {
     // Even a single entry will exceed a limit of 1 byte.
     client.do_write_heavy_work(&1);
 }
+
+// ---------------------------------------------------------------------------
+// Test body shapes (issue #6)
+//
+// The assertion is injected on every path that leaves the test, so these body
+// shapes are supported: a trailing expression (`-> Result<_, _>` tests) and an
+// early `return`. budget-macros/tests/ui.rs covers the same shapes at the token
+// level, against a mock `env` and without a WASM build.
+// ---------------------------------------------------------------------------
+
+// A generous limit on purpose: this test pins the *body shape* (the check runs
+// after the `Ok(())` tail and the value is still returned), not a cost figure,
+// so it must not need re-measuring whenever the WASM build changes. The tight
+// limits live in the tests above that exist to measure cost.
+#[test]
+#[budget_cpu_lt(50000000)]
+fn test_budget_macro_result_returning() -> Result<(), std::num::ParseIntError> {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    let amount: i128 = "10000".parse::<u32>()?.into();
+    client.deposit(&user, &amount, &amount);
+    client.swap(&user, &true, &100_i128, &90_i128);
+
+    Ok(())
+}
+
+// `#[should_panic]` requires a test returning `()`, so the `Result` regression is
+// caught by hand instead.
+#[test]
+fn test_budget_macro_result_returning_regression() {
+    #[budget_cpu_lt(1)]
+    fn measured() -> Result<(), std::num::ParseIntError> {
+        let env = Env::default();
+        let (client, user) = setup_wasm(&env);
+
+        let amount: i128 = "10000".parse::<u32>()?.into();
+        client.deposit(&user, &amount, &amount);
+
+        Ok(())
+    }
+
+    let payload = std::panic::catch_unwind(measured)
+        .expect_err("the budget assertion should have failed at a 1 instruction limit");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        message.contains("local estimate, real network cost may differ significantly"),
+        "unexpected panic message: {message}"
+    );
+}
+
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_mem_lt(1)]
+fn test_budget_macro_early_return_still_asserts() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+
+    if std::env::var("TEST_RUN_FULL_BODY").is_err() {
+        // Used to exit without ever measuring the budget.
+        return;
+    }
+
+    client.swap(&user, &true, &100_i128, &90_i128);
+}

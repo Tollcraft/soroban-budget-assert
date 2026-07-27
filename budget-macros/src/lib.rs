@@ -1,8 +1,13 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token};
+use syn::visit_mut::{self, VisitMut};
+use syn::{
+    parse::Parse, parse::ParseStream, parse_quote, Expr, Ident, Item, ItemFn, LitInt, LitStr,
+    Macro, Stmt, Token,
+};
 
 #[derive(Clone)]
 enum BudgetLimit {
@@ -205,13 +210,171 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
     }
 }
 
+const MACRO_RETURN_ERROR: &str = "`return` inside a macro invocation is not supported by the \
+     budget macros: the assertion cannot be injected into macro tokens, so it would be skipped \
+     silently. Move the `return` out of the macro invocation, or end the test with a tail \
+     expression instead. (If this `return` belongs to a closure passed to the macro, lift the \
+     closure into a `let` binding before the macro call.)";
+
+/// Rewrites the test body so the budget assertion runs on every path that leaves
+/// the test function.
+///
+/// `return e` becomes `return { let v = e; <assertion>; v }`, which keeps the
+/// expression's `!` type (so `return` in value position still type-checks) and
+/// evaluates `e` before measuring, so the returned value's own cost is counted.
+///
+/// `return`s belonging to a nested closure, `async` block, or nested item exit
+/// that inner body rather than the test, so those are left untouched. `return`s
+/// hidden inside macro invocation tokens cannot be rewritten and are collected
+/// so the caller can report them.
+struct ReturnRewriter {
+    assertion: TokenStream2,
+    macro_returns: Vec<Span>,
+}
+
+impl VisitMut for ReturnRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // A `return` in here leaves the closure/async body, not the test function.
+        if matches!(expr, Expr::Closure(_) | Expr::Async(_)) {
+            return;
+        }
+
+        // Rewrite inner expressions first so the injected assertion is not revisited.
+        visit_mut::visit_expr_mut(self, expr);
+
+        if let Expr::Return(ret) = expr {
+            let assertion = &self.assertion;
+            *expr = match ret.expr.take() {
+                Some(value) => parse_quote! {
+                    return {
+                        let __budget_returned = #value;
+                        #assertion
+                        __budget_returned
+                    }
+                },
+                None => parse_quote! {
+                    return {
+                        #assertion
+                    }
+                },
+            };
+        }
+    }
+
+    fn visit_item_mut(&mut self, _item: &mut Item) {
+        // Nested items (e.g. helper `fn`s declared in the body) have their own returns.
+    }
+
+    fn visit_macro_mut(&mut self, mac: &mut Macro) {
+        if let Some(span) = find_return_token(mac.tokens.clone()) {
+            self.macro_returns.push(span);
+        }
+    }
+}
+
+/// Finds a `return` token anywhere in a macro's token stream.
+fn find_return_token(tokens: TokenStream2) -> Option<Span> {
+    for token in tokens {
+        match token {
+            TokenTree::Ident(ident) if ident == "return" => return Some(ident.span()),
+            TokenTree::Group(group) => {
+                if let Some(span) = find_return_token(group.stream()) {
+                    return Some(span);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Rebuilds `input_fn`'s body as `prelude`, the original statements, and
+/// `assertion` on every path that leaves the function.
+///
+/// A trailing expression is bound before the assertion and yielded afterwards, so
+/// it stays the function's value and `-> Result<_, _>` bodies compile; early
+/// `return`s carry the assertion via [`ReturnRewriter`]. Returns the tokens to
+/// emit instead when the body has a `return` the rewrite cannot reach.
+fn instrument_exit_paths(
+    input_fn: &mut ItemFn,
+    prelude: TokenStream2,
+    assertion: TokenStream2,
+) -> Option<TokenStream> {
+    let mut rewriter = ReturnRewriter {
+        assertion: assertion.clone(),
+        macro_returns: Vec::new(),
+    };
+    let original_fn = input_fn.clone();
+    rewriter.visit_block_mut(&mut input_fn.block);
+
+    if !rewriter.macro_returns.is_empty() {
+        let errors = rewriter
+            .macro_returns
+            .iter()
+            .map(|span| syn::Error::new(*span, MACRO_RETURN_ERROR).to_compile_error());
+        // Emit the untouched function too, so the only error reported is ours.
+        return Some(TokenStream::from(quote! {
+            #(#errors)*
+            #original_fn
+        }));
+    }
+
+    // A trailing expression is the function's value (e.g. `Ok(())`), so it has to
+    // be bound before the assertion and yielded afterwards. A trailing `return`
+    // already carries the assertion from the rewrite above.
+    let tail = match input_fn.block.stmts.last() {
+        Some(Stmt::Expr(expr, None)) if !matches!(expr, Expr::Return(_)) => {
+            match input_fn.block.stmts.pop() {
+                Some(Stmt::Expr(expr, None)) => Some(expr),
+                _ => unreachable!("last statement was just matched as a trailing expression"),
+            }
+        }
+        _ => None,
+    };
+
+    let stmts = &input_fn.block.stmts;
+    let new_block = match tail {
+        Some(tail) => quote! {
+            {
+                #prelude
+
+                #(#stmts)*
+
+                let __budget_value = #tail;
+                #assertion
+                __budget_value
+            }
+        },
+        None => quote! {
+            {
+                #prelude
+
+                #(#stmts)*
+
+                #assertion
+            }
+        },
+    };
+
+    *input_fn.block = match syn::parse2(new_block) {
+        Ok(block) => block,
+        Err(e) => return Some(TokenStream::from(e.to_compile_error())),
+    };
+    // A body ending in `return`/`panic!` makes the trailing assertion unreachable;
+    // the paths that do reach an exit already asserted.
+    input_fn
+        .attrs
+        .push(parse_quote!(#[allow(unreachable_code)]));
+
+    None
+}
+
 fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
     let mut input_fn = match syn::parse2::<ItemFn>(item.into()) {
         Ok(f) => f,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
-    let stmts = &input_fn.block.stmts;
     let env_ident = spec
         .env_ident
         .unwrap_or_else(|| proc_macro2::Ident::new("env", proc_macro2::Span::call_site()));
@@ -252,14 +415,12 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         });
     }
 
-    let new_block = quote! {
-        {
-            #[allow(unused_variables)]
-            let budget_env_resolve = |var: &str| -> Option<String> {
-                std::env::var(var).ok()
-            };
-
-            #(#stmts)*
+    let prelude = quote! {
+        #[allow(unused_variables)]
+        let budget_env_resolve = |var: &str| -> Option<String> {
+            std::env::var(var).ok()
+        };
+    };
 
             // Wrap injected temporaries in their own scope so they never
             // collide with user-declared `budget`, `cpu_cost`, `mem_cost`,
@@ -268,13 +429,20 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
                 let budget = #env_ident.cost_estimate().budget();
                 #(#asserts)*
             }
+    // Injected at every path that leaves the test, not just after the last
+    // statement, so an early `return` cannot skip it. It stays inside the body's
+    // scope so each limit still resolves against the body's own bindings — tests
+    // that shadow `budget_env_resolve` rely on that.
+    let assertion = quote! {
+        {
+            let budget = #env_ident.cost_estimate().budget();
+            #(#asserts)*
         }
     };
 
-    *input_fn.block = match syn::parse2(new_block) {
-        Ok(block) => block,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
-    };
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, prelude, assertion) {
+        return tokens;
+    }
 
     TokenStream::from(quote! {
         #input_fn
@@ -284,8 +452,11 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
 /// Asserts that the CPU instructions used by `env` are strictly less than a specified limit.
 ///
 /// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
-/// The macro appends an assertion check to the body of the test function that measures
-/// `env.cost_estimate().budget().cpu_instruction_cost()`.
+/// The macro injects an assertion check that measures
+/// `env.cost_estimate().budget().cpu_instruction_cost()` on every path that leaves the test
+/// function, so bodies ending in a tail expression (`fn test() -> Result<(), Error>`)
+/// and bodies with early `return`s are both supported. A `?` that propagates an error
+/// skips the check, but the test fails on that error anyway.
 ///
 /// # Local Estimates vs Network Costs
 ///
@@ -426,8 +597,6 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
-    let stmts = &input_fn.block.stmts;
-
     let limit_expr = match limit {
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
@@ -453,7 +622,8 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
 
-    let new_block = quote! {
+    // Same exit-path instrumentation as the other budget macros.
+    let assertion = quote! {
         {
             #(#stmts)*
 
@@ -471,15 +641,84 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
                     limit_u64
                 );
             }
+            let budget = #env_ident.cost_estimate().budget();
+            let write_bytes_cost = budget.memory_bytes_cost();
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                write_bytes_cost < limit_u64,
+                "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
+                write_bytes_cost,
+                limit_u64
+            );
         }
     };
 
-    *input_fn.block = syn::parse2(new_block).unwrap();
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, quote! {}, assertion) {
+        return tokens;
+    }
 
     TokenStream::from(quote! {
         #input_fn
     })
 }
+/// Asserts that the memory bytes used by `env` are strictly less than a specified limit.
+///
+/// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
+/// The macro injects an assertion check that measures
+/// `env.cost_estimate().budget().memory_bytes_cost()` on every path that leaves the test
+/// function, so bodies ending in a tail expression (`fn test() -> Result<(), Error>`)
+/// and bodies with early `return`s are both supported. A `?` that propagates an error
+/// skips the check, but the test fails on that error anyway.
+///
+/// # Local Estimates vs Network Costs
+///
+/// This attribute checks a **local estimate** of memory byte consumption.
+/// Local estimates (such as raw Rust test execution or unoptimized local WASM builds) can
+/// strictly underestimate or differ significantly from real Testnet or Futurenet costs, which
+/// include host function overheads, VM heap/stack allocation overheads, and protocol execution parameters.
+///
+/// Use local assertions as a fast local regression gate. For true network ground truth, use
+/// `cargo budget-report`.
+///
+/// # Usage Examples
+///
+/// ## Static Limit
+///
+/// Pass an integer literal representing the maximum allowed memory bytes:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_mem_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_mem_lt(500_000)]
+/// fn test_memory_budget() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// ## Dynamic Limit via Environment Variable (`env = "VAR_NAME"`)
+///
+/// Read the limit dynamically from an environment variable at test runtime:
+///
+/// ```rust,ignore
+/// use budget_macros::budget_mem_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_mem_lt(env = "MAX_MEMORY_BYTES")]
+/// fn test_memory_budget_dynamic() {
+///     let env = Env::default();
+///     // ... setup contract client and invoke contract function ...
+/// }
+/// ```
+///
+/// When using `env = "VAR_NAME"`:
+/// - If the environment variable is **unset**, the limit defaults to `u64::MAX` ("no limit"),
+///   allowing the test assertion to pass unconditionally.
+/// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
+///   the test panics at runtime with an explicit error naming the variable and invalid value.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = match syn::parse2::<BudgetLimit>(attr.into()) {
