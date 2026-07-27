@@ -88,10 +88,7 @@ impl Parse for BudgetLimit {
             } else if input.peek(Ident) {
                 let ahead = input.clone();
                 let key: Ident = ahead.parse().unwrap();
-                if !matches!(
-                    key.to_string().as_str(),
-                    "env" | "env_file" | "config"
-                ) {
+                if !matches!(key.to_string().as_str(), "env" | "env_file" | "config") {
                     break;
                 }
             } else {
