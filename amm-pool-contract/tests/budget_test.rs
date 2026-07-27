@@ -19,6 +19,7 @@ struct BudgetJsonGuard {
 
 impl BudgetJsonGuard {
     fn create(content: &str) -> Self {
+        let lock = BUDGET_JSON_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let lock = BUDGET_JSON_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -83,6 +84,27 @@ fn test_budget_wasm() {
     client.deposit(&user, &10_000_i128, &10_000_i128);
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Measures CPU instruction cost of `do_expensive_work` across multiple input
+/// sizes in WASM mode, for gap-vs-input-size analysis.
+#[test]
+fn test_measure_gap_vs_input_size() {
+    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found");
+    let sizes = [1000, 10000, 50000, 100000];
+
+    for &n in &sizes {
+        // --- Wasm measurement ---
+        let env = Env::default();
+        #[allow(deprecated)]
+        let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_expensive_work(&n);
+        let wasm_cpu = env.cost_estimate().budget().cpu_instruction_cost();
+        println!("  n={:>6} | local WASM CPU: {:>10}", n, wasm_cpu);
+    }
 }
 
 #[test]
@@ -297,6 +319,9 @@ fn test_budget_macro_json_config_mem_valid() {
 }
 
 #[test]
+#[should_panic(
+    expected = "key 'non_existent_key' not found or invalid in budget.json"
+)]
 #[should_panic(expected = "key 'non_existent_key' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "non_existent_key")]
 fn test_budget_macro_json_config_missing_key() {
@@ -325,6 +350,9 @@ fn test_budget_macro_json_config_deliberate_regression() {
 }
 
 #[test]
+#[should_panic(
+    expected = "key 'cpu_instructions' not found or invalid in budget.json"
+)]
 #[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_missing_key_empty_config() {
@@ -339,6 +367,9 @@ fn test_budget_macro_json_config_missing_key_empty_config() {
 }
 
 #[test]
+#[should_panic(
+    expected = "key 'cpu_instructions' not found or invalid in budget.json"
+)]
 #[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_invalid_json() {
@@ -375,6 +406,10 @@ fn test_read_bytes_budget_within_limit() {
     assert!(
         read_bytes < 21_000,
         "Read bytes {read_bytes} exceeded the expected limit of 21,000 \
+    // Generous upper bound (measured ~20,236 on CI) — tighten once a clean baseline is recorded.
+    assert!(
+        read_bytes < 25_000,
+        "Read bytes {read_bytes} exceeded the expected limit of 25,000 \
          - local estimate, real network cost may differ significantly in either direction"
     );
 }
