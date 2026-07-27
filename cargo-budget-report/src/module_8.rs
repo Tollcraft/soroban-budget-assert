@@ -319,11 +319,11 @@ mod off_by_one_and_zero_length_tests {
             write_limit: Some(500),
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
-        for r in &reports {
-            assert_eq!(r.package, "my-pkg");
-            assert_eq!(r.function, "do_work");
-            assert_eq!(r.value, None);
-            assert_eq!(r.pass, Some(false));
+        for report in &reports {
+            assert_eq!(report.package, "my-pkg");
+            assert_eq!(report.function, "do_work");
+            assert_eq!(report.value, None);
+            assert_eq!(report.pass, Some(false));
         }
     }
 
@@ -699,8 +699,8 @@ write_limit = 0
         assert_eq!(reports[2].metric, "Write Bytes");
         assert_eq!(reports[2].limit, Some(500));
         // All should have pass = false.
-        for r in &reports {
-            assert_eq!(r.pass, Some(false));
+        for report in &reports {
+            assert_eq!(report.pass, Some(false));
         }
     }
 
@@ -710,9 +710,9 @@ write_limit = 0
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
         assert_eq!(reports.len(), 3);
-        for r in &reports {
-            assert_eq!(r.limit, None);
-            assert_eq!(r.pass, Some(false));
+        for report in &reports {
+            assert_eq!(report.limit, None);
+            assert_eq!(report.pass, Some(false));
         }
     }
 

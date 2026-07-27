@@ -292,12 +292,12 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let value_str = value.to_string();
     let mut result = String::new();
     let mut digit_count = 0;
-    for ch in value_str.chars().rev() {
+    for current_char in value_str.chars().rev() {
         if digit_count == 3 {
             result.push(',');
             digit_count = 0;
         }
-        result.push(ch);
+        result.push(current_char);
         digit_count += 1;
     }
     let formatted = result.chars().rev().collect::<String>();
@@ -574,15 +574,15 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
     }
     let stellar_check = Command::new("stellar").arg("--version").output();
     match stellar_check {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => {
             anyhow::bail!(
                 "Stellar CLI is not installed or not on PATH.\n\
                  Install it with:  cargo install --locked stellar-cli\n\
                  See: https://github.com/stellar/stellar-cli"
             );
         }
-        Err(e) => {
-            anyhow::bail!("failed to execute stellar --version: {}", e);
+        Err(io_error) => {
+            anyhow::bail!("failed to execute stellar --version: {}", io_error);
         }
         Ok(output) if !output.status.success() => {
             anyhow::bail!(
@@ -606,14 +606,14 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
         .args(["target", "list", "--installed"])
         .output();
     match rustup_check {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        Err(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => {
             // rustup is not installed — skip the check silently.
             if !quiet {
                 eprintln!("skipped (rustup not found)");
             }
         }
-        Err(e) => {
-            anyhow::bail!("failed to execute rustup: {}", e);
+        Err(io_error) => {
+            anyhow::bail!("failed to execute rustup: {}", io_error);
         }
         Ok(output) => {
             let installed = String::from_utf8_lossy(&output.stdout);
@@ -828,7 +828,9 @@ fn main() -> Result<()> {
             }
 
             let func_config = toml_config.functions.get(&function);
-            let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
+            let func_args = func_config
+                .map(|function_config| function_config.args.clone())
+                .unwrap_or_default();
 
             match simulate_function(&contract_id, &source, &network, &function, &func_args)? {
                 SimulationOutcome::Metrics {
@@ -916,9 +918,18 @@ fn main() -> Result<()> {
                 .write_record(["package", "function", "metric", "value", "limit", "pass"])
                 .context("Failed to write CSV header")?;
             for report in &reports {
-                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
-                let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
+                let value_str = report
+                    .value
+                    .map(|metric_value| metric_value.to_string())
+                    .unwrap_or_default();
+                let limit_str = report
+                    .limit
+                    .map(|configured_limit| configured_limit.to_string())
+                    .unwrap_or_default();
+                let pass_str = report
+                    .pass
+                    .map(|passed| passed.to_string())
+                    .unwrap_or_default();
                 csv_writer
                     .write_record([
                         report.package.as_str(),
@@ -936,7 +947,10 @@ fn main() -> Result<()> {
                 .context("Failed to write CSV header")?;
             for report in &reports {
                 if report.value.is_some() {
-                    let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
+                    let value_str = report
+                        .value
+                        .map(|metric_value| metric_value.to_string())
+                        .unwrap_or_default();
                     csv_writer
                         .write_record([
                             report.package.as_str(),
@@ -989,7 +1003,9 @@ fn main() -> Result<()> {
                 };
                 let status = if pass { "PASS" } else { "FAIL" };
                 let value_str = match report.value {
-                    Some(v) => format_with_commas_and_units(u64::from(v), report.metric),
+                    Some(metric_value) => {
+                        format_with_commas_and_units(u64::from(metric_value), report.metric)
+                    }
                     None => "<simulation failed>".to_string(),
                 };
                 let limit_str = report

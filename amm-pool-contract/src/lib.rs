@@ -23,8 +23,8 @@ impl HelperContract {
     /// the cost measurement.  The result is meaningless for real use —
     /// this contract exists purely as a cross-contract call target for
     /// budget measurement.
-    pub fn multiply(_env: Env, a: u32, b: u32) -> u32 {
-        a.wrapping_mul(b)
+    pub fn multiply(_env: Env, lhs: u32, rhs: u32) -> u32 {
+        lhs.wrapping_mul(rhs)
     }
 }
 
@@ -219,11 +219,11 @@ impl ConstantProductPool {
         env.storage().instance().extend_ttl(threshold, extend_to);
     }
 
-    pub fn do_expensive_work(env: Env, n: u32) -> u32 {
+    pub fn do_expensive_work(env: Env, iteration_count: u32) -> u32 {
         let mut result: u32 = 0;
 
         // ── Arithmetic-heavy CPU benchmark loop ────────────────────────
-        // Accumulates the sum of i² for i in 0..n using wrapping
+        // Accumulates the sum of i² for i in 0..iteration_count using wrapping
         // arithmetic.  Both `wrapping_mul` (i·i) and `wrapping_add`
         // (result + i²) are used so the loop cannot panic on overflow in
         // debug builds — panicking would terminate the test early and
@@ -231,56 +231,62 @@ impl ConstantProductPool {
         //
         // The result value is discarded; this loop exists purely to
         // consume CPU instructions for budget measurement.
-        for i in 0..n {
-            result = result.wrapping_add(i.wrapping_mul(i));
+        for current_iteration in 0..iteration_count {
+            result = result.wrapping_add(current_iteration.wrapping_mul(current_iteration));
         }
 
-        let mut vec = Vec::new(&env);
-        for i in 0..(n.min(100)) {
-            vec.push_back(i);
+        let mut storage_vec = Vec::new(&env);
+        for entry_index in 0..(iteration_count.min(100)) {
+            storage_vec.push_back(entry_index);
         }
-        env.storage().instance().set(&symbol_short!("vec"), &vec);
+        env.storage()
+            .instance()
+            .set(&symbol_short!("vec"), &storage_vec);
 
         result
     }
 
-    pub fn do_cross_contract_work(env: Env, other: Address, n: u32) -> u32 {
+    pub fn do_cross_contract_work(env: Env, other: Address, call_count: u32) -> u32 {
         let mut result: u32 = 0;
         // ── Cross-contract CPU benchmark loop ─────────────────────────
-        // Invokes `HelperContract::multiply` n times, accumulating the
+        // Invokes `HelperContract::multiply` call_count times, accumulating the
         // returned products with `wrapping_add` to avoid debug-mode
         // panics on overflow.  The cross-contract call overhead (host
         // function dispatch, WASM boundary crossing) exercises a
         // different cost profile than the pure-arithmetic loop in
         // `do_expensive_work`, making this a complementary benchmark.
-        for i in 0..n {
+        for current_iteration in 0..call_count {
             let product: u32 = env.invoke_contract(
                 &other,
                 &symbol_short!("multiply"),
-                vec![&env, Val::from(i), Val::from(i)],
+                vec![
+                    &env,
+                    Val::from(current_iteration),
+                    Val::from(current_iteration),
+                ],
             );
             result = result.wrapping_add(product);
         }
         result
     }
 
-    /// Writes `n` large byte blobs into temporary storage, exercising
-    /// ledger write-bytes budget. Each entry is 256 bytes, so `n = 100`
+    /// Writes `entry_count` large byte blobs into temporary storage, exercising
+    /// ledger write-bytes budget. Each entry is 256 bytes, so `entry_count = 100`
     /// produces ~25 600 bytes of ledger writes — enough to exceed a tight
     /// write-bytes limit when asserted in tests.
-    pub fn do_write_heavy_work(env: Env, n: u32) {
-        for i in 0..n {
+    pub fn do_write_heavy_work(env: Env, entry_count: u32) {
+        for entry_index in 0..entry_count {
             // Build a 256-byte payload for each entry so the write footprint
             // grows quickly and is easy to reason about in assertions.
             let mut payload = Bytes::new(&env);
             for _ in 0..256_u32 {
-                payload.push_back(i as u8);
+                payload.push_back(entry_index as u8);
             }
             // Use temporary storage so ledger entries are created fresh on
             // every invocation, maximising the measured write bytes.
             env.storage()
                 .temporary()
-                .set(&(symbol_short!("wh"), i), &payload);
+                .set(&(symbol_short!("wh"), entry_index), &payload);
         }
     }
 }

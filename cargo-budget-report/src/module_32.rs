@@ -19,9 +19,18 @@ pub(crate) fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
             .write_record(["package", "function", "metric", "value", "limit", "pass"])
             .unwrap();
         for report in reports {
-            let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-            let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
-            let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
+            let value_str = report
+                .value
+                .map(|metric_value| metric_value.to_string())
+                .unwrap_or_default();
+            let limit_str = report
+                .limit
+                .map(|configured_limit| configured_limit.to_string())
+                .unwrap_or_default();
+            let pass_str = report
+                .pass
+                .map(|passed| passed.to_string())
+                .unwrap_or_default();
             csv_writer
                 .write_record([
                     report.package.as_str(),
@@ -39,7 +48,10 @@ pub(crate) fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
             .unwrap();
         for report in reports {
             if report.value.is_some() {
-                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
+                let value_str = report
+                    .value
+                    .map(|metric_value| metric_value.to_string())
+                    .unwrap_or_default();
                 csv_writer
                     .write_record([
                         report.package.as_str(),

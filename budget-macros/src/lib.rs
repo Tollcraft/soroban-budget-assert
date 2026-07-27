@@ -101,29 +101,29 @@ enum ConfigResolution {
 fn resolve_config_value(key: &str) -> ConfigResolution {
     let path = std::path::Path::new("budget.json");
     let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
+        Ok(file_contents) => file_contents,
         Err(_) => return ConfigResolution::MissingFile,
     };
     let parsed: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
+        Ok(parsed_json) => parsed_json,
         Err(_) => return ConfigResolution::MalformedJson,
     };
-    match parsed.get(key).and_then(|v| v.as_u64()) {
-        Some(n) => ConfigResolution::Value(n),
+    match parsed.get(key).and_then(|json_value| json_value.as_u64()) {
+        Some(numeric_value) => ConfigResolution::Value(numeric_value),
         None => ConfigResolution::KeyNotFound,
     }
 }
 
 fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::TokenStream {
     match limit {
-        BudgetLimit::Int(n) => quote! { #n },
-        BudgetLimit::EnvVar(var) => quote! {
-            budget_env_resolve(#var)
+        BudgetLimit::Int(int_limit) => quote! { #int_limit },
+        BudgetLimit::EnvVar(env_var_name) => quote! {
+            budget_env_resolve(#env_var_name)
                 .map(|s| s.parse::<u64>().unwrap_or_else(|_| {
                     panic!(
                         "{}: env var {}={:?} is not a valid u64",
                         #metric_label,
-                        #var,
+                        #env_var_name,
                         s
                     )
                 }))
@@ -135,7 +135,7 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
             // directly as a literal — zero runtime overhead (O(1) HashMap lookup
             // done once during macro expansion).
             match resolve_config_value(key) {
-                ConfigResolution::Value(n) => quote! { #n },
+                ConfigResolution::Value(numeric_value) => quote! { #numeric_value },
                 // Fall back to runtime resolution when `budget.json` is not
                 // available at compile time (e.g. tests that create the file
                 // dynamically). Uses std-only code for maximum compatibility.
@@ -147,42 +147,42 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                                 let config_map: ::std::collections::HashMap<String, u64> = {
                                     let mut map = ::std::collections::HashMap::new();
                                     let bytes = content.as_bytes();
-                                    let mut i = 0;
-                                    while i < bytes.len() {
-                                        match bytes[i] {
+                                    let mut byte_index = 0;
+                                    while byte_index < bytes.len() {
+                                        match bytes[byte_index] {
                                             b'{' | b',' | b' ' | b'\n' | b'\t' | b'\r' => {
-                                                i += 1;
+                                                byte_index += 1;
                                             }
                                             b'}' => break,
                                             b'"' => {
-                                                i += 1;
-                                                let key_start = i;
-                                                while i < bytes.len() && bytes[i] != b'"' {
-                                                    i += 1;
+                                                byte_index += 1;
+                                                let key_start = byte_index;
+                                                while byte_index < bytes.len() && bytes[byte_index] != b'"' {
+                                                    byte_index += 1;
                                                 }
                                                 let key = ::std::string::String::from_utf8_lossy(
-                                                    &bytes[key_start..i]
+                                                    &bytes[key_start..byte_index]
                                                 ).into_owned();
-                                                i += 1;
-                                                while i < bytes.len()
-                                                    && (bytes[i] == b':' || bytes[i] == b' '
-                                                        || bytes[i] == b'\n' || bytes[i] == b'\t')
+                                                byte_index += 1;
+                                                while byte_index < bytes.len()
+                                                    && (bytes[byte_index] == b':' || bytes[byte_index] == b' '
+                                                        || bytes[byte_index] == b'\n' || bytes[byte_index] == b'\t')
                                                 {
-                                                    i += 1;
+                                                    byte_index += 1;
                                                 }
-                                                let val_start = i;
-                                                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                                                    i += 1;
+                                                let val_start = byte_index;
+                                                while byte_index < bytes.len() && bytes[byte_index].is_ascii_digit() {
+                                                    byte_index += 1;
                                                 }
-                                                if val_start < i {
-                                                    if let Ok(n) = ::std::string::String::from_utf8_lossy(
-                                                        &bytes[val_start..i]
+                                                if val_start < byte_index {
+                                                    if let Ok(parsed_value) = ::std::string::String::from_utf8_lossy(
+                                                        &bytes[val_start..byte_index]
                                                     ).parse::<u64>() {
-                                                        map.insert(key, n);
+                                                        map.insert(key, parsed_value);
                                                     }
                                                 }
                                             }
-                                            _ => { i += 1; }
+                                            _ => { byte_index += 1; }
                                         }
                                     }
                                     map
@@ -207,8 +207,8 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
 
 fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
     let mut input_fn = match syn::parse2::<ItemFn>(item.into()) {
-        Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Ok(parsed_fn) => parsed_fn,
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
 
     let stmts = &input_fn.block.stmts;
@@ -268,7 +268,7 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
 
     *input_fn.block = match syn::parse2(new_block) {
         Ok(block) => block,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
 
     TokenStream::from(quote! {
@@ -334,8 +334,8 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = match syn::parse2::<BudgetLimit>(attr.into()) {
-        Ok(l) => l,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Ok(parsed_limit) => parsed_limit,
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
     generate_budget_assert(
         BudgetSpec {
@@ -413,20 +413,20 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = match syn::parse::<BudgetLimit>(attr) {
-        Ok(l) => l,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Ok(parsed_limit) => parsed_limit,
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
     let mut input_fn = match syn::parse::<ItemFn>(item) {
-        Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Ok(parsed_fn) => parsed_fn,
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
 
     let stmts = &input_fn.block.stmts;
 
     let limit_expr = match limit {
-        BudgetLimit::Int(n) => quote! { #n },
-        BudgetLimit::EnvVar(var) => quote! {
-            std::env::var(#var)
+        BudgetLimit::Int(int_limit) => quote! { #int_limit },
+        BudgetLimit::EnvVar(env_var_name) => quote! {
+            std::env::var(#env_var_name)
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
@@ -473,8 +473,8 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let limit = match syn::parse2::<BudgetLimit>(attr.into()) {
-        Ok(l) => l,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Ok(parsed_limit) => parsed_limit,
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
     generate_budget_assert(
         BudgetSpec {
@@ -498,8 +498,8 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn budget_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let spec = match syn::parse2::<BudgetSpec>(attr.into()) {
-        Ok(s) => s,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Ok(parsed_spec) => parsed_spec,
+        Err(parse_error) => return TokenStream::from(parse_error.to_compile_error()),
     };
     generate_budget_assert(spec, item)
 }
