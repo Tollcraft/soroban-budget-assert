@@ -1,8 +1,11 @@
-use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
-use anyhow::Context;
 mod compare;
+mod module_10;
+mod module_30;
 
-use anyhow::{Context, Result};
+use crate::module_30::{
+    self, bail, Context as ResultContext, Error, Result, SimulationFailure, SimulationOutcome,
+};
+use anyhow::Context;
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
 use compare::{
@@ -20,8 +23,6 @@ use std::time::Duration;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
-
-mod module_10;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
@@ -382,9 +383,9 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
     if let Some(error) = rpc_response.get("result").and_then(|r| r.get("error")) {
         let err_msg = error.as_str().unwrap_or("");
         if !err_msg.is_empty() {
-            anyhow::bail!("{}", err_msg);
+            return Err(Error::Rpc(err_msg.to_string()));
         } else {
-            anyhow::bail!("{}", error);
+            return Err(Error::Rpc(error.to_string()));
         }
     }
 
@@ -402,35 +403,6 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
         tx_data.resources.read_bytes,
         tx_data.resources.write_bytes,
     ))
-}
-
-/// Why simulating a single exported function did not produce metrics.
-/// Carries the same text the caller previously logged inline, so extracting
-/// this out of the main loop doesn't change any user-facing diagnostics.
-///
-/// Each variant corresponds to a different failure point in the
-/// `stellar contract invoke --build-only` → `simulateTransaction` pipeline.
-enum SimulationFailure {
-    /// `stellar contract invoke --build-only` exited non-zero.
-    Invoke(String),
-    /// The RPC `simulateTransaction` response contained an `"error"` field.
-    Rpc(String),
-    /// The RPC response didn't contain a decodable `SorobanTransactionData`.
-    MetricsExtraction(String),
-}
-
-/// Outcome of simulating one exported function.
-///
-/// Distinguishes between a successful simulation (with extracted resource
-/// metrics) and a recoverable failure so the caller can continue iterating
-/// over remaining functions instead of aborting the entire report.
-enum SimulationOutcome {
-    Metrics {
-        instructions: u32,
-        read_bytes: u32,
-        write_bytes: u32,
-    },
-    Failed(SimulationFailure),
 }
 
 /// Builds the `stellar contract invoke --build-only -- <function> [args..]`
@@ -600,7 +572,6 @@ fn simulate_function(
 /// Returns an error if the file exists but cannot be read or parsed.
 fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents).map_err(Error::Toml),
         Ok(contents) => {
             let trimmed = contents.trim();
             if trimmed.is_empty()
@@ -611,9 +582,7 @@ fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
                 return Ok(BudgetToml::default());
             }
 
-            toml::from_str(&contents).map_err(|err| {
-                anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)
-            })
+            toml::from_str(&contents).map_err(Error::Toml)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BudgetToml::default()),
         Err(err) => Err(Error::Io(err)),
@@ -622,7 +591,7 @@ fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
 
 fn resolve_tolerance(cli_override: Option<&str>, config: &BudgetToml) -> Result<Tolerance> {
     if let Some(raw) = cli_override {
-        return parse_tolerance(raw);
+        return parse_tolerance(raw).context("failed to parse CLI tolerance")?;
     }
     if let Some(t) = config.tolerance {
         return Ok(Tolerance::new(t));
@@ -746,9 +715,6 @@ fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
         ));
     }
     std::fs::write(path, BUDGET_TOML_TEMPLATE)?;
-    eprintln!("Wrote {}", path.display());
-    std::fs::write(path, BUDGET_TOML_TEMPLATE)
-        .with_context(|| format!("failed to write {}", path.display()))?;
     if !quiet {
         eprintln!("Wrote {}", path.display());
     }
@@ -900,17 +866,15 @@ fn main() -> anyhow::Result<()> {
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
-        scaffold_init(args.force)?;
+        scaffold_init(args.force, args.quiet)?;
         return Ok(());
-        return scaffold_init(args.force, args.quiet);
     }
 
     // ── Preflight environment checks ──────────────────────────────────
     run_preflight_checks(args.quiet)?;
 
     let toml_config = load_budget_toml("budget.toml")?;
-    let default_tolerance = resolve_tolerance(args.tolerance.as_deref(), &toml_config)
-        .context("failed to resolve tolerance")?;
+    let default_tolerance = resolve_tolerance(args.tolerance.as_deref(), &toml_config)?;
 
     let mode = Mode::from_args(&args);
 
