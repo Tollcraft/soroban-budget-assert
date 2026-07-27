@@ -440,3 +440,43 @@ fn test_read_bytes_budget_exceeds_limit() {
          - local estimate, real network cost may differ significantly in either direction"
     );
 }
+
+/// Measures the local WASM read-bytes cost of `do_read_heavy_work` for the
+/// storage-read gap measurement table in `MEASUREMENTS.md`.
+///
+/// Writes 100 keys (256 bytes each) to instance storage, then reads them
+/// all back.  The read-bytes figure is the isolated local estimate for the
+/// storage-read gap analysis; the CPU and memory figures are captured
+/// alongside so the entry has parity with the existing calibration table.
+///
+/// # Running
+///
+/// ```bash
+/// cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract
+/// cargo test -p amm-pool-contract test_storage_read_wasm_local -- --nocapture
+/// ```
+#[test]
+fn test_storage_read_wasm_local() {
+    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+
+    let env = Env::default();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+
+    // 100 keys × 256 bytes = 25 600 bytes of reads, plus per-key overhead.
+    client.do_read_heavy_work(&100);
+
+    let budget = env.cost_estimate().budget();
+    let read_bytes = env.cost_estimate().resources().read_bytes;
+    let cpu = budget.cpu_instruction_cost();
+    let mem = budget.memory_bytes_cost();
+
+    println!("=== STORAGE_READ_WASM_LOCAL ===");
+    println!("READ_BYTES={}", read_bytes);
+    println!("CPU_INSTRUCTIONS={}", cpu);
+    println!("MEMORY_BYTES={}", mem);
+}
