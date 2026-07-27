@@ -1,8 +1,8 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token};
+use quote::{quote, ToTokens};
+use syn::{parse::Parse, parse::ParseStream, Expr, Ident, ItemFn, LitInt, LitStr, Token};
 
 #[derive(Clone)]
 enum BudgetLimit {
@@ -17,7 +17,7 @@ enum BudgetLimit {
     /// tests without any global environment mutation (and therefore no
     /// `unsafe std::env::set_var` call).
     EnvFile {
-        path: String,
+        path: proc_macro2::TokenStream,
         var_name: String,
     },
 }
@@ -48,7 +48,7 @@ struct BudgetSpec {
 impl Parse for BudgetLimit {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut env_var: Option<String> = None;
-        let mut env_file: Option<String> = None;
+        let mut env_file: Option<proc_macro2::TokenStream> = None;
         let mut config_key: Option<String> = None;
 
         // The leading form may also be a bare integer literal. Detect that
@@ -71,16 +71,30 @@ impl Parse for BudgetLimit {
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let lit: LitStr = input.parse()?;
-            match ident.to_string().as_str() {
-                "env" => env_var = Some(lit.value()),
-                "env_file" => env_file = Some(lit.value()),
-                "config" => config_key = Some(lit.value()),
-                other => {
-                    return Err(syn::Error::new(
-                        ident.span(),
-                        format!("expected `env`, `env_file`, or `config`, got `{other}`"),
-                    ));
+            let ident_str = ident.to_string();
+            if ident_str == "env_file" {
+                // Accept either a string literal or an identifier/const path
+                // for env_file, so callers can write `env_file = "path"` or
+                // `env_file = CONST_NAME`.
+                let path: proc_macro2::TokenStream = if input.peek(LitStr) {
+                    let lit: LitStr = input.parse()?;
+                    lit.into_token_stream()
+                } else {
+                    let expr: Expr = input.parse()?;
+                    expr.into_token_stream()
+                };
+                env_file = Some(path);
+            } else {
+                let lit: LitStr = input.parse()?;
+                match ident_str.as_str() {
+                    "env" => env_var = Some(lit.value()),
+                    "config" => config_key = Some(lit.value()),
+                    other => {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            format!("expected `env`, `env_file`, or `config`, got `{other}`"),
+                        ));
+                    }
                 }
             }
             if !input.is_empty() {
