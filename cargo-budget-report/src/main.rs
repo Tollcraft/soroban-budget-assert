@@ -1024,6 +1024,9 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
+mod module_32;
+
+#[cfg(test)]
 mod module_8;
 
 #[cfg(test)]
@@ -1496,51 +1499,6 @@ write_limit = 1000
 
     // --- CSV serialization tests ---
 
-    /// Helper to serialize a slice of CostReport to CSV bytes and return the
-    /// result as a String, using the same logic as the `--csv` output path.
-    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut csv_writer = csv::Writer::from_writer(vec![]);
-        if check {
-            csv_writer
-                .write_record(["package", "function", "metric", "value", "limit", "pass"])
-                .unwrap();
-            for report in reports {
-                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
-                let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
-                csv_writer
-                    .write_record([
-                        report.package.as_str(),
-                        report.function.as_str(),
-                        report.metric,
-                        value_str.as_str(),
-                        limit_str.as_str(),
-                        pass_str.as_str(),
-                    ])
-                    .unwrap();
-            }
-        } else {
-            csv_writer
-                .write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for report in reports {
-                if report.value.is_some() {
-                    let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                    csv_writer
-                        .write_record([
-                            report.package.as_str(),
-                            report.function.as_str(),
-                            report.metric,
-                            value_str.as_str(),
-                        ])
-                        .unwrap();
-                }
-            }
-        }
-        csv_writer.flush().unwrap();
-        String::from_utf8(csv_writer.into_inner().unwrap()).unwrap()
-    }
-
     #[test]
     fn csv_output_without_check_has_four_columns() {
         let reports = vec![
@@ -1561,7 +1519,7 @@ write_limit = 1000
                 pass: None,
             },
         ];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
             "package,function,metric,value\n",
             "my-contract,do_work,CPU Instructions,1000000\n",
@@ -1590,7 +1548,7 @@ write_limit = 1000
                 pass: Some(false),
             },
         ];
-        let csv = reports_to_csv(&reports, true);
+        let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
             "package,function,metric,value,limit,pass\n",
             "my-contract,do_work,CPU Instructions,1000000,5000000,true\n",
@@ -1619,7 +1577,7 @@ write_limit = 1000
                 pass: None,
             },
         ];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
             "package,function,metric,value\n",
             "my-contract,do_work,Read Bytes,2048\n",
@@ -1637,7 +1595,7 @@ write_limit = 1000
             limit: Some(5_000_000),
             pass: Some(false),
         }];
-        let csv = reports_to_csv(&reports, true);
+        let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
             "package,function,metric,value,limit,pass\n",
             "my-contract,do_work,CPU Instructions,,5000000,false\n",
@@ -1648,7 +1606,7 @@ write_limit = 1000
     #[test]
     fn csv_output_empty_reports_produces_header_only() {
         let reports: Vec<CostReport> = vec![];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
     }
 }
