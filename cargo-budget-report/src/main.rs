@@ -268,9 +268,9 @@ impl MarginToml {
         let read = self
             .read_margin
             .ok_or_else(|| Error::Message("missing margin.read_margin in budget.toml".into()))?;
-        let write = self.write_margin.ok_or_else(|| {
-            Error::Message("missing margin.write_margin in budget.toml".into())
-        })?;
+        let write = self
+            .write_margin
+            .ok_or_else(|| Error::Message("missing margin.write_margin in budget.toml".into()))?;
         Margin::new(cpu, memory, read, write)
     }
 
@@ -1027,9 +1027,11 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
     fn parse_cli_margin(field: &str, raw: Option<&String>) -> Result<Option<f64>> {
         match raw {
             None => Ok(None),
-            Some(text) => text.trim().parse::<f64>().map(Some).map_err(|e| {
-                Error::Message(format!("invalid --margin-{field} `{text}`: {e}"))
-            }),
+            Some(text) => text
+                .trim()
+                .parse::<f64>()
+                .map(Some)
+                .map_err(|e| Error::Message(format!("invalid --margin-{field} `{text}`: {e}"))),
         }
     }
     let cli_parts = [

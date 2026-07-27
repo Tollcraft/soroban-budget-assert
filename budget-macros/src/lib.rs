@@ -16,7 +16,10 @@ enum BudgetLimit {
     /// runtime, so a single checked-in `tier-a-limits.env` can drive many
     /// tests without any global environment mutation (and therefore no
     /// `unsafe std::env::set_var` call).
-    EnvFile { path: String, var_name: String },
+    EnvFile {
+        path: String,
+        var_name: String,
+    },
 }
 
 #[derive(Default)]
@@ -76,9 +79,7 @@ impl Parse for BudgetLimit {
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!(
-                            "expected `env`, `env_file`, or `config`, got `{other}`"
-                        ),
+                        format!("expected `env`, `env_file`, or `config`, got `{other}`"),
                     ));
                 }
             }
