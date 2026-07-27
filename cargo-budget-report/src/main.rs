@@ -1023,11 +1023,7 @@ fn main() -> Result<()> {
             anyhow::bail!(
                 "Unknown package(s): {}\nAvailable cdylib packages: {}",
                 unknown_pkgs.join(", "),
-                cdylib_names
-                    .iter()
-                    .map(|s| *s)
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                cdylib_names.iter().copied().collect::<Vec<_>>().join(", "),
             );
         }
     }
