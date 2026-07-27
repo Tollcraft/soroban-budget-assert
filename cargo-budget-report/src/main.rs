@@ -116,6 +116,19 @@ struct BudgetReportArgs {
     /// regardless of this flag.
     #[arg(long, default_value_t = false)]
     quiet: bool,
+
+    /// Validate reported metrics against the Stellar CLI's own XDR decoder.
+    ///
+    /// For each successfully simulated function, the base64 SorobanTransactionData
+    /// XDR from the RPC response is re-decoded through `stellar xdr decode` and
+    /// the resulting metrics are compared against cargo-budget-report's values.
+    /// Any discrepancy is reported as a diagnostic; the tool still exits with a
+    /// non-zero status when mismatches are found.
+    ///
+    /// Validation is skipped (not failed) when the Stellar CLI or the `xdr decode`
+    /// subcommand is unavailable.
+    #[arg(long, default_value_t = false)]
+    validate: bool,
 }
 
 /// Top-level configuration deserialized from `budget.toml`.
@@ -359,11 +372,18 @@ enum SimulationFailure {
 /// Distinguishes between a successful simulation (with extracted resource
 /// metrics) and a recoverable failure so the caller can continue iterating
 /// over remaining functions instead of aborting the entire report.
+///
+/// On success, `transaction_data_xdr` carries the base64-encoded
+/// `SorobanTransactionData` from the RPC response so that optional validation
+/// (via `--validate`) can re-decode it through the Stellar CLI's own XDR
+/// decoder without a second RPC call.
 enum SimulationOutcome {
     Metrics {
         instructions: u32,
         read_bytes: u32,
         write_bytes: u32,
+        /// Base64-encoded `SorobanTransactionData` from the RPC response.
+        transaction_data_xdr: String,
     },
     Failed(SimulationFailure),
 }
@@ -507,11 +527,18 @@ fn simulate_function(
         )));
     }
 
+    // Capture the raw transactionData XDR before decode, so --validate
+    // can re-decode it through the Stellar CLI independently.
+    let tx_data_xdr_b64 = rpc_resp["result"]["transactionData"]
+        .as_str()
+        .map(|s| s.to_string());
+
     match extract_metrics(&rpc_resp) {
         Ok((instructions, read_bytes, write_bytes)) => Ok(SimulationOutcome::Metrics {
             instructions,
             read_bytes,
             write_bytes,
+            transaction_data_xdr: tx_data_xdr_b64.unwrap_or_default(),
         }),
         Err(err) => Ok(SimulationOutcome::Failed(
             SimulationFailure::MetricsExtraction(format!("{:#}", err)),
@@ -727,6 +754,7 @@ fn main() -> Result<()> {
     let mut reports = Vec::new();
     let mut has_errors = false;
     let mut checks_failed = false;
+    let mut validation_failed = false;
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -835,6 +863,7 @@ fn main() -> Result<()> {
                     instructions,
                     read_bytes,
                     write_bytes,
+                    transaction_data_xdr,
                 } => {
                     // Build three CostReport entries for this function. In
                     // --check mode, attach the configured limit and
@@ -858,6 +887,41 @@ fn main() -> Result<()> {
                             limit: entry_limit,
                             pass,
                         });
+                    }
+
+                    // ── Optional Stellar CLI validation ──────────────
+                    if args.validate {
+                        let v_result = validate::validate_metrics(
+                            &transaction_data_xdr,
+                            instructions,
+                            read_bytes,
+                            write_bytes,
+                        );
+                        match v_result {
+                            validate::ValidationResult::Match => {
+                                if !args.quiet {
+                                    eprintln!("  ✓ validation passed for '{}'", function);
+                                }
+                            }
+                            validate::ValidationResult::Mismatch { diagnostics } => {
+                                validation_failed = true;
+                                eprintln!(
+                                    "  ✗ VALIDATION FAILED for '{}' in package '{}':",
+                                    function, package.name
+                                );
+                                for d in &diagnostics {
+                                    eprintln!("    {}", d);
+                                }
+                            }
+                            validate::ValidationResult::Skipped { reason } => {
+                                if !args.quiet {
+                                    eprintln!(
+                                        "  - validation skipped for '{}': {}",
+                                        function, reason
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 SimulationOutcome::Failed(failure) => {
@@ -903,7 +967,7 @@ fn main() -> Result<()> {
         if !args.quiet {
             eprintln!("No successful simulations to report.");
         }
-        if has_errors || (args.check && checks_failed) {
+        if has_errors || (args.check && checks_failed) || validation_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -1016,12 +1080,14 @@ fn main() -> Result<()> {
         }
     }
 
-    if has_errors || (args.check && checks_failed) {
+    if has_errors || (args.check && checks_failed) || validation_failed {
         std::process::exit(1);
     }
 
     Ok(())
 }
+
+pub mod validate;
 
 #[cfg(test)]
 mod module_8;
