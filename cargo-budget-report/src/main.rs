@@ -20,6 +20,7 @@ use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
+mod derive;
 mod module_10;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -1553,6 +1554,7 @@ fn main() -> anyhow::Result<()> {
             }
             return Ok(());
         }
+        Mode::Derive(_, _) => unreachable!("derive mode returns early before this point"),
         Mode::Report => {} // Fall through to the legacy rendering below.
     }
 
@@ -2084,6 +2086,7 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            validate: false,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2110,6 +2113,7 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            validate: false,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2136,6 +2140,7 @@ mod tests {
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
             quiet: false,
+            validate: false,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2165,6 +2170,7 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            validate: false,
             profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,
