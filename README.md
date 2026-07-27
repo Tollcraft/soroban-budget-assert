@@ -6,8 +6,7 @@
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   <p>
     <a href="https://tollcraft.gitbook.io/docs/budget-assert"><strong>Documentation</strong></a> ·
-    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a> ·
-    <a href="https://asciinema.org/a/qqC0RysuCDBvfUXC"><strong>Demo</strong></a>
+    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a>
   </p>
 </div>
 
@@ -130,41 +129,25 @@ complexity = "warn"           # accepted by cargo-budget-report.
 cargo budget-report
 ```
 
-**Filter by Package and Function:**
-```bash
-cargo budget-report --package example-contract --function do_expensive_work
+**Use the same release profile for comparable numbers:**
+
+`cargo budget-report` builds contracts with `cargo build --release --target wasm32-unknown-unknown`, so the workspace's `[profile.release]` changes the WASM that gets deployed and simulated. The figures published by this project use the Soroban size-optimized release profile below; copy it into the workspace root before comparing your results to this repo's measurements:
+
+```toml
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
 ```
 
-The `--package` and `--function` flags can be repeated to select multiple items:
-```bash
-cargo budget-report --package contract-a --package contract-b --function init --function transfer
-```
+These settings are measurement inputs, not cosmetic preferences. `opt-level = "z"` and `lto = true` optimize the generated WASM for size and cross-crate inlining; `codegen-units = 1` gives LLVM a whole-program optimization view; `panic = "abort"` removes unwinding code; `strip = "symbols"` and `debug = 0` remove symbol/debug payload from the artifact; `debug-assertions = false` matches production release behavior; and `overflow-checks = true` keeps arithmetic checks explicit when the release build is measured. Changing any of them can change CPU instructions, memory usage, read/write bytes, or WASM size.
 
-Unknown package or function names produce a clear error listing available candidates.
-
-**Contract ID Caching:**
-
-A `.budget-cache.toml` file (automatically gitignored) caches deployed contract IDs keyed by WASM SHA-256 hash and network. On subsequent runs with unchanged WASM, deployment is skipped and the cached ID is reused:
-
-```bash
-# First run — deploys and caches
-cargo budget-report
-
-# Second run (no WASM changes) — reuses cached contract IDs (fast)
-cargo budget-report
-```
-
-To force re-deployment:
-```bash
-cargo budget-report --force-deploy
-```
-
-Cache entries are isolated by network — a testnet ID will never be reused on another network.
-
-**Use Macros in Tests:**
-```rust
-use budget_macros::budget_cpu_lt;
-```
+Figures produced under a different release profile are different builds and are not comparable to this project's published cost figures. In the existing fixture, `do_expensive_work(10_000)` measured 901,816 local WASM CPU instructions and 756,678 testnet instructions with the size-optimized profile, but 767,049 local WASM CPU instructions and 832,006 testnet instructions with Cargo's default release profile. A follow-up worth considering is a tool warning when `cargo budget-report` runs in a workspace that lacks these settings.
 
 **Enforce Regression Limits (`--check`):**
 
@@ -261,7 +244,7 @@ fn test_mem_budget() {
 
 ## 📊 Measurements
 
-The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/protocol-mechanics) cites this file as the source of truth for measured figures.
+The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/mechanics) cites this file as the source of truth for measured figures.
 
 ## 🤝 Community & Maintainers
 
