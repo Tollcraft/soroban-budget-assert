@@ -823,8 +823,6 @@ fn main() -> Result<()> {
             .targets
             .iter()
             .any(|t| t.crate_types.iter().any(|c| *c == "cdylib"));
-
-            .any(|target| target.crate_types.iter().any(|ct| *ct == "cdylib"));
         if !is_cdylib {
             continue;
         }

@@ -372,10 +372,6 @@ fn test_read_bytes_budget_within_limit() {
     let read_bytes = env.cost_estimate().resources().read_bytes;
     println!("Read bytes (WASM deposit+swap+withdraw): {read_bytes}");
 
-    // Generous upper bound (measured ~16,252 on CI, ~20,232 on CI run 30181579346) — tighten once a clean baseline is recorded.
-    assert!(
-        read_bytes < 22_000,
-        "Read bytes {read_bytes} exceeded the expected limit of 22,000 \
     // Generous upper bound (measured ~20,236 on CI) — tighten once a clean baseline is recorded.
     assert!(
         read_bytes < 25_000,
