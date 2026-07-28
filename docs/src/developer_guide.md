@@ -28,6 +28,18 @@ cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test
 ```
 
+`amm-pool-contract/tests/budget_test.rs` covers the macros against the real SDK `Env` (32 `#[test]` functions total):
+
+- `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics); `test_budget_wasm` asserts a 5,000,000 CPU limit via `#[budget_cpu_lt(5000000)]`.
+- `test_budget_macro_gated` — a passing assertion at the 3,500,000 CPU limit (`#[budget_cpu_lt(3500000)]`).
+- `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (1,000,000) and expects the macro's panic (`#[budget_cpu_lt(1000000)]` with `#[should_panic]`).
+- `test_budget_macro_dynamic_env` — asserts a CPU limit read from the `TEST_MAX_CPU` environment variable (`#[budget_cpu_lt(env = "TEST_MAX_CPU")]`).
+- `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` and the assertion passes unconditionally (`#[budget_cpu_lt(env = "TEST_MAX_CPU_FALLBACK")]`).
+- `test_budget_macro_json_config_*` (6 tests) — the `config = "key"` limit form read from `budget.json`.
+- `test_budget_require_auth_*` (7 tests) — CPU and memory budget assertions for `require_auth` calls covering isolated calls, deposit/swap/withdraw operations, and deliberate-regression cases.
+- `test_budget_extend_ttl_*` (4 tests) — CPU and memory budget assertions for `extend_instance_ttl` calls with passing and deliberate-regression variants.
+- `test_read_bytes_budget_*` / `test_write_bytes_*` (5 tests) — ledger read-bytes budget enforcement, write-bytes budget via `#[budget_write_bytes_lt]`, and deliberate-regression fixtures.
+- `test_budget_macro_result_returning` / `test_budget_macro_result_returning_regression` / `test_budget_macro_early_return_still_asserts` — the `Result`-returning and early-`return` body shapes.
 `amm-pool-contract/tests/budget_test.rs` covers the macros against the real SDK `Env`:
 
 - `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
