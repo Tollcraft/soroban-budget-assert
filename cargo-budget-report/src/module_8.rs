@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
+    use crate::module_32::{isolate_temp_dir, reports_to_csv, restore_cwd};
     use crate::*;
 
     // ── evaluate_check off-by-one tests ─────────────────────────────────
@@ -114,6 +115,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(
@@ -129,6 +131,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Read Bytes"), Some(1_000));
@@ -141,6 +144,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Write Bytes"), Some(500));
@@ -153,6 +157,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         // An empty or unknown metric string should return None.
@@ -166,6 +171,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "WASM Bytes"), None);
@@ -179,6 +185,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: None,
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), None);
@@ -309,6 +316,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         emit_check_failure_entries(
@@ -329,6 +337,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         emit_check_failure_entries(
@@ -437,6 +446,7 @@ mod off_by_one_and_zero_length_tests {
             failure_reason: None,
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",0,"));
@@ -453,6 +463,7 @@ mod off_by_one_and_zero_length_tests {
             failure_reason: None,
             limit: Some(0),
             pass: Some(true),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("0,,0,true"));
@@ -475,24 +486,10 @@ mod off_by_one_and_zero_length_tests {
 
     // ── scaffold_init edge case tests ──────────────────────────────────
     //
-    // These tests create a temporary working directory and change the
-    // process CWD into it so that `scaffold_init`'s hard-coded
+    // These tests use `isolate_temp_dir` / `restore_cwd` from the shared
+    // `module_32` helpers so that `scaffold_init`'s hard-coded
     // `Path::new("budget.toml")` does not clobber the real project file.
     // A shared lock prevents races with other CWD-mutating tests.
-
-    /// Change into a newly-created temp directory and return the old CWD
-    /// so the caller can restore it with [`restore_cwd`].
-    fn isolate_temp_dir() -> (tempfile::TempDir, std::path::PathBuf) {
-        let tmp = tempfile::tempdir().expect("failed to create temp dir");
-        let prev = std::env::current_dir().expect("failed to read current working directory");
-        std::env::set_current_dir(tmp.path()).expect("failed to change into temp dir");
-        (tmp, prev)
-    }
-
-    /// Restore the original CWD. The temp dir can then be dropped cleanly.
-    fn restore_cwd(prev: &std::path::Path) {
-        std::env::set_current_dir(prev).expect("failed to restore original working directory");
-    }
 
     #[test]
     fn scaffold_init_creates_file_when_not_exists() {
@@ -501,7 +498,7 @@ mod off_by_one_and_zero_length_tests {
             .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
 
-        let result = scaffold_init(false, false);
+        let result = scaffold_init(false, true);
         assert!(result.is_ok());
         assert!(
             std::path::Path::new("budget.toml").exists(),
@@ -526,7 +523,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(false, false);
+        let result = scaffold_init(false, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.as_ref().unwrap_err());
         assert!(
@@ -552,7 +549,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(true, false);
+        let result = scaffold_init(true, true);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string("budget.toml").unwrap();
@@ -673,6 +670,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, " CPU Instructions"), None);
@@ -686,6 +684,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions "), None);
@@ -699,6 +698,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         // The function should do exact case-sensitive matching.
@@ -801,6 +801,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         emit_check_failure_entries(
@@ -814,10 +815,12 @@ write_limit = 0
         // Must be emitted in order: CPU, Read, Write.
         assert_eq!(reports[0].metric, "CPU Instructions");
         assert_eq!(reports[0].limit, Some(5_000_000));
-        assert_eq!(reports[1].metric, "Read Bytes");
+        assert_eq!(reports[1].metric, "Memory Bytes");
         assert_eq!(reports[1].limit, None);
-        assert_eq!(reports[2].metric, "Write Bytes");
-        assert_eq!(reports[2].limit, Some(500));
+        assert_eq!(reports[2].metric, "Read Bytes");
+        assert_eq!(reports[2].limit, None);
+        assert_eq!(reports[3].metric, "Write Bytes");
+        assert_eq!(reports[3].limit, Some(500));
         // All should have pass = false.
         for r in &reports {
             assert_eq!(r.pass, Some(false));

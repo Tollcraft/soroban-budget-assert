@@ -4,47 +4,77 @@ use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse::Parse, parse::ParseStream, Expr, Ident, ItemFn, LitInt, LitStr, Token};
 
-#[derive(Clone)]
+/// The resolved budget limit supplied by the user to a `budget_cpu_lt` or
+/// `budget_mem_lt` attribute macro.
+///
+/// There are three forms, each of which is parsed from the attribute's token
+/// stream by the [`Parse`] implementation:
+///
+/// | Form           | Syntax                         | Resolution                              |
+/// |----------------|--------------------------------|-----------------------------------------|
+/// | **Static**     | `#[budget_cpu_lt(500_000)]`    | Hard-coded `u64` literal at compile time|
+/// | **Env variable**| `#[budget_cpu_lt(env = "VAR")]`| Read `std::env::var("VAR")` at runtime  |
+/// | **JSON config**| `#[budget_cpu_lt(config = "key")]` | Parse `budget.json` at runtime      |
+///
+/// # Semantics
+///
+/// * `Int(n)` — the simplest form. The assertion checks that the measured cost
+///   is strictly less than `n`.
+/// * `EnvVar(name)` — looks up the environment variable `name` at test runtime.
+///   If the variable is unset, the limit silently defaults to `u64::MAX`
+///   (effectively "no limit") so CI can run without setting every variable.
+///   If the variable is set but does not parse as a `u64`, the test panics with
+///   an explicit message that includes the variable name and invalid value.
+/// * `Config(key)` — reads a local `budget.json` file that must contain a
+///   top-level `"key": <u64_value>` entry. If the file does not exist, the
+///   limit defaults to `u64::MAX` ("no limit"). If the file exists but the key
+///   is missing or the value is not a valid `u64`, the test panics.
 enum BudgetLimit {
+    /// A literal integer limit provided directly in the attribute.
     Int(u64),
-    EnvVar(String),
-    Config(String),
-    /// Read from a `KEY=VALUE` file at `path`, looking up `var_name`.
+    /// An environment variable name whose runtime value will be used as the limit.
     ///
-    /// The file format is the standard `.env` shape: one `KEY=VALUE` per
-    /// line, comments (`#`) and blank lines ignored. Reads happen at test
-    /// runtime, so a single checked-in `tier-a-limits.env` can drive many
-    /// tests without any global environment mutation (and therefore no
-    /// `unsafe std::env::set_var` call).
-    EnvFile {
-        path: proc_macro2::TokenStream,
-        var_name: String,
-    },
+    /// TODO: Add support for parsing a default value if the env var is missing,
+    /// e.g. `env = "VAR" default = 500_000`.
+    EnvVar(String),
+    /// A JSON key in `budget.json` whose value will be used as the limit.
+    Config(String),
 }
 
-#[derive(Default)]
-struct BudgetSpec {
-    cpu: Option<BudgetLimit>,
-    mem: Option<BudgetLimit>,
-    env_ident: Option<Ident>,
+/// The cost metric that a budget macro asserts against.
+///
+/// Determines which Soroban budget measurement is read and what assertion
+/// message is produced on failure.
+///
+/// | Variant               | Macro             | Measurement                                |
+/// |-----------------------|-------------------|--------------------------------------------|
+/// | `CpuInstructionCost`  | `budget_cpu_lt`   | `env.cost_estimate().budget().cpu_instruction_cost()` |
+/// | `MemoryBytesCost`     | `budget_mem_lt`   | `env.cost_estimate().budget().memory_bytes_cost()`    |
+enum BudgetMetric {
+    /// CPU instruction count consumed by the test function's `env`.
+    CpuInstructionCost,
+    /// Memory bytes consumed by the test function's `env`.
+    MemoryBytesCost,
 }
 
-/// Parses the attribute arguments for `budget_cpu_lt` / `budget_mem_lt`
-/// into a concrete [`BudgetLimit`] value.
+/// Parses a budget limit from the attribute macro's token stream.
 ///
-/// Accepted forms:
-/// - An integer literal (e.g. `950_000`).
-/// - `env = "VAR_NAME"` to read the limit from a process environment
-///   variable at test time.
-/// - `config = "key"` to read the limit from `budget.json` in the
-///   process working directory.
-/// - `env_file = "PATH"` paired with `env = "VAR_NAME"`: read the limit
-///   from a `KEY=VALUE` (`.env`-shaped) file at `PATH`. The file is read
-///   at test runtime on each invocation; failures surface as test panics
-///   naming the file, key, and parse failure.
+/// Recognises three forms in order:
 ///
-/// All four forms can be combined with the existing per-spec knobs on
-/// `#[budget_lt(...)]` (e.g. `cpu = env_file = "...", env = "..."`).
+/// 1. **Ident = string** — `env = "VAR_NAME"` or `config = "key"`.
+///    The identifier must be exactly `env` or `config`; any other identifier
+///    produces a compile error with a descriptive span.
+/// 2. **Integer literal** — a bare `u64` literal such as `500_000`.
+///
+/// # Errors
+///
+/// Returns a `syn::Error` with a helpful span if the input does not match
+/// either form, including when an unrecognised identifier is used.
+///
+/// # Note
+///
+/// Support for a default value when an env var is missing is not yet
+/// implemented (see the `TODO` on the [`EnvVar`](BudgetLimit::EnvVar) variant).
 impl Parse for BudgetLimit {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut env_var: Option<String> = None;
@@ -156,9 +186,47 @@ impl Parse for BudgetLimit {
     }
 }
 
-impl Parse for BudgetSpec {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut spec = BudgetSpec::default();
+/// Generates the final token stream for a budget assertion attribute macro.
+///
+/// This is the shared code-generation path behind both [`budget_cpu_lt`] and
+/// [`budget_mem_lt`]. It performs the following steps:
+///
+/// 1. **Parse the attribute** — attempts to parse the token stream as a
+///    [`BudgetLimit`]. On failure, emits a compile error at the call site.
+/// 2. **Parse the item** — attempts to parse the annotated item as a function
+///    ([`syn::ItemFn`]). On failure, emits a compile error.
+/// 3. **Generate limit-resolution code** — depending on the variant of
+///    [`BudgetLimit`] (`Int`, `EnvVar`, or `Config`), emits the appropriate
+///    runtime expression that produces a `u64` limit. The `Config` branch
+///    includes a `#[allow(unused_parens)]` suppression because the generated
+///    `match` arm wraps the resolution logic in an expression block that
+///    needs to return a `u64` through a parenthesised path.
+/// 4. **Generate the cost-measurement code** — embeds a call to
+///    `env.cost_estimate().budget().cpu_instruction_cost()` (for CPU) or
+///    `.memory_bytes_cost()` (for memory) and an `assert!` that the measured
+///    value is strictly less than the limit.
+/// 5. **Replace the function body** — wraps the original statements in a new
+///    block that includes the limit-resolution helpers, the original
+///    statements, the cost measurement, and the assertion check.
+///
+/// # Parameters
+///
+/// * `attr` — the token stream of the attribute arguments (e.g. `500_000` or
+///   `env = "VAR"`).
+/// * `item` — the token stream of the annotated function.
+/// * `metric` — which Soroban budget metric to assert against.
+///
+/// # Returns
+///
+/// A [`proc_macro::TokenStream`] containing the modified function with the
+/// budget assertion appended.
+fn generate_budget_assert(
+    attr: TokenStream,
+    item: TokenStream,
+    metric: BudgetMetric,
+) -> TokenStream {
+    let attr_tokens: proc_macro2::TokenStream = attr.into();
+    let item_tokens: proc_macro2::TokenStream = item.into();
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -209,6 +277,14 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                 }))
                 .unwrap_or(u64::MAX)
         },
+        // ── JSON-config limit resolution ──────────────────────────────
+        // Reads `budget.json` from the current working directory and
+        // extracts the value for the given key.  If the file is absent,
+        // empty, malformed, or the key is not found, the limit silently
+        // falls back to `u64::MAX` ("no limit") — the test assertion
+        // passes but does not enforce a ceiling.  This prevents a broken
+        // or missing JSON file from crashing an otherwise-valid test
+        // suite.
         BudgetLimit::Config(key) => quote! {
             std::fs::read_to_string(std::path::Path::new("budget.json"))
                 .ok()
@@ -627,4 +703,293 @@ pub fn budget_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
     generate_budget_assert(spec, item)
+}
+
+// ---------------------------------------------------------------------------
+// Scaling assertion: `#[budget_scaling(…)]`
+// ---------------------------------------------------------------------------
+
+/// Supported growth models for the scaling assertion.
+#[derive(Clone)]
+enum GrowthModel {
+    Linear,
+    Quadratic,
+}
+
+impl GrowthModel {
+    fn as_str(&self) -> &'static str {
+        match self {
+            GrowthModel::Linear => "linear",
+            GrowthModel::Quadratic => "quadratic",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            GrowthModel::Linear => "linear (cost ∝ n)",
+            GrowthModel::Quadratic => "quadratic (cost ∝ n²)",
+        }
+    }
+}
+
+impl Parse for GrowthModel {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        match ident.to_string().as_str() {
+            "linear" => Ok(GrowthModel::Linear),
+            "quadratic" => Ok(GrowthModel::Quadratic),
+            other => Err(syn::Error::new(
+                ident.span(),
+                format!(
+                    "unknown growth model `{other}`, expected `linear` or `quadratic`"
+                ),
+            )),
+        }
+    }
+}
+
+/// Configuration for the `#[budget_scaling(…)]` attribute.
+struct ScalingConfig {
+    sizes: Vec<u32>,
+    model: GrowthModel,
+    tolerance: f64,
+}
+
+impl Parse for ScalingConfig {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut sizes: Option<Vec<u32>> = None;
+        let mut model: Option<GrowthModel> = None;
+        let mut tolerance: Option<f64> = None;
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+
+            match ident.to_string().as_str() {
+                "sizes" => {
+                    let content;
+                    syn::bracketed!(content in input);
+                    let mut values = Vec::new();
+                    while !content.is_empty() {
+                        let lit: LitInt = content.parse()?;
+                        values.push(lit.base10_parse()?);
+                        if !content.is_empty() {
+                            let _ = content.parse::<Token![,]>();
+                        }
+                    }
+                    sizes = Some(values);
+                }
+                "model" => {
+                    model = Some(input.parse()?);
+                }
+                "tolerance" => {
+                    let lit: LitFloat = input.parse()?;
+                    tolerance = Some(lit.base10_parse()?);
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "unknown scaling property `{other}`, \
+                             expected `sizes`, `model`, or `tolerance`"
+                        ),
+                    ));
+                }
+            }
+
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        let sizes = sizes.ok_or_else(|| input.error("missing required field `sizes`"))?;
+        if sizes.len() < 2 {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "`sizes` must contain at least two elements for ratio comparison",
+            ));
+        }
+        Ok(ScalingConfig {
+            sizes,
+            model: model.ok_or_else(|| input.error("missing required field `model`"))?,
+            tolerance: tolerance
+                .ok_or_else(|| input.error("missing required field `tolerance`"))?,
+        })
+    }
+}
+
+fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStream {
+    let name = &input_fn.sig.ident;
+    let body = &input_fn.block;
+    let vis = &input_fn.vis;
+
+    // Preserve user attributes (e.g. #[should_panic]) and add #[test] if needed.
+    let mut attrs: Vec<Attribute> = input_fn.attrs.clone();
+    let has_test = attrs.iter().any(|a| a.path().is_ident("test"));
+    if !has_test {
+        attrs.push(parse_quote!(#[test]));
+    }
+
+    let sizes_values = &config.sizes;
+    let tolerance = config.tolerance;
+    let model_name = config.model.as_str();
+    let model_desc = config.model.description();
+
+    let ratio_expr = match config.model {
+        GrowthModel::Linear => {
+            quote! { __curr_s as f64 / __prev_s as f64 }
+        }
+        GrowthModel::Quadratic => {
+            quote! { (__curr_s as f64 / __prev_s as f64).powi(2) }
+        }
+    };
+
+    // Build the format string at compile time so model_name and model_desc are
+    // baked directly into the string rather than looked up at runtime.
+    let assert_msg = format!(
+        "Scaling check failed at size {{__curr_s}}:\n\
+         \tExpected ratio: ~{{__expected_ratio:.2}} (model = {model_name})\n\
+         \tObserved ratio: ~{{__observed_ratio:.2}}\n\
+         \tDeviation: {{__deviation:.2}} > tolerance {{__TOLERANCE:.2}}\n\
+         \tMeasured sizes:  {{:?}}\n\
+         \tMeasured costs:  {{:?}}\n\
+         \tExpected growth: {model_desc}",
+    );
+    let assert_msg_lit = syn::LitStr::new(&assert_msg, Span::call_site());
+
+    TokenStream::from(quote! {
+        #(#attrs)*
+        #vis fn #name() {
+            const __SIZES: &[u32] = &[#(#sizes_values),*];
+            const __TOLERANCE: f64 = #tolerance;
+
+            let mut __measurements: ::std::vec::Vec<(u32, u64)> =
+                ::std::vec::Vec::new();
+
+            for &size in __SIZES {
+                let env = soroban_sdk::Env::default();
+                env.cost_estimate().budget().reset_unlimited();
+
+                #body
+
+                let __cost = env.cost_estimate().budget()
+                    .cpu_instruction_cost();
+                __measurements.push((size, __cost));
+            }
+
+            for i in 1..__measurements.len() {
+                let (__prev_s, __prev_c) = __measurements[i - 1];
+                let (__curr_s, __curr_c) = __measurements[i];
+
+                let __expected_ratio = #ratio_expr;
+                let __observed_ratio = __curr_c as f64 / __prev_c as f64;
+                let __deviation =
+                    (__observed_ratio / __expected_ratio - 1.0).abs();
+
+                assert!(
+                    __deviation <= __TOLERANCE,
+                    #assert_msg_lit,
+                    __measurements
+                        .iter()
+                        .map(|(s, _)| s)
+                        .copied()
+                        .collect::<::std::vec::Vec<u32>>(),
+                    __measurements
+                        .iter()
+                        .map(|(_, c)| c)
+                        .copied()
+                        .collect::<::std::vec::Vec<u64>>(),
+                );
+            }
+        }
+    })
+}
+
+/// Asserts that the budget cost grows according to a declared model across
+/// multiple input sizes.
+///
+/// This is not a single-point assertion.  Instead it measures execution cost
+/// for each caller-provided input size and validates that the observed cost
+/// growth stays within a configurable tolerance of the declared model (e.g.
+/// `linear` or `quadratic`).
+///
+/// # Attribute syntax
+///
+/// ```rust,ignore
+/// #[budget_scaling(
+///     sizes = [10, 100, 1000],
+///     model = linear,
+///     tolerance = 0.3,
+/// )]
+/// fn my_operation(env: Env, size: u32) {
+///     // body using `env` and `size` — runs once per input size
+/// }
+/// ```
+///
+/// | Field       | Type              | Description |
+/// |-------------|-------------------|-------------|
+/// | `sizes`     | `[u32; N]`        | Input sizes to measure (at least 2). |
+/// | `model`     | `linear` / `quadratic` | Expected growth model. |
+/// | `tolerance` | `f64`             | Allowed relative deviation from expected ratio (e.g. `0.3` = 30 %). |
+///
+/// The annotated function becomes a `#[test]` function.  The macro:
+///
+/// 1. Creates a fresh `Env` for each size.
+/// 2. Resets the budget and runs the function body.
+/// 3. Records `cpu_instruction_cost()`.
+/// 4. Compares consecutive (size, cost) pairs against the model.
+///
+/// # Growth model
+///
+/// The check uses successive ratio comparisons:
+///
+/// - **Linear** — cost is expected to grow proportionally to the input
+///   (`cost ∝ n`). The expected cost ratio between two sizes is
+///   `size_{i+1} / size_i`.
+/// - **Quadratic** — cost is expected to grow as the square of the input
+///   (`cost ∝ n²`). The expected cost ratio is
+///   `(size_{i+1} / size_i)²`.
+///
+/// The observed ratio `cost_{i+1} / cost_i` is compared to the expected
+/// ratio.  If the absolute relative deviation exceeds `tolerance`, the
+/// assertion panics with a diagnostic that lists:
+///
+/// - the offending size
+/// - expected ratio
+/// - observed ratio
+/// - deviation vs tolerance
+/// - all measured sizes and costs
+/// - expected growth description
+///
+/// # Tolerance
+///
+/// `tolerance` is the maximum allowed `|observed / expected - 1|`.  A
+/// tolerance of `0.3` means the observed ratio may deviate up to 30 % from
+/// the expected ratio.
+///
+/// # Limitations
+///
+/// - The function body **must not** contain `return`, `break`, or `continue`
+///   that would exit the measurement loop prematurely.
+/// - Each iteration creates a fresh `Env` — setup that must survive across
+///   sizes should be placed outside the macro (e.g. by extracting it to a
+///   helper called from the body).
+/// - Because the check relies on ratio comparisons, small base costs (Env
+///   creation, budget reset) can dominate and mask the growth signal at very
+///   small sizes.  Use sizes large enough that the measured work dominates.
+/// - Only CPU instruction cost is checked.  Memory scaling is not yet
+///   supported.
+#[proc_macro_attribute]
+pub fn budget_scaling(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let config = match syn::parse2::<ScalingConfig>(attr.into()) {
+        Ok(c) => c,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+
+    let input_fn = match syn::parse2::<ItemFn>(item.into()) {
+        Ok(f) => f,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+
+    generate_scaling_assert(config, input_fn)
 }

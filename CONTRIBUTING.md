@@ -23,7 +23,44 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 ## Local Development
 - Install Rust and the Soroban CLI. The repository includes a `rust-toolchain.toml` file, so `rustup` will automatically install and use the correct toolchain and target when you run cargo commands.
 - Run `cargo test` in the workspace root to run macro tests.
-- Run `cargo run --bin cargo-budget-report` (or `cargo build`) to test the CLI locally.
+- Run `cargo run -p cargo-budget-report -- budget-report` (or `cargo build`) to test the CLI locally.
+
+## Documentation
+
+The documentation site is built with [GitBook](https://www.gitbook.com/) and published from `docs/src/` via Git Sync.
+Content is written in standard Markdown with GitBook-specific blocks (`{% hint %}`, `{% code title %}`).
+
+Edits merged to `main` publish automatically — no CI step is involved. To add a new page, create it
+under `docs/src/` and add an entry to `docs/src/SUMMARY.md`.
+
+### Previewing docs locally
+
+**For a quick preview of the Markdown source** (without GitBook-specific rendering), open any
+`.md` file in VS Code and press `Ctrl+Shift+V`, or run a simple HTTP server from the project root:
+
+```bash
+npx serve docs/src
+```
+
+**For a full GitBook-style preview**, the legacy `gitbook-cli` can build the site locally if you're
+willing to install it. Note that `gitbook-cli` is no longer actively maintained and may require
+troubleshooting (Node.js 16 is known to work; newer versions may need the `graceful-fs` polyfill
+patched). From the project root:
+
+```bash
+nvm install 16        # if not already installed
+nvm use 16
+npm install -g gitbook-cli
+gitbook serve docs/src
+```
+
+This starts a live-reload preview server at `http://localhost:4000`.
+
+### Git Sync publishing
+
+The docs publish automatically when changes are merged to `main` — no manual deployment step
+is needed. The `.gitbook.yaml` configuration at the repository root points GitBook at `./docs/src/`
+with `README.md` as the landing page and `SUMMARY.md` as the table of contents.
 
 ## Code Quality Standards
 Before submitting a pull request, please ensure our quality standards by running the following commands locally:

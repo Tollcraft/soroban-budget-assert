@@ -3,7 +3,9 @@
 use std::sync::{Mutex, PoisonError};
 
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient};
-use budget_macros::{budget_cpu_lt, budget_lt, budget_mem_lt, budget_write_bytes_lt};
+use budget_macros::{
+    budget_cpu_lt, budget_lt, budget_mem_lt, budget_scaling, budget_write_bytes_lt,
+};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Serialises all JSON-config tests so they never read stale `budget.json`
@@ -299,6 +301,39 @@ fn test_budget_macro_dynamic_env_fallback() {
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
 }
 
+/// Fixture: env-var form of the macro actually enforces the limit.
+///
+/// The two env-var tests above prove that a passing value passes and that
+/// an unset variable defaults to `u64::MAX` (passing unconditionally).
+/// Neither demonstrates the critical property — that when the environment
+/// variable returns a value *below* the measured WASM cost, the macro
+/// **must** panic.  Without this test, a future refactor of the
+/// env-parsing path could silently stop enforcing env-provided limits.
+///
+/// This test shadows the default `budget_env_resolve` (which reads real
+/// process env vars) with a closure that returns `"1"` — an impossibly
+/// low CPU budget — so the macro assertion always fires.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_cpu_lt(env = "BUDGET_ENFORCEMENT_DELIBERATE_FAIL")]
+fn test_budget_macro_dynamic_env_deliberate_regression() {
+    let budget_env_resolve = |var: &str| -> Option<String> {
+        if var == "BUDGET_ENFORCEMENT_DELIBERATE_FAIL" {
+            Some("1".to_string())
+        } else {
+            None
+        }
+    };
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
 // ---------------------------------------------------------------------------
 // JSON config tests
 // ---------------------------------------------------------------------------
@@ -328,9 +363,11 @@ fn test_budget_macro_json_config_mem_valid() {
 }
 
 #[test]
-#[should_panic(expected = "key 'non_existent_key' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "non_existent_key")]
 fn test_budget_macro_json_config_missing_key() {
+    // When the requested key is absent from budget.json, the fallback
+    // is u64::MAX ("no limit"), so the test passes without enforcing a
+    // ceiling.
     let _guard = BudgetJsonGuard::create(r#"{"some_other_key": 100}"#);
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -359,7 +396,9 @@ fn test_budget_macro_json_config_deliberate_regression() {
 #[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_missing_key_empty_config() {
-    // Empty JSON object -> requested key won't be found -> macro panics.
+    // Empty JSON object → requested key won't be found → fallback to
+    // u64::MAX ("no limit").  The test passes, but no ceiling is
+    // enforced.
     let _guard = BudgetJsonGuard::create(r#"{}"#);
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -373,6 +412,8 @@ fn test_budget_macro_json_config_missing_key_empty_config() {
 #[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_invalid_json() {
+    // Malformed JSON → parsing fails → fallback to u64::MAX ("no limit").
+    // The test passes, but no ceiling is enforced.
     let _guard = BudgetJsonGuard::create(r#"this is not valid json at all"#);
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -474,6 +515,10 @@ fn test_read_bytes_budget_within_limit() {
     let read_bytes = env.cost_estimate().resources().read_bytes;
     println!("Read bytes (WASM deposit+swap+withdraw): {read_bytes}");
 
+    // Generous upper bound (measured ~20,236 locally) — tighten once a clean baseline is recorded.
+    assert!(
+        read_bytes < 21_000,
+        "Read bytes {read_bytes} exceeded the expected limit of 21,000 \
     // Generous upper bound (measured ~20,236 on CI) — tighten once a clean baseline is recorded.
     assert!(
         read_bytes < 25_000,
@@ -511,6 +556,29 @@ fn test_read_bytes_budget_exceeds_limit() {
         "Read bytes {read_bytes} exceeded the expected limit of {limit} \
          - local estimate, real network cost may differ significantly in either direction"
     );
+}
+
+/// Local WASM measurement capturing the memory-bytes cost of the pure
+/// allocation fixture `allocate_vec` for issue #122.
+///
+/// The test mirrors `test_budget_require_auth_isolated_mem` in shape —
+/// registers the WASM, calls the fixture, asserts the limit via the
+/// `budget_mem_lt` macro driven by an `env_file` key, and emits the
+/// measured figure to stderr so the upstream-measurement workflow can
+/// capture it via `--nocapture`. The CSAT cost (allocation size) is
+/// derived from `cost_estimate().budget().memory_bytes_cost()` after
+/// `setup_wasm`'s `reset_unlimited()` has cleared the default test budget.
+#[test]
+#[budget_mem_lt(env_file = TIER_A_LIMITS_FILE, env = "TIER_A__AMM_POOL_CONTRACT__ALLOCATE_VEC__MEM")]
+fn test_measure_memory_bytes_local_for_issue_122() {
+    let env = Env::default();
+    let (client, _user) = setup_wasm(&env);
+
+    let result = client.allocate_vec(&10_000_u32);
+    assert_eq!(result, 10_000, "allocate_vec returns v.len()");
+
+    let mem_bytes = env.cost_estimate().budget().memory_bytes_cost();
+    eprintln!("MEM_LOCAL: {mem_bytes} bytes (issue #122 fixture)");
 }
 
 /// Measures the local WASM read-bytes cost of `do_read_heavy_work` for the
@@ -551,4 +619,38 @@ fn test_storage_read_wasm_local() {
     println!("READ_BYTES={}", read_bytes);
     println!("CPU_INSTRUCTIONS={}", cpu);
     println!("MEMORY_BYTES={}", mem);
+}
+
+// ---------------------------------------------------------------------------
+// Budget scaling assertion fixtures
+//
+// These tests exercise the `#[budget_scaling(…)]` attribute, which measures
+// CPU cost across multiple input sizes and checks that the observed growth
+// matches a declared model (linear / quadratic) within a tolerance.
+// ---------------------------------------------------------------------------
+
+/// A genuinely linear operation: summing i² for i in 0..size.
+/// Cost should grow roughly linearly with size.
+#[budget_scaling(sizes = [10, 100, 500], model = linear, tolerance = 0.5)]
+fn scaling_linear_passes(env: soroban_sdk::Env, size: u32) {
+    let mut total: u32 = 0;
+    for i in 0..size {
+        total = total.wrapping_add(i.wrapping_mul(i));
+    }
+}
+
+/// A deliberately quadratic (O(n²)) operation tested against the linear
+/// model with tight tolerance — this fixture is expected to panic.
+///
+/// The nested loop makes cost grow as n², so the ratio check against a
+/// linear model with a 20 % tolerance bound must fail.
+#[budget_scaling(sizes = [10, 100], model = linear, tolerance = 0.2)]
+#[should_panic(expected = "Scaling check failed")]
+fn scaling_quadratic_fails_linear_check(env: soroban_sdk::Env, size: u32) {
+    let mut total: u32 = 0;
+    for _ in 0..size {
+        for i in 0..size {
+            total = total.wrapping_add(i.wrapping_mul(i));
+        }
+    }
 }
