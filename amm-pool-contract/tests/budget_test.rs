@@ -513,6 +513,29 @@ fn test_read_bytes_budget_exceeds_limit() {
     );
 }
 
+/// Local WASM measurement capturing the memory-bytes cost of the pure
+/// allocation fixture `allocate_vec` for issue #122.
+///
+/// The test mirrors `test_budget_require_auth_isolated_mem` in shape —
+/// registers the WASM, calls the fixture, asserts the limit via the
+/// `budget_mem_lt` macro driven by an `env_file` key, and emits the
+/// measured figure to stderr so the upstream-measurement workflow can
+/// capture it via `--nocapture`. The CSAT cost (allocation size) is
+/// derived from `cost_estimate().budget().memory_bytes_cost()` after
+/// `setup_wasm`'s `reset_unlimited()` has cleared the default test budget.
+#[test]
+#[budget_mem_lt(env_file = TIER_A_LIMITS_FILE, env = "TIER_A__AMM_POOL_CONTRACT__ALLOCATE_VEC__MEM")]
+fn test_measure_memory_bytes_local_for_issue_122() {
+    let env = Env::default();
+    let (client, _user) = setup_wasm(&env);
+
+    let result = client.allocate_vec(&10_000_u32);
+    assert_eq!(result, 10_000, "allocate_vec returns v.len()");
+
+    let mem_bytes = env.cost_estimate().budget().memory_bytes_cost();
+    eprintln!("MEM_LOCAL: {mem_bytes} bytes (issue #122 fixture)");
+}
+
 /// Measures the local WASM read-bytes cost of `do_read_heavy_work` for the
 /// storage-read gap measurement table in `MEASUREMENTS.md`.
 ///

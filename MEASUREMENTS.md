@@ -157,6 +157,40 @@ To reproduce this measurement:
 3. Extract `AUTH_CPU` and `AUTH_MEM` from the test output.
 4. For the network figure, deploy the WASM to Soroban testnet and run `simulateTransaction` with the same contract state (see the fixture JSON for the required ledger entries).
 
+## Memory bytes
+
+This section records the local-vs-network cost gap for the memory-bytes metric isolated against a pure allocation fixture. The `allocate_vec` function in `amm-pool-contract` pushes `n` elements into a host-resident `Vec<u32>` with no storage or authorization side-effects, so the simulation's reported `result.cost.memBytes` is dominated by the allocation cost itself. The approach mirrors the storage-write / storage-read / authorization series: a single-purpose fixture, both a local estimate and a network figure, the delta between them.
+
+### Methodology
+
+The local estimate is collected by the `test_measure_memory_bytes_local_for_issue_122` test in `amm-pool-contract/tests/budget_test.rs`, which registers the WASM via `register_contract_wasm`, calls `client.allocate_vec(&10_000)`, and emits the measured `MEM_LOCAL` figure via `eprintln!`:
+
+```
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test budget_test test_measure_memory_bytes_local_for_issue_122 -- --nocapture
+```
+
+The network figure requires a `simulateTransaction` call against Soroban Protocol 22+ testnet with the same WASM and `--n 10000` arguments. The fixture is checked in at [`cargo-budget-report/fixtures/simulate_transaction_response_valid.json`](cargo-budget-report/fixtures/simulate_transaction_response_valid.json): the `_metadata` block carries the captured `mem_bytes` figure, `result.cost.memBytes` is the corresponding JSON-RPC payload field, and `protocol_version` documents the schema generation. The fixture's `_metadata.protocol_version` field was bumped from `21` to `22` as part of this measurement; older protocol responses simply omit `Memory Bytes` from the report.
+
+### Figures
+
+| Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Delta mem | Fixture | Build profile | Toolchain | Date |
+|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| (captured from `cargo test ... -- --nocapture`) | `MEM_LOCAL` captured from `cargo test ... -- --nocapture` | — | — | — | — | `amm-pool-contract::allocate_vec(10_000)` | size-opt (`opt-level=\"z\"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-07-28 |
+
+The network figure and delta are pending — they require a `simulateTransaction` call against Soroban testnet with the same WASM, contract state, and toolchain. Filling them in is the per-operation-margin work tracked by issue #45: the gap series (#122, #334, #342) is the prerequisite data the margin computation reads.
+
+### Reproduction
+
+To reproduce this measurement:
+
+1. Build the WASM: `cargo build --target wasm32v1-none --release -p amm-pool-contract`.
+2. Capture the local figure: `cargo test -p amm-pool-contract --test budget_test test_measure_memory_bytes_local_for_issue_122 -- --nocapture`. Take the `MEM_LOCAL` figure from the eprintln output.
+3. Update this table's `Local mem` column with the captured figure.
+4. Deploy the WASM to Soroban testnet and run `cargo run --bin cargo-budget-report -- --network testnet`.
+5. Read `Memory Bytes` from the per-function row in the resulting report (or from `--json` output), and update the `Network mem` column.
+6. Compute delta = `(local − network) / network` and add it to the table.
+
 ## Unmeasured operation types
 
 The following operation types have open measurement issues and no published figures yet. When adding a measurement, follow the column format above and include the build profile and toolchain.
@@ -165,4 +199,3 @@ The following operation types have open measurement issues and no published figu
 |---|---|---|
 | Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
 | VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Open |
-| Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | Open |

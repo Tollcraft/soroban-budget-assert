@@ -389,10 +389,8 @@ When `--check --json` is used, configured functions gain `limit` and `pass` (see
 fields out of the `SorobanTransactionData` returned by `simulateTransaction` —
 `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — plus the
 compiled WASM binary size from the build step, and prints
-them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
-total.
-
-### In scope
+them unchanged. On Soroban Protocol 22+ it additionally reads `result.cost.memBytes` from the JSON-RPC `cost` block and surfaces it as a `Memory Bytes` row. Nothing in the output is denominated in stroops, and no figure it prints is a
+total.### In scope
 
 | Reported | Stellar resource it corresponds to |
 |---|---|
@@ -400,9 +398,9 @@ total.
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
 | `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
+| `Memory Bytes` (Protocol 22+) | `result.cost.memBytes` — memory-bytes cost from the Protocol 22 JSON-RPC `cost` block; absent on older protocol responses |
 
-These four quantities are *inputs* to the **non-refundable resource fee**. They are not the
-whole of it.
+These four (or five on Protocol 22+) quantities are *inputs* to the **non-refundable resource fee**. They are not the whole of it.
 
 ### Not in scope
 

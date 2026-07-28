@@ -21,6 +21,13 @@
 //! | `n` | `iteration_count` | Describes how many iterations a loop should run |
 //! | `s` | `snapshot_buffer` | Holds an accumulated bytes-size value |
 
+// `pub` items in this module are reached only by its own `#[cfg(test)] mod tests`
+// and illustration callers (issue #16 was a documentation/demonstration
+// contribution), so the binary target does not link them through `fn main`.
+// Allow dead code at file scope rather than auditing per-item; the public API
+// is still exercisable from `cargo test`.
+#![allow(dead_code)]
+
 use crate::format_with_commas_and_units;
 use std::collections::BTreeMap;
 
@@ -193,7 +200,12 @@ mod tests {
     #[test]
     fn aggregate_measurements_single_package() {
         let data = vec![
-            ("pkg-a".to_string(), "fn1".to_string(), "CPU Instructions", 100),
+            (
+                "pkg-a".to_string(),
+                "fn1".to_string(),
+                "CPU Instructions",
+                100,
+            ),
             ("pkg-a".to_string(), "fn1".to_string(), "Read Bytes", 200),
         ];
         let result = aggregate_measurements(0, 0, 0, &data);
@@ -203,7 +215,12 @@ mod tests {
     #[test]
     fn aggregate_measurements_multiple_packages() {
         let data = vec![
-            ("pkg-a".to_string(), "fn1".to_string(), "CPU Instructions", 100),
+            (
+                "pkg-a".to_string(),
+                "fn1".to_string(),
+                "CPU Instructions",
+                100,
+            ),
             ("pkg-b".to_string(), "fn2".to_string(), "Read Bytes", 200),
         ];
         let result = aggregate_measurements(0, 0, 0, &data);

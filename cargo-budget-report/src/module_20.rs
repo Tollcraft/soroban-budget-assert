@@ -9,6 +9,13 @@
 //! error strings. Each error case is mapped to a semantically appropriate
 //! variant of [`Error`].
 
+// `pub` items in this module are referenced only by its own `#[cfg(test)] mod tests`
+// and demo callers (issue #20 was a documentation/demonstration contribution), so
+// the binary target does not link them through `fn main`. Allow dead code at file
+// scope rather than auditing per-item; the public API is still exercisable from
+// `cargo test`.
+#![allow(dead_code)]
+
 use crate::module_10::{Error, Result};
 use std::path::Path;
 
@@ -20,9 +27,7 @@ use std::path::Path;
 pub fn parse_margin_multiplier(raw: &str) -> Result<f64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(Error::Message(
-            "margin multiplier string is empty".into(),
-        ));
+        return Err(Error::Message("margin multiplier string is empty".into()));
     }
     trimmed
         .parse::<f64>()
@@ -90,17 +95,15 @@ impl MetricKind {
 ///
 /// Returns `Error::Message` if the string cannot be parsed as a valid `u64`.
 pub fn parse_limit_value(raw: &str, metric: MetricKind, source_label: &str) -> Result<u64> {
-    raw.trim()
-        .parse::<u64>()
-        .map_err(|e| {
-            Error::Message(format!(
-                "cannot parse limit for {} from {}: '{}' is not a valid u64 ({})",
-                metric.label(),
-                source_label,
-                raw.trim(),
-                e
-            ))
-        })
+    raw.trim().parse::<u64>().map_err(|e| {
+        Error::Message(format!(
+            "cannot parse limit for {} from {}: '{}' is not a valid u64 ({})",
+            metric.label(),
+            source_label,
+            raw.trim(),
+            e
+        ))
+    })
 }
 
 /// Reads a `KEY=VALUE` entry from an `.env`-shaped file content.
@@ -137,7 +140,11 @@ pub fn lookup_env_file_value(content: &str, key: &str) -> Result<Option<String>>
             let unquoted_value = raw_value
                 .strip_prefix('"')
                 .and_then(|s| s.strip_suffix('"'))
-                .or_else(|| raw_value.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                .or_else(|| {
+                    raw_value
+                        .strip_prefix('\'')
+                        .and_then(|s| s.strip_suffix('\''))
+                })
                 .unwrap_or(raw_value);
             return Ok(Some(unquoted_value.to_string()));
         }
@@ -165,14 +172,13 @@ pub fn read_limit_from_env_file(path: &Path, key: &str, metric: MetricKind) -> R
         ))
     })?;
 
-    let raw_value = lookup_env_file_value(&content, key)?
-        .ok_or_else(|| {
-            Error::MissingField(format!(
-                "key '{}' not found in limit file '{}'",
-                key,
-                path.display()
-            ))
-        })?;
+    let raw_value = lookup_env_file_value(&content, key)?.ok_or_else(|| {
+        Error::MissingField(format!(
+            "key '{}' not found in limit file '{}'",
+            key,
+            path.display()
+        ))
+    })?;
 
     let source_label = format!("env_file {}:{}", path.display(), key);
     parse_limit_value(&raw_value, metric, &source_label)
@@ -205,9 +211,7 @@ pub fn resolve_limit(
     default: u64,
 ) -> Result<u64> {
     match (env_file_path, env_var) {
-        (Some(file_path), Some(var_raw)) => {
-            read_limit_from_env_file(file_path, var_raw, metric)
-        }
+        (Some(file_path), Some(var_raw)) => read_limit_from_env_file(file_path, var_raw, metric),
         (None, Some(var_raw)) => {
             let source_label = format!("env {}", var_raw);
             parse_limit_value(var_raw, metric, &source_label)
@@ -383,8 +387,7 @@ mod tests {
         let file_path = dir.path().join("limits.env");
         std::fs::write(&file_path, "CPU_LIMIT=5000000\n").expect("failed to write test file");
 
-        let result =
-            read_limit_from_env_file(&file_path, "CPU_LIMIT", MetricKind::CpuInstructions);
+        let result = read_limit_from_env_file(&file_path, "CPU_LIMIT", MetricKind::CpuInstructions);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 5_000_000);
     }
@@ -395,8 +398,7 @@ mod tests {
         let file_path = dir.path().join("limits.env");
         std::fs::write(&file_path, "OTHER=123\n").expect("failed to write test file");
 
-        let result =
-            read_limit_from_env_file(&file_path, "CPU_LIMIT", MetricKind::CpuInstructions);
+        let result = read_limit_from_env_file(&file_path, "CPU_LIMIT", MetricKind::CpuInstructions);
         assert!(result.is_err());
     }
 
@@ -418,12 +420,7 @@ mod tests {
         let file_path = dir.path().join("limits.env");
         std::fs::write(&file_path, "MY_KEY=2048\n").expect("failed to write test file");
 
-        let result = resolve_limit(
-            Some(&file_path),
-            Some("MY_KEY"),
-            MetricKind::ReadBytes,
-            0,
-        );
+        let result = resolve_limit(Some(&file_path), Some("MY_KEY"), MetricKind::ReadBytes, 0);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 2048);
     }
@@ -448,8 +445,7 @@ mod tests {
         let file_path = dir.path().join("limits.env");
         std::fs::write(&file_path, "A=1\n").expect("failed to write test file");
 
-        let result =
-            resolve_limit(Some(&file_path), None, MetricKind::CpuInstructions, 0);
+        let result = resolve_limit(Some(&file_path), None, MetricKind::CpuInstructions, 0);
         assert!(result.is_err());
     }
 

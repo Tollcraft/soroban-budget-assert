@@ -55,6 +55,7 @@ source = "alice"
 #   [functions.<function_name>]
 #   args = ["--arg1", "value1"]   # CLI arguments forwarded to the function
 #   cpu_limit  = 5000000          # optional, inclusive CPU instruction limit
+#   mem_limit  = 5000000          # optional, inclusive memory-bytes limit
 #   read_limit = 5000             # optional, inclusive read-bytes limit
 #   write_limit = 1000            # optional, inclusive write-bytes limit
 #
@@ -350,6 +351,8 @@ struct FunctionConfig {
     #[serde(default)]
     cpu_limit: Option<u64>,
     #[serde(default)]
+    mem_limit: Option<u64>,
+    #[serde(default)]
     read_limit: Option<u64>,
     #[serde(default)]
     write_limit: Option<u64>,
@@ -418,6 +421,7 @@ struct TableCostReport {
 fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
     match metric {
         "CPU Instructions" => func_config.cpu_limit,
+        "Memory Bytes" => func_config.mem_limit,
         "Read Bytes" => func_config.read_limit,
         "Write Bytes" => func_config.write_limit,
         _ => None,
@@ -459,7 +463,12 @@ fn emit_check_failure_entries(
     function: &str,
     func_config: &FunctionConfig,
 ) {
-    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
+    for metric in [
+        "CPU Instructions",
+        "Memory Bytes",
+        "Read Bytes",
+        "Write Bytes",
+    ] {
         let limit = limit_for_metric(func_config, metric);
         reports.push(CostReport {
             package: package_name.to_string(),
@@ -512,6 +521,95 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
 /// Returns an error if the RPC response contains an `"error"` field, if
 /// `transactionData` is missing or not a string, or if the base64 XDR
 /// cannot be decoded.
+/// Extracts the memory-bytes cost from `result.cost.memBytes` in a
+/// `simulateTransaction` JSON-RPC response.
+///
+/// The `result.cost` object is present on Soroban Protocol 22+ simulations.
+/// `memBytes` may be serialised as either a JSON integer (`u64`) or a JSON
+/// number rendered as a string (Soroban JSON-RPC stringifies numeric fields
+/// to avoid `u64` precision loss in JavaScript clients); both forms are
+/// accepted.
+///
+/// Returns `None` when the field is absent, the type is unrecognised, or
+/// the value cannot be parsed into `u32` (including negative numbers and
+/// values that exceed `u32::MAX`). Callers should skip the metric rather
+/// than substituting zero so a missing field does not silently turn into
+/// a passing cost check.
+fn extract_memory_bytes_cost(rpc_response: &serde_json::Value) -> Option<u32> {
+    let mem_bytes = rpc_response.get("result")?.get("cost")?.get("memBytes")?;
+    if let Some(n) = mem_bytes.as_u64() {
+        if n <= u32::MAX as u64 {
+            return Some(n as u32);
+        }
+        return None;
+    }
+    if let Some(s) = mem_bytes.as_str() {
+        return s.parse::<u32>().ok();
+    }
+    None
+}
+
+#[cfg(test)]
+mod extract_memory_bytes_cost_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_none_when_cost_object_absent() {
+        // No `result.cost` block at all -> helper must return None (NOT push a zero row).
+        let resp = json!({"result": {}});
+        assert_eq!(extract_memory_bytes_cost(&resp), None);
+    }
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_none_when_mem_bytes_field_missing() {
+        // `result.cost` exists but `memBytes` is absent (older / partial response).
+        let resp = json!({"result": {"cost": {"cpuInsns": "1000"}}});
+        assert_eq!(extract_memory_bytes_cost(&resp), None);
+    }
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_integer_form() {
+        // Standard JSON integer form.
+        let resp = json!({"result": {"cost": {"memBytes": 16384}}});
+        assert_eq!(extract_memory_bytes_cost(&resp), Some(16_384));
+    }
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_string_form() {
+        // Soroban JSON-RPC stringifies numeric fields, so quotes are the common case.
+        let resp = json!({"result": {"cost": {"memBytes": "16384"}}});
+        assert_eq!(extract_memory_bytes_cost(&resp), Some(16_384));
+    }
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_unparseable_value() {
+        // Non-numeric string -> None, not panic.
+        let resp = json!({"result": {"cost": {"memBytes": "not_a_number"}}});
+        assert_eq!(extract_memory_bytes_cost(&resp), None);
+    }
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_zero_integer_form() {
+        // A zero memory cost must round-trip as Some(0), not collapse to
+        // None — a check-mode consumer relies on retrieving the value to
+        // compare it against the configured `mem_limit`.
+        let resp = json!({"result": {"cost": {"memBytes": 0}}});
+        assert_eq!(extract_memory_bytes_cost(&resp), Some(0));
+    }
+
+    #[test]
+    fn extract_memory_bytes_cost_parses_mem_bytes_overflow_returns_none() {
+        // The most safety-critical branch: a mem_bytes value above u32::MAX
+        // must NOT be silently wrapped (which would alias a huge allocation
+        // cost onto a small integer). Reject with None instead, leaving the
+        // metric un-surfaced rather than reporting a misleading figure.
+        let big = (u32::MAX as u64) + 1;
+        let resp = json!({"result": {"cost": {"memBytes": big}}});
+        assert_eq!(extract_memory_bytes_cost(&resp), None);
+    }
+}
+
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
     if let Some(error) = rpc_response.get("error") {
         return Err(Error::Rpc(error.to_string()));
@@ -693,11 +791,16 @@ fn simulate_function(
         .as_str()
         .map(|s| s.to_string());
 
+    // `result.cost.memBytes` is a Protocol 22+ field. Older responses or
+    // malformed payloads do not surface it; absence is not zero cost.
+    let memory_bytes = extract_memory_bytes_cost(&rpc_resp);
+
     match extract_metrics(&rpc_resp) {
         Ok((instructions, read_bytes, write_bytes)) => Ok(SimulationOutcome::Metrics {
             instructions,
             read_bytes,
             write_bytes,
+            memory_bytes,
             transaction_data_xdr: tx_data_xdr_b64.unwrap_or_default(),
         }),
         Err(err) => Ok(SimulationOutcome::Failed(
@@ -1394,6 +1497,7 @@ fn main() -> anyhow::Result<()> {
                     instructions,
                     read_bytes,
                     write_bytes,
+                    memory_bytes,
                     transaction_data_xdr,
                 } => {
                     // Record the measurement for baseline/snapshot mode. This
@@ -1409,15 +1513,25 @@ fn main() -> anyhow::Result<()> {
                         .or_default()
                         .insert(function.clone(), measured);
 
-                    // Build three CostReport entries for this function. In
+                    // Build four CostReport entries for this function. In
                     // --check mode, attach the configured limit and
                     // pass/fail to each entry.
-                    for (metric, value) in [
+                    //
+                    // `Memory Bytes` is appended only when the Protocol 22+
+                    // `result.cost.memBytes` field was present, so older
+                    // protocol simulations cleanly skip the metric rather
+                    // than reporting a misleading zero.
+                    let mut reporting_metrics: Vec<(&'static str, u32)> = vec![
                         ("CPU Instructions", instructions),
                         ("Read Bytes", read_bytes),
                         ("Write Bytes", write_bytes),
                         ("WASM Bytes", wasm_size),
-                    ] {
+                    ];
+                    if let Some(mb) = memory_bytes {
+                        reporting_metrics.push(("Memory Bytes", mb));
+                    }
+
+                    for (metric, value) in reporting_metrics {
                         let limit = func_config.and_then(|cfg| limit_for_metric(cfg, metric));
                         let (entry_limit, pass) = evaluate_check(value, limit);
                         if pass == Some(false) {
