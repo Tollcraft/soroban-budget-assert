@@ -158,7 +158,14 @@ cargo budget-report --check
 # Same, with machine-readable JSON entries that include `limit` and `pass`
 # fields per configured function+metric:
 cargo budget-report --check --json
+
+# Exit on the first violation instead of collecting all results:
+cargo budget-report --check --fail-fast
 ```
+
+**`--fail-fast`** stops processing as soon as the first budget violation is
+detected. This is useful in CI when you want to fail early and avoid the
+overhead of simulating remaining functions after a regression is already known.
 
 ### 🛡️ Blocking Network-Cost Regressions in CI
 

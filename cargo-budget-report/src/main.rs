@@ -104,6 +104,11 @@ struct BudgetReportArgs {
     #[arg(long, default_value_t = false)]
     check: bool,
 
+    /// Exit immediately on the first budget violation instead of collecting
+    /// all results before reporting. Only meaningful with `--check`.
+    #[arg(long, default_value_t = false)]
+    fail_fast: bool,
+
     /// Emit the report as CSV instead of a table or JSON.
     #[arg(long, default_value_t = false)]
     csv: bool,
@@ -849,6 +854,28 @@ fn main() -> Result<()> {
                         let (entry_limit, pass) = evaluate_check(value, limit);
                         if pass == Some(false) {
                             checks_failed = true;
+                            if args.check && args.fail_fast {
+                                let value_str =
+                                    format_with_commas_and_units(u64::from(value), metric);
+                                let limit_str = entry_limit
+                                    .map(|limit_val| {
+                                        let display_value =
+                                            u32::try_from(limit_val).unwrap_or(u32::MAX);
+                                        format_with_commas_and_units(
+                                            u64::from(display_value),
+                                            metric,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| "-".to_string());
+                                println!("\n=== BUDGET CHECKS ===");
+                                println!(
+                                    "{}::{} [{}] value={} limit={} FAIL",
+                                    package.name, function, metric, value_str, limit_str
+                                );
+                                println!("Summary: 0 check(s) passed, 1 failed");
+                                println!("(--fail-fast: stopped on first violation)");
+                                std::process::exit(1);
+                            }
                         }
                         reports.push(CostReport {
                             package: package.name.to_string(),
@@ -887,6 +914,13 @@ fn main() -> Result<()> {
                         // a check failure even if no `*_limit` is set on
                         // this row of budget.toml.
                         checks_failed = true;
+                        if args.fail_fast {
+                            println!("\n=== BUDGET CHECKS ===");
+                            println!("{}::{} [simulation failed] FAIL", package.name, function);
+                            println!("Summary: 0 check(s) passed, 1 failed");
+                            println!("(--fail-fast: stopped on first violation)");
+                            std::process::exit(1);
+                        }
                         emit_check_failure_entries(
                             &mut reports,
                             &package.name,

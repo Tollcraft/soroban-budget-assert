@@ -269,3 +269,98 @@ fn retry_mechanism_fails_after_exhausting_all_attempts() {
         "stderr should mention source account funding, got: {stderr:?}"
     );
 }
+
+// ── --fail-fast integration tests ──────────────────────────────────────
+
+#[test]
+fn fail_fast_exits_on_first_violation() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[functions.ping]\n\
+         cpu_limit = 10\n",
+    )
+    .expect("failed to write budget.toml");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--check",
+            "--fail-fast",
+        ])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should exit on first violation with FAIL in output.
+    assert!(stdout.contains("FAIL"), "got: {stdout}");
+    assert!(stdout.contains("ping"), "got: {stdout}");
+    // Should NOT have processed mock-contract-b (pong) since fail-fast
+    // exits on the first violation.
+    assert!(
+        !stdout.contains("pong"),
+        "should not have processed mock-contract-b, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("(--fail-fast: stopped on first violation)"),
+        "should mention fail-fast in output, got: {stdout}"
+    );
+}
+
+#[test]
+fn fail_fast_without_check_is_noop() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[functions.ping]\n\
+         cpu_limit = 10\n",
+    )
+    .expect("failed to write budget.toml");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--fail-fast",
+        ])
+        .assert();
+
+    // Without --check, --fail-fast is a no-op; the report should succeed.
+    assert.success();
+}
+
+#[test]
+fn fail_fast_with_check_and_no_violations_succeeds() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[functions.ping]\n\
+         cpu_limit = 5000000\n\
+         \n\
+         [functions.pong]\n\
+         cpu_limit = 5000000\n",
+    )
+    .expect("failed to write budget.toml");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--check",
+            "--fail-fast",
+        ])
+        .assert();
+
+    assert.success();
+}
