@@ -22,6 +22,8 @@ use wasmparser::Parser as WasmParser;
 
 mod derive;
 mod module_10;
+mod module_16;
+mod module_20;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
@@ -1492,7 +1494,6 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
-}
 
     // Per-function tolerance overrides from `budget.toml` (top-level plus
     // per-function). Built once so Mode::Check (baseline regression) and the
