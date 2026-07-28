@@ -1,0 +1,106 @@
+{
+  "_metadata": {
+    "description": "Sample Tier B (network-verified) JSON report used as input to `cargo budget-report --derive-limits`. Values are kept consistent with those implied by the test fixture in `amm-pool-contract/tests/budget_test.rs` so wired-up Tier A limits reproduce the test gates without re-measuring on testnet.",
+    "generated_for": "feat/derive-tier-a-limits-from-tier-b",
+    "build_profile": "release"
+  },
+  "schema_version": 1,
+  "snapshots": [
+    {
+      "package": "amm-pool-contract",
+      "function": "do_expensive_work",
+      "metric": "CPU Instructions",
+      "value": 756678
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "do_expensive_work",
+      "metric": "Memory Bytes",
+      "value": 1700000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "require_auth_only",
+      "metric": "CPU Instructions",
+      "value": 90000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "require_auth_only",
+      "metric": "Memory Bytes",
+      "value": 1850000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "deposit",
+      "metric": "CPU Instructions",
+      "value": 30000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "deposit",
+      "metric": "Memory Bytes",
+      "value": 1850000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "deposit",
+      "metric": "Read Bytes",
+      "value": 2150
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "deposit",
+      "metric": "Write Bytes",
+      "value": 600
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "swap",
+      "metric": "CPU Instructions",
+      "value": 45000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "swap",
+      "metric": "Memory Bytes",
+      "value": 1850000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "withdraw",
+      "metric": "CPU Instructions",
+      "value": 55000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "withdraw",
+      "metric": "Memory Bytes",
+      "value": 1850000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "extend_instance_ttl",
+      "metric": "CPU Instructions",
+      "value": 22000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "extend_instance_ttl",
+      "metric": "Memory Bytes",
+      "value": 1250000
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "extend_instance_ttl",
+      "metric": "Read Bytes",
+      "value": 350
+    },
+    {
+      "package": "amm-pool-contract",
+      "function": "extend_instance_ttl",
+      "metric": "Write Bytes",
+      "value": 1
+    }
+  ]
+}
