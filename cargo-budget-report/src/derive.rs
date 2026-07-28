@@ -129,6 +129,7 @@ pub struct DerivationConfig {
 
 impl DerivationConfig {
     /// Construct a derivation config with no scenarios.
+    #[allow(dead_code)]
     pub fn margin_only(margin: Margin) -> Self {
         Self {
             margin,
@@ -531,8 +532,12 @@ pub fn write_outputs(
     let env_body = derivation.render_env_file(source_label, margin, build_profile, timestamp_utc);
     atomic_write(out_env, &env_body)?;
     if let Some(path) = out_provenance {
-        let md_body =
-            derivation.render_provenance_markdown(source_label, margin, build_profile, timestamp_utc);
+        let md_body = derivation.render_provenance_markdown(
+            source_label,
+            margin,
+            build_profile,
+            timestamp_utc,
+        );
         atomic_write(path, &md_body)?;
     }
     Ok(())
@@ -578,8 +583,13 @@ mod tests {
 
     #[test]
     fn margin_rejects_non_finite() {
-        let err = Margin::new(f64::NAN, 1.0, 1.0, 1.0).unwrap_err().to_string();
-        assert!(err.contains("margin.cpu must be a finite number"), "got: {err}");
+        let err = Margin::new(f64::NAN, 1.0, 1.0, 1.0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("margin.cpu must be a finite number"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -693,10 +703,25 @@ mod tests {
 
     #[test]
     fn scenario_limit_sums_components_with_margin() {
+        // The four per-component rows per metric are required because
+        // `Derivation::from_report` iterates the metric set (cpu, memory,
+        // read, write — issue #288) for every scenario component. The CPU
+        // values drive the assertion; the remaining metrics are zero so the
+        // unwrap path doesn't trip on missing Tier B rows for the new
+        // Memory Bytes metric surfaced by issue #122.
         let measurements = vec![
             tier_b("amm-pool-contract", "deposit", "CPU Instructions", 30_000),
             tier_b("amm-pool-contract", "swap", "CPU Instructions", 50_000),
             tier_b("amm-pool-contract", "withdraw", "CPU Instructions", 40_000),
+            tier_b("amm-pool-contract", "deposit", "Memory Bytes", 0),
+            tier_b("amm-pool-contract", "swap", "Memory Bytes", 0),
+            tier_b("amm-pool-contract", "withdraw", "Memory Bytes", 0),
+            tier_b("amm-pool-contract", "deposit", "Read Bytes", 0),
+            tier_b("amm-pool-contract", "swap", "Read Bytes", 0),
+            tier_b("amm-pool-contract", "withdraw", "Read Bytes", 0),
+            tier_b("amm-pool-contract", "deposit", "Write Bytes", 0),
+            tier_b("amm-pool-contract", "swap", "Write Bytes", 0),
+            tier_b("amm-pool-contract", "withdraw", "Write Bytes", 0),
         ];
         let mut scenarios = BTreeMap::new();
         scenarios.insert(
@@ -712,12 +737,16 @@ mod tests {
             scenarios,
         };
         let derivation = Derivation::from_report(&measurements, &config).unwrap();
+        // Limit findings to the CPU scenario row; the same scenario now has
+        // a per-metric entry under each metric key (issue #288 split + the
+        // Memory Bytes surface added by issue #122), so the lookup must be
+        // metric-scoped to stay focused on this test's CPU-focused math.
         let scenario = derivation
             .limits
             .iter()
-            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW"))
-            .expect("scenario row present");
-        // (30k + 50k + 40k) × 1.25 = 150_000.
+            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW") && l.key.contains("__CPU"))
+            .expect("CPU scenario row present");
+        // (30k + 50k + 40k) × 1.25 = 150_000 (cpu_margin in the test helper).
         assert_eq!(scenario.tier_a_limit, 150_000);
         assert_eq!(scenario.tier_b_value, 120_000);
     }
@@ -755,10 +784,17 @@ mod tests {
         let body = Derivation {
             limits: vec![limit],
         }
-        .render_env_file("build/budget-report.json", &margin(), Some("release"), "2026-01-01T00:00:00Z");
+        .render_env_file(
+            "build/budget-report.json",
+            &margin(),
+            Some("release"),
+            "2026-01-01T00:00:00Z",
+        );
         assert!(body.contains("# tier-a-limits.env"));
         assert!(body.contains("# Source Tier B JSON: build/budget-report.json"));
-        assert!(body.contains("# Margins (cpu, memory, read, write): 1.2500, 1.1000, 1.5000, 2.0000"));
+        assert!(
+            body.contains("# Margins (cpu, memory, read, write): 1.2500, 1.1000, 1.5000, 2.0000")
+        );
         assert!(body.contains("# Build profile of source WASM: release"));
         assert!(body.contains("# Generated at (UTC): 2026-01-01T00:00:00Z"));
         assert!(body.contains("TIER_A__AMM_POOL__REQUIRE_AUTH_ONLY__CPU=12500"));
@@ -789,7 +825,10 @@ mod tests {
     #[test]
     fn env_var_scenario_key_inserts_scenario_marker() {
         let key = env_var_scenario_key("amm-pool-contract", "full_workflow", "CPU Instructions");
-        assert_eq!(key, "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU");
+        assert_eq!(
+            key,
+            "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU"
+        );
     }
 
     // -- helpers --------------------------------------------------------------

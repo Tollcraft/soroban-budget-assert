@@ -7,9 +7,9 @@
 //!
 //! The mock workspace's two contracts are bare `no_std` WASM exports with no
 //! dependencies (not real Soroban contracts), so `cargo build` for them is
-//! near-instant. `cargo-budget-report` still shells out to the real
-//! `stellar` CLI and `curl` to deploy/simulate, so both are replaced with
-//! deterministic scripts in `tests/fixtures/fake_bin` (prepended to `PATH`
+//! near-instant. `cargo-budget-report` still shells out to the real `stellar`
+//! CLI and `curl` to deploy/simulate, so both are replaced with deterministic
+//! scripts in `tests/fixtures/fake_bin` (prepended to `PATH`
 //! for the child process). This keeps the suite offline and reproducible:
 //! no live network call, no funded/configured Stellar identity required.
 
@@ -90,6 +90,7 @@ fn discovers_mock_workspace_and_reports_cleanly() {
     );
     assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
     assert!(stdout.contains("mock-contract-b"), "got: {stdout}");
+    assert!(stdout.contains("mock-contract-renamed"), "got: {stdout}");
     assert!(stdout.contains("CPU Instructions"), "got: {stdout}");
     assert!(stdout.contains("1,000,000 inst."), "got: {stdout}");
     assert!(stdout.contains("2,048 B"), "got: {stdout}");
@@ -97,30 +98,8 @@ fn discovers_mock_workspace_and_reports_cleanly() {
 }
 
 #[test]
+fn json_output_reports_all_mock_contracts() {
 fn function_filter_reports_only_the_selected_function() {
-    let workspace = setup_mock_workspace();
-
-    let assert = budget_report_cmd(workspace.path())
-        .args([
-            "budget-report",
-            "--network",
-            "local",
-            "--source",
-            "alice",
-            "--function",
-            "ping",
-        ])
-        .assert();
-
-    let output = assert.success().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    assert!(stdout.contains("mock-contract-a::ping"), "got: {stdout}");
-    assert!(!stdout.contains("mock-contract-b::pong"), "got: {stdout}");
-}
-
-#[test]
-fn json_function_filter_reports_only_the_selected_function() {
     let workspace = setup_mock_workspace();
 
     let assert = budget_report_cmd(workspace.path())
@@ -144,10 +123,42 @@ fn json_function_filter_reports_only_the_selected_function() {
 
     assert!(!reports.is_empty(), "the selected function should be reported");
     assert!(
-        reports.iter().all(|report| {
-            report["package"] == "mock-contract-a" && report["function"] == "ping"
-        }),
-        "all JSON entries should belong to mock-contract-a::ping, got: {reports:?}"
+        reports
+            .iter()
+            .all(|report| report["package"] == "mock-contract-a"),
+        "--function ping should exclude mock-contract-b: {reports:?}"
+    );
+}
+
+#[test]
+fn function_filter_selects_a_function_from_the_other_contract() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--function",
+            "pong",
+            "--json",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reports: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    let reports = reports.as_array().expect("report should be a JSON array");
+
+    assert!(!reports.is_empty(), "the selected function should be reported");
+    assert!(
+        reports
+            .iter()
+            .all(|report| report["package"] == "mock-contract-b"),
+        "--function pong should exclude mock-contract-a: {reports:?}"
     );
 }
 
@@ -178,6 +189,10 @@ fn json_output_reports_both_mock_contracts() {
         .collect();
     assert!(packages.contains("mock-contract-a"), "got: {reports:?}");
     assert!(packages.contains("mock-contract-b"), "got: {reports:?}");
+    assert!(
+        packages.contains("mock-contract-renamed"),
+        "got: {reports:?}"
+    );
 
     let cpu_entry = reports
         .iter()
@@ -226,6 +241,9 @@ fn check_flag_passes_when_limits_are_generous() {
     let output = assert.success().get_output().clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("=== BUDGET CHECKS ==="), "got: {stdout}");
+    // Only ping (3 metrics) + pong (3 metrics) are configured in budget.toml.
+    // The new greet function has no config, so it adds 0 checks.
+    // WASM Bytes are not checked because limit_for_metric returns None.
     assert!(
         stdout.contains("Summary: 6 check(s) passed, 0 failed"),
         "got: {stdout}"
@@ -322,6 +340,97 @@ fn retry_mechanism_fails_after_exhausting_all_attempts() {
     assert!(
         stderr.contains("source account is funded"),
         "stderr should mention source account funding, got: {stderr:?}"
+    );
+}
+
+// ── Validation integration tests ──────────────────────────────────────────
+
+#[test]
+fn validate_flag_passes_when_cli_decoding_matches() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--validate",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // All functions should have validation-pass messages in stderr.
+    // The mock stellar supports xdr decode and returns matching values.
+    assert!(
+        stderr.contains("validation passed"),
+        "stderr should mention validation passed for functions, got: {stderr}"
+    );
+}
+
+#[test]
+fn validate_flag_reports_skip_when_cli_lacks_xdr_decode() {
+    let workspace = setup_mock_workspace();
+
+    // Place a wrapper `stellar` on PATH that passes everything through to the
+    // real mock stellar except `xdr decode`, which it fails to simulate an
+    // older CLI that lacks the xdr subcommand.
+    let wrapper = workspace.path().join("stellar");
+    let fake_stellar = fake_bin_dir().join("stellar");
+    let fake_stellar_path = fake_stellar.to_str().expect("fake stellar path");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+               xdr) echo 'xdr decode not supported' >&2; exit 1;;\n\
+               *)   exec \"{}\" \"$@\";;\n\
+             esac\n",
+            fake_stellar_path
+        ),
+    )
+    .expect("failed to write wrapper stellar script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to chmod wrapper stellar");
+    }
+
+    let real_path = std::env::var("PATH").unwrap_or_default();
+    // workspace.path() first so our wrapper stellar is found before the
+    // mock one in fake_bin_dir; fake_bin_dir must still be on PATH for
+    // the mock curl script.
+    let path_env = format!(
+        "{}:{}:{}",
+        workspace.path().display(),
+        fake_bin_dir().display(),
+        real_path,
+    );
+
+    let mut cmd = Command::cargo_bin("cargo-budget-report").expect("binary should be built");
+    cmd.current_dir(workspace.path())
+        .env("PATH", &path_env)
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--validate",
+        ]);
+
+    // The report itself should still succeed even when CLI validation skips.
+    let assert = cmd.assert();
+    let output = assert.success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("validation skipped"),
+        "stderr should mention validation skipped, got: {stderr}"
     );
 }
 
