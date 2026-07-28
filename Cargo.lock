@@ -1782,6 +1782,10 @@ name = "soroban-budget-assert-core"
 version = "0.1.0"
 
 [[package]]
+name = "soroban-budget-assert"
+version = "0.1.0"
+
+[[package]]
 name = "soroban-builtin-sdk-macros"
 version = "27.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
