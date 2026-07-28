@@ -1,0 +1,31 @@
+{
+  "operation_type": "Storage read",
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "function": "do_read_heavy_work",
+    "arguments": {
+      "n": 100,
+      "bytes_per_key": 256
+    },
+    "registration": "register_contract_wasm"
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.85",
+  "network": {
+    "method": "simulateTransaction",
+    "network": "Soroban testnet"
+  },
+  "measurements": {
+    "read_bytes": {
+      "local_estimate": null,
+      "network_figure": null,
+      "delta": null,
+      "delta_percent": null
+    }
+  },
+  "capture": {
+    "local_command": "cargo test -p amm-pool-contract test_storage_read_wasm_local -- --exact --nocapture",
+    "network_command": "cargo run --bin cargo-budget-report -- --network testnet",
+    "recorded_at": "2026-07-27"
+  }
+}
