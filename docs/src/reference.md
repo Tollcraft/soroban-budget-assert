@@ -187,7 +187,7 @@ cargo budget-report [--network <network>] [--source <source>] [--json] [--check]
 | `--network` | yes (flag or `budget.toml`) | Network to deploy and simulate against, e.g. `testnet` |
 | `--source` | yes (flag or `budget.toml`) | Funded identity used for deploy fees and as the simulation source |
 | `--json` | no | Emit the report as pretty-printed JSON instead of a table |
-| `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
+| `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` / `mem_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
@@ -215,6 +215,7 @@ args = ["--n", "10000"]
 cpu_limit = 5000000
 read_limit = 5000
 write_limit = 1000
+mem_limit = 2000000
 
 # AMM pool functions are local-only; reporting is fine but they are not
 # invoked via `cargo budget-report` end-to-end.
@@ -297,16 +298,17 @@ args = ["--n", "10000"]
 cpu_limit = 5000000
 read_limit = 5000
 write_limit = 1000
+mem_limit = 2000000
 ```
 {% endcode %}
 
 - `network`, `source` — defaults for the corresponding CLI flags.
 - `[functions.<name>].args` — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped.
-- `[functions.<name>].cpu_limit`, `.read_limit`, `.write_limit` — inclusive upper bounds for simulated CPU instructions, read bytes, and write bytes. Enforced only when `--check` is passed. A missing field means "not enforced" for that metric.
+- `[functions.<name>].cpu_limit`, `.read_limit`, `.write_limit`, `.mem_limit` — inclusive upper bounds for simulated CPU instructions, read bytes, write bytes, and memory bytes (the latter from `result.cost.memBytes`). Enforced only when `--check` is passed. A missing field means "not enforced" for that metric.
 
 ## Output
 
-Each simulated function produces four rows (or four JSON objects) when its simulation succeeds: `CPU Instructions`, `Read Bytes`, `Write Bytes`, and `WASM Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
+Each simulated function produces up to five rows when its simulation succeeds: `CPU Instructions`, `Read Bytes`, `Write Bytes`, `Memory Bytes`, and `WASM Bytes`. The `Memory Bytes` row is omitted when the RPC server does not surface a `cost` object (older Soroban protocol or older RPC). For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
@@ -341,9 +343,10 @@ total.
 | `CPU Instructions` | `resources.instructions` — metered CPU instruction count |
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
+| `Memory Bytes` | `result.cost.memBytes` — host-memory bytes consumed by the WASM execution (Soroban protocol 22); omitted when an older RPC server does not surface a `cost` object |
 | `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
 
-These four quantities are *inputs* to the **non-refundable resource fee**. They are not the
+These five quantities are *inputs* to the **non-refundable resource fee**. They are not the
 whole of it.
 
 ### Not in scope

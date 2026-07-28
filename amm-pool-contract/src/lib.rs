@@ -184,6 +184,22 @@ impl ConstantProductPool {
         result
     }
 
+    /// Memory-allocation fixture: builds a `Vec<u32>` of length `n` and
+    /// persists it under instance storage. No auth required, so the
+    /// function is invocable end-to-end via `cargo budget-report`
+    /// against Soroban testnet without pre-deployed token contracts,
+    /// isolating the cost of host-vector growth and the instance-storage
+    /// write. Used by issue #122 to measure the local-vs-network gap for
+    /// `memory_bytes`.
+    pub fn allocate_vec(env: Env, n: u32) -> u32 {
+        let mut vec = Vec::new(&env);
+        for i in 0..n {
+            vec.push_back(i);
+        }
+        env.storage().instance().set(&symbol_short!("bigvec"), &vec);
+        vec.len()
+    }
+
     pub fn do_cross_contract_work(env: Env, other: Address, n: u32) -> u32 {
         let mut result: u32 = 0;
         for i in 0..n {

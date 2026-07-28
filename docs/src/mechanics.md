@@ -64,7 +64,7 @@ The CLI measures ground truth. One invocation walks this pipeline:
 3. **Scan exports** — parses the `.wasm` binary with `wasmparser` and collects every exported function, skipping internals (names starting with `_`, and `memory`).
 4. **Deploy** — deploys the WASM to the configured network with `stellar contract deploy`.
 5. **Simulate** — for each exported function, builds an unsigned transaction (`stellar contract invoke --build-only`, with per-function arguments from `budget.toml`), then POSTs it to the Soroban RPC `simulateTransaction` endpoint.
-6. **Decode** — decodes the returned `SorobanTransactionData` XDR (`stellar xdr decode`) and extracts `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes`.
+6. **Decode** — decodes the returned `SorobanTransactionData` XDR and extracts `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes`. It also reads `result.cost.memBytes` from the JSON-RPC payload (a sibling field surfaced by Soroban protocol 22's `SimulateTransactionResponse`) for the network-side memory figure; see `MEASUREMENTS.md` for why a separate field is required instead of substituting a proxy metric.
 7. **Report** — aggregates every package/function pair into one table, or JSON with `--json`.
 
 Simulated numbers vary slightly with ledger state, but they are the network's own measurement of the exact WASM you deploy, not a local approximation.

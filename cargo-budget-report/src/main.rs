@@ -45,6 +45,7 @@ source = "alice"
 #   cpu_limit  = 5000000          # optional, inclusive CPU instruction limit
 #   read_limit = 5000             # optional, inclusive read-bytes limit
 #   write_limit = 1000            # optional, inclusive write-bytes limit
+#   mem_limit  = 2000000          # optional, inclusive memory-bytes limit
 #
 # A missing `*_limit` field means that metric is reported but not enforced.
 # See `cargo budget-report --check` for limit enforcement.
@@ -54,6 +55,7 @@ args = ["--n", "10000"]
 cpu_limit = 5000000
 read_limit = 5000
 write_limit = 1000
+mem_limit = 2000000
 "#;
 
 #[derive(Parser, Debug)]
@@ -141,6 +143,11 @@ struct FunctionConfig {
     read_limit: Option<u64>,
     #[serde(default)]
     write_limit: Option<u64>,
+    /// Inclusive upper bound on the measured `Memory Bytes` cost returned by
+    /// the network's `simulateTransaction` `cost.memBytes` field. `None`
+    /// means this metric is reported but not enforced by `--check`.
+    #[serde(default)]
+    mem_limit: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -178,6 +185,7 @@ fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
         "CPU Instructions" => func_config.cpu_limit,
         "Read Bytes" => func_config.read_limit,
         "Write Bytes" => func_config.write_limit,
+        "Memory Bytes" => func_config.mem_limit,
         _ => None,
     }
 }
@@ -217,7 +225,12 @@ fn emit_check_failure_entries(
     function: &str,
     func_config: &FunctionConfig,
 ) {
-    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
+    for metric in [
+        "CPU Instructions",
+        "Read Bytes",
+        "Write Bytes",
+        "Memory Bytes",
+    ] {
         let limit = limit_for_metric(func_config, metric);
         reports.push(CostReport {
             package: package_name.to_string(),
@@ -251,7 +264,45 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     }
 }
 
-fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
+/// Extract the `Memory Bytes` cost from a `simulateTransaction` response.
+///
+/// Soroban protocol 22's `SimulateTransactionResponse` exposes the consumed
+/// memory cost as `result.cost.memBytes` in the JSON-RPC payload (paired
+/// with `result.cost.cpuInsns` — note `cpuInsns` is NOT extracted here
+/// because the XDR-decoded `SorobanTransactionData.resources.instructions`
+/// already provides the consumer-facing CPU figure; do not "fix" this
+/// without also removing the instructions read from the XDR). The field
+/// is reported as either a JSON string (large `u64`, Soroban RPC
+/// convention) or an unquoted integer. Older RPC servers that do not
+/// surface the `cost` object at all — or responses where `cost.memBytes`
+/// is missing or unparseable — return `None` so the caller can keep
+/// going rather than substituting a proxy metric for memory.
+///
+/// A `u64` value that exceeds `u32::MAX` is a non-issue in practice
+/// (no realistic WASM execution consumes >4 GiB of host memory) but is
+/// surfaced as `None` with a one-line notice on stderr rather than
+/// silently truncated.
+fn extract_memory_bytes_cost(rpc_response: &serde_json::Value) -> Option<u32> {
+    let cost = rpc_response.get("result")?.get("cost")?;
+    let raw = cost.get("memBytes")?;
+    let parsed: Option<u64> = if let Some(s) = raw.as_str() {
+        s.parse().ok()
+    } else {
+        raw.as_u64()
+    };
+    let n = parsed?;
+    match u32::try_from(n) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            eprintln!(
+                "notice: result.cost.memBytes = {n} exceeds u32::MAX; dropping memory metric"
+            );
+            None
+        }
+    }
+}
+
+fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32, Option<u32>)> {
     if let Some(error) = rpc_response.get("error") {
         anyhow::bail!("{}", error);
     }
@@ -267,6 +318,7 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
         tx_data.resources.instructions,
         tx_data.resources.read_bytes,
         tx_data.resources.write_bytes,
+        extract_memory_bytes_cost(rpc_response),
     ))
 }
 
@@ -288,6 +340,10 @@ enum SimulationOutcome {
         instructions: u32,
         read_bytes: u32,
         write_bytes: u32,
+        /// Network-reported memory bytes from `result.cost.memBytes`,
+        /// or `None` when the RPC response does not surface a `cost`
+        /// object (older servers) or the field is missing/unparseable.
+        memory_bytes: Option<u32>,
     },
     Failed(SimulationFailure),
 }
@@ -406,11 +462,14 @@ fn simulate_function(
     }
 
     match extract_metrics(&rpc_resp) {
-        Ok((instructions, read_bytes, write_bytes)) => Ok(SimulationOutcome::Metrics {
-            instructions,
-            read_bytes,
-            write_bytes,
-        }),
+        Ok((instructions, read_bytes, write_bytes, memory_bytes)) => {
+            Ok(SimulationOutcome::Metrics {
+                instructions,
+                read_bytes,
+                write_bytes,
+                memory_bytes,
+            })
+        }
         Err(err) => Ok(SimulationOutcome::Failed(
             SimulationFailure::MetricsExtraction(format!("{:#}", err)),
         )),
@@ -684,16 +743,24 @@ fn main() -> Result<()> {
                     instructions,
                     read_bytes,
                     write_bytes,
+                    memory_bytes,
                 } => {
-                    // Build three CostReport entries for this function. In
+                    // Build CostReport entries for this function. In
                     // --check mode, attach the configured limit and
-                    // pass/fail to each entry.
-                    for (metric, value) in [
+                    // pass/fail to each entry. `memory_bytes` is optional
+                    // because some RPC servers may not surface a `cost`
+                    // object at all — in that case we omit the Memory
+                    // Bytes row rather than substitute a proxy metric.
+                    let mut entries: Vec<(&'static str, u32)> = vec![
                         ("CPU Instructions", instructions),
                         ("Read Bytes", read_bytes),
                         ("Write Bytes", write_bytes),
-                        ("WASM Bytes", wasm_size),
-                    ] {
+                    ];
+                    if let Some(mem) = memory_bytes {
+                        entries.push(("Memory Bytes", mem));
+                    }
+                    entries.push(("WASM Bytes", wasm_size));
+                    for (metric, value) in entries {
                         let limit = func_config.and_then(|c| limit_for_metric(c, metric));
                         let (entry_limit, pass) = evaluate_check(value, limit);
                         if pass == Some(false) {
@@ -940,6 +1007,7 @@ mod tests {
     const FIXTURE_INSTRUCTIONS: u32 = 1_000_000;
     const FIXTURE_READ_BYTES: u32 = 2_048;
     const FIXTURE_WRITE_BYTES: u32 = 4_096;
+    const FIXTURE_MEMORY_BYTES: u32 = 123_456;
     const FIXTURE_RESOURCE_FEE: i64 = 0;
 
     fn make_fixture_tx_data() -> SorobanTransactionData {
@@ -968,7 +1036,11 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "transactionData": b64
+                "transactionData": b64,
+                "cost": {
+                    "cpuInsns": FIXTURE_INSTRUCTIONS.to_string(),
+                    "memBytes": FIXTURE_MEMORY_BYTES.to_string()
+                }
             }
         })
     }
@@ -976,11 +1048,12 @@ mod tests {
     #[test]
     fn extract_metrics_from_programmatic_rpc_response() {
         let rpc_json = fixture_rpc_response_json();
-        let (instructions, read_bytes, write_bytes) =
+        let (instructions, read_bytes, write_bytes, mem_bytes) =
             extract_metrics(&rpc_json).expect("extraction should succeed");
         assert_eq!(instructions, FIXTURE_INSTRUCTIONS);
         assert_eq!(read_bytes, FIXTURE_READ_BYTES);
         assert_eq!(write_bytes, FIXTURE_WRITE_BYTES);
+        assert_eq!(mem_bytes, Some(FIXTURE_MEMORY_BYTES));
     }
 
     #[test]
@@ -997,11 +1070,135 @@ mod tests {
         assert_eq!(meta["network"].as_str(), Some("testnet"));
         assert!(meta["protocol_version"].as_u64().is_some());
 
-        let (instructions, read_bytes, write_bytes) =
+        let (instructions, read_bytes, write_bytes, mem_bytes) =
             extract_metrics(&fixture_json).expect("extraction from fixture should succeed");
         assert_eq!(instructions, FIXTURE_INSTRUCTIONS);
         assert_eq!(read_bytes, FIXTURE_READ_BYTES);
         assert_eq!(write_bytes, FIXTURE_WRITE_BYTES);
+        assert_eq!(mem_bytes, Some(FIXTURE_MEMORY_BYTES));
+    }
+
+    #[test]
+    fn extract_metrics_parses_mem_bytes_none_when_cost_object_absent() {
+        // Older RPC servers may not include a `cost` object at all.
+        // Use a real `SorobanTransactionData` XDR (via
+        // `make_fixture_tx_data`) so the transactionData path actually
+        // decodes — using a short placeholder base64 would fail XDR
+        // decode first and the test would pass vacuously via the `Err`
+        // arm rather than exercising the no-cost path this test exists
+        // to cover.
+        let tx_data = make_fixture_tx_data();
+        let b64 = tx_data
+            .to_xdr_base64(Limits::none())
+            .expect("failed to encode fixture SorobanTransactionData");
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "transactionData": b64
+            }
+        });
+        let (instructions, read_bytes, write_bytes, mem_bytes) =
+            extract_metrics(&rpc_json).expect("extraction should succeed");
+        assert_eq!(instructions, FIXTURE_INSTRUCTIONS);
+        assert_eq!(read_bytes, FIXTURE_READ_BYTES);
+        assert_eq!(write_bytes, FIXTURE_WRITE_BYTES);
+        assert!(
+            mem_bytes.is_none(),
+            "mem_bytes should be None when cost field is absent, got {:?}",
+            mem_bytes
+        );
+    }
+
+    #[test]
+    fn extract_metrics_parses_mem_bytes_none_when_cost_present_but_mem_bytes_missing() {
+        let tx_data = make_fixture_tx_data();
+        let b64 = tx_data
+            .to_xdr_base64(Limits::none())
+            .expect("failed to encode fixture SorobanTransactionData");
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "transactionData": b64,
+                "cost": {
+                    "cpuInsns": "1234"
+                }
+            }
+        });
+        let (instructions, read_bytes, write_bytes, mem_bytes) =
+            extract_metrics(&rpc_json).expect("extraction should succeed even without memBytes");
+        assert_eq!(instructions, FIXTURE_INSTRUCTIONS);
+        assert_eq!(read_bytes, FIXTURE_READ_BYTES);
+        assert_eq!(write_bytes, FIXTURE_WRITE_BYTES);
+        assert!(
+            mem_bytes.is_none(),
+            "mem_bytes should be None when cost.memBytes is missing, got {:?}",
+            mem_bytes
+        );
+    }
+
+    #[test]
+    fn extract_metrics_parses_mem_bytes_integer_form() {
+        let tx_data = make_fixture_tx_data();
+        let b64 = tx_data
+            .to_xdr_base64(Limits::none())
+            .expect("failed to encode fixture SorobanTransactionData");
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "transactionData": b64,
+                "cost": {
+                    "cpuInsns": 1_000_000u64,
+                    "memBytes": 7_777u64
+                }
+            }
+        });
+        let (_, _, _, mem_bytes) = extract_metrics(&rpc_json).expect("extraction should succeed");
+        assert_eq!(mem_bytes, Some(7_777));
+    }
+
+    #[test]
+    fn extract_metrics_parses_mem_bytes_string_form() {
+        let tx_data = make_fixture_tx_data();
+        let b64 = tx_data
+            .to_xdr_base64(Limits::none())
+            .expect("failed to encode fixture SorobanTransactionData");
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "transactionData": b64,
+                "cost": {
+                    "cpuInsns": "1000000",
+                    "memBytes": "8888"
+                }
+            }
+        });
+        let (_, _, _, mem_bytes) = extract_metrics(&rpc_json).expect("extraction should succeed");
+        assert_eq!(mem_bytes, Some(8_888));
+    }
+
+    #[test]
+    fn extract_metrics_parses_mem_bytes_unparseable_value() {
+        let tx_data = make_fixture_tx_data();
+        let b64 = tx_data
+            .to_xdr_base64(Limits::none())
+            .expect("failed to encode fixture SorobanTransactionData");
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "transactionData": b64,
+                "cost": {
+                    "memBytes": "not-a-number"
+                }
+            }
+        });
+        let (_, _, _, mem_bytes) = extract_metrics(&rpc_json)
+            .expect("extraction should succeed even with unparseable memBytes");
+        assert!(mem_bytes.is_none());
     }
 
     #[test]
@@ -1262,6 +1459,27 @@ mod tests {
             format_with_commas_and_units(4_096, "Write Bytes"),
             "4,096 B"
         );
+    }
+
+    #[test]
+    fn formatter_memory_bytes_gets_byte_unit() {
+        assert_eq!(
+            format_with_commas_and_units(123_456, "Memory Bytes"),
+            "123,456 B"
+        );
+    }
+
+    #[test]
+    fn formatter_memory_bytes_at_thousands() {
+        assert_eq!(
+            format_with_commas_and_units(1_234_567, "Memory Bytes"),
+            "1,234,567 B"
+        );
+    }
+
+    #[test]
+    fn formatter_memory_bytes_zero() {
+        assert_eq!(format_with_commas_and_units(0, "Memory Bytes"), "0 B");
     }
 
     #[test]

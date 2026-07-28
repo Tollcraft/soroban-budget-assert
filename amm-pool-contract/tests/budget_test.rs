@@ -74,6 +74,57 @@ fn test_budget_raw_rust() {
     println!("Memory bytes: {}", budget.memory_bytes_cost());
 }
 
+/// Local measurement fixture for the memory-bytes gap measured against
+/// Soroban testnet as part of issue #122. Captures `memory_bytes_cost()`
+/// for `allocate_vec(10_000)` in two execution modes:
+///
+/// * raw Rust (no WASM, included only as a sanity baseline that raw
+///   Rust underestimates the real cost) and
+/// * the WASM registration path used by every `--check` test above.
+///
+/// The size is bounded to stay well under the default test-env memory
+/// budget; 10_000 `u32` pushes + an instance-storage write lands well
+/// under the 1 MiB-ish default and runs in <100 ms locally.
+///
+/// The two `assert!` calls are intentionally minimal regression
+/// guards (`> 0`) — they catch a future SDK change that silently
+/// zeros the memory counter without making the test brittle to
+/// legitimately different accounting. The actual measured figure
+/// still needs to be copied into `MEASUREMENTS.md` from the printed
+/// output of `cargo test -- --nocapture`.
+#[test]
+fn test_measure_memory_bytes_local_for_issue_122() {
+    // --- raw-Rust execution ---
+    let raw_env = Env::default();
+    let raw_contract = raw_env.register(ConstantProductPool, ());
+    let raw_client = ConstantProductPoolClient::new(&raw_env, &raw_contract);
+    raw_env.cost_estimate().budget().reset_unlimited();
+    raw_client.allocate_vec(&10_000);
+    let raw_budget = raw_env.cost_estimate().budget();
+    let raw_figure = raw_budget.memory_bytes_cost();
+    println!("=== ISSUE 122 \u{2014} RAW RUST LOCAL MEMORY BYTES ===");
+    println!("allocate_vec(10_000) memory_bytes_cost(): {}", raw_figure);
+    assert!(
+        raw_figure > 0,
+        "raw-Rust memory_bytes_cost should be > 0 \
+         - local estimate, real network cost may differ significantly in either direction"
+    );
+
+    // --- WASM execution ---
+    let wasm_env = Env::default();
+    let (wasm_client, _user) = setup_wasm(&wasm_env);
+    wasm_client.allocate_vec(&10_000);
+    let wasm_budget = wasm_env.cost_estimate().budget();
+    let wasm_figure = wasm_budget.memory_bytes_cost();
+    println!("=== ISSUE 122 \u{2014} WASM LOCAL MEMORY BYTES ===");
+    println!("allocate_vec(10_000) memory_bytes_cost(): {}", wasm_figure);
+    assert!(
+        wasm_figure > 0,
+        "WASM memory_bytes_cost should be > 0 \
+         - local estimate, real network cost may differ significantly in either direction"
+    );
+}
+
 #[test]
 #[budget_cpu_lt(5000000)]
 fn test_budget_wasm() {

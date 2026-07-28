@@ -23,6 +23,19 @@ write_limit = 1000
 [functions.require_auth_only]
 args = ["--addr", "alice"]
 
+# The `allocate_vec` function isolates the cost of growing a `Vec<u32>` and
+# persisting it under instance storage. It is the memory-allocation fixture
+# used by issue #122 to measure the memory-bytes gap between the local
+# `Env::cost_estimate().budget().memory_bytes_cost()` estimate and the value
+# Soroban testnet returns inside `simulateTransaction` → `result.cost.memBytes`.
+# No auth required, so it is `cargo budget-report`-callable end-to-end.
+[functions.allocate_vec]
+args = ["--n", "100000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
+mem_limit = 2000000
+
 # The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
 # local test-harness measurement and exercise multiple storage keys, authorization,
 # events, and simulated token flows. They require pre-deployed token contracts and

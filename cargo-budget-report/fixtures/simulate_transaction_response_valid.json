@@ -1,18 +1,23 @@
 {
   "_metadata": {
     "network": "testnet",
-    "protocol_version": 21,
+    "protocol_version": 22,
     "generated_by": "soroban-budget-assert test fixture",
-    "description": "Realistic simulateTransaction response with SorobanTransactionData XDR",
+    "description": "Realistic simulateTransaction response with SorobanTransactionData XDR and protocol-22 cost object",
     "xdr_type": "SorobanTransactionData",
     "instructions": 1000000,
     "read_bytes": 2048,
-    "write_bytes": 4096
+    "write_bytes": 4096,
+    "memory_bytes": 123456
   },
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
     "transactionData": "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA=",
-    "minResourceFee": "1000"
+    "minResourceFee": "1000",
+    "cost": {
+      "cpuInsns": "1000000",
+      "memBytes": "123456"
+    }
   }
 }
