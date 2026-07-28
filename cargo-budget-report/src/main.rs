@@ -1,5 +1,4 @@
-use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
-use anyhow::Context;
+use crate::module_10::{Error, Result as Module10Result, SimulationFailure, SimulationOutcome};
 mod compare;
 
 use anyhow::{Context, Result};
@@ -84,7 +83,7 @@ enum CargoCli {
 ///
 /// All fields are optional; missing values fall back to the corresponding
 /// `budget.toml` configuration when available.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 struct BudgetReportArgs {
     /// Scaffold a commented `budget.toml` template and exit.
     #[arg(long)]
@@ -147,6 +146,15 @@ struct BudgetReportArgs {
     /// `release-opt`) must be defined in the project's `Cargo.toml`.
     #[arg(long)]
     profile: Option<String>,
+
+    /// Highlight functions whose any metric exceeds this share (0-100)
+    /// of the corresponding network resource limit. A value of 0 disables
+    /// highlighting.
+    ///
+    /// The network limits are fetched from the Soroban RPC endpoint in
+    /// real time, so they reflect the current protocol's actual ceiling.
+    #[arg(long, default_value_t = 0.0)]
+    share_threshold: f64,
 }
 
 /// Top-level configuration deserialized from `budget.toml`.
@@ -197,6 +205,139 @@ impl TransactionData {
     }
 }
 
+/// Network resource limits as reported by the Soroban JSON-RPC
+/// `getNetworkLimits` method.
+///
+/// These values define the per-transaction ceiling that Soroban
+/// enforces on the current protocol. They change with protocol
+/// upgrades, so they are fetched from the network at report time
+/// rather than hardcoded (see the fallback block below for the
+/// documented hardcoded defaults).
+#[derive(Debug, Clone)]
+struct NetworkLimits {
+    max_instructions: u64,
+    max_read_bytes: u64,
+    max_write_bytes: u64,
+}
+
+/// Maps a Soroban network name or alias to its JSON-RPC endpoint URL.
+///
+/// Known networks return their canonical Soroban RPC URL. For any
+/// other name (including custom networks), this function returns
+/// `None`, leaving the caller to fall back gracefully.
+fn soroban_rpc_url(network: &str) -> Option<&'static str> {
+    match network {
+        "testnet" => Some("https://soroban-testnet.stellar.org:443"),
+        "futurenet" => Some("https://soroban-futurenet.stellar.org:443"),
+        "pubnet" => Some("https://soroban-public.stellar.org:443"),
+        "local" => Some("http://localhost:8000"),
+        _ => None,
+    }
+}
+
+/// Fetches the current network resource limits via the Soroban
+/// JSON-RPC `getNetworkLimits` method.
+///
+/// Returns an error if the RPC call fails or the response cannot be
+/// parsed, so callers can fall back to documented hardcoded defaults.
+fn fetch_network_limits(rpc_url: &str) -> anyhow::Result<NetworkLimits> {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getNetworkLimits",
+        "params": {}
+    });
+
+    let mut curl = Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            "@-",
+            rpc_url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to execute curl for getNetworkLimits")?;
+
+    {
+        let stdin = curl.stdin.as_mut().context("Failed to open stdin for getNetworkLimits")?;
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .context("Failed to write getNetworkLimits payload to stdin")?;
+    }
+
+    let output = curl
+        .wait_with_output()
+        .context("Failed to read getNetworkLimits output")?;
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse getNetworkLimits response")?;
+
+    let result = json.get("result").ok_or_else(|| {
+        anyhow::anyhow!("getNetworkLimits response missing 'result' field")
+    })?;
+
+    Ok(NetworkLimits {
+        max_instructions: result
+            .get("maxInstructions")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxInstructions")?,
+        max_read_bytes: result
+            .get("maxReadBytes")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxReadBytes")?,
+        max_write_bytes: result
+            .get("maxWriteBytes")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxWriteBytes")?,
+    })
+}
+
+/// Hardcoded network resource limits as a fallback when the live
+/// RPC call cannot be reached (e.g. `--network local` or offline
+/// environments).
+///
+/// These values correspond to **Soroban Protocol version 21**
+/// (the current protocol on testnet as of late 2024). They MUST be
+/// reviewed and updated when the protocol is upgraded.
+const FALLBACK_NETWORK_LIMITS: NetworkLimits = NetworkLimits {
+    max_instructions: 10_000_000,
+    max_read_bytes: 100_000,
+    max_write_bytes: 100_000,
+};
+
+/// Fetches network resource limits, falling back to documented
+/// protocol-versioned hardcoded defaults when the RPC is unreachable.
+///
+/// The fallback is clearly tied to Soroban Protocol v21 so that
+/// consumers know when it may be stale.
+fn get_network_limits(network: &str) -> NetworkLimits {
+    let rpc_url = soroban_rpc_url(network);
+    match rpc_url {
+        Some(url) => fetch_network_limits(url).unwrap_or_else(|e| {
+            eprintln!(
+                "Warning: could not fetch network limits from {}: {} — \
+                 using documented fallback limits (Soroban Protocol v21)",
+                url, e
+            );
+            FALLBACK_NETWORK_LIMITS.clone()
+        }),
+        None => {
+            eprintln!(
+                "Warning: unknown network `{}` for Soroban RPC — \
+                 using documented fallback limits (Soroban Protocol v21)",
+                network
+            );
+            FALLBACK_NETWORK_LIMITS.clone()
+        }
+    }
+}
+
 /// Per-function configuration read from a `[functions.<name>]` section of
 /// `budget.toml`.
 ///
@@ -242,7 +383,7 @@ impl MeasuredResources {
 ///
 /// In `--check` mode the `limit` and `pass` fields are populated so that
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct CostReport {
     package: String,
     function: String,
@@ -261,6 +402,15 @@ struct CostReport {
     /// function. Emitted in `--check` mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pass: Option<bool>,
+    /// The network resource limit (instructions, read bytes, or write bytes)
+    /// that this metric's value is measured against. `None` for metrics
+    /// that have no corresponding network limit (e.g. `WASM Bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_limit: Option<u64>,
+    /// The measured value as a percentage of the corresponding network
+    /// resource limit (0-100). `None` when no network limit is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    share_pct: Option<f64>,
 }
 
 /// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
@@ -330,6 +480,8 @@ fn emit_check_failure_entries(
             value: None,
             limit,
             pass: Some(false),
+            resource_limit: None,
+            share_pct: None,
         });
     }
 }
@@ -343,6 +495,15 @@ fn emit_check_failure_entries(
 /// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
 ///   `B`, otherwise `inst.`.
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
+    format_value_with_share(value, metric, None, 0.0)
+}
+
+/// Formats a `u64` value with commas and unit suffix (`inst.` or `B`).
+///
+/// If `share_pct` is provided, it is appended as a percentage
+/// (e.g. `"901,816 inst. (12.3%)"`). When `threshold > 0.0` and the
+/// share exceeds it, a `" ⚠"` warning marker is appended.
+fn format_value_with_share(value: u64, metric: &str, share_pct: Option<f64>, threshold: f64) -> String {
     let value_str = value.to_string();
     let mut result = String::new();
     let mut digit_count = 0;
@@ -356,10 +517,20 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     }
     let formatted = result.chars().rev().collect::<String>();
 
-    if metric.contains("Bytes") {
+    let base = if metric.contains("Bytes") {
         format!("{} B", formatted)
     } else {
         format!("{} inst.", formatted)
+    };
+
+    if let Some(pct) = share_pct {
+        let mut s = format!("{} ({:.1}%)", base, pct);
+        if threshold > 0.0 && pct > threshold {
+            s.push_str(" ⚠");
+        }
+        s
+    } else {
+        base
     }
 }
 
@@ -374,7 +545,7 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
 /// Returns an error if the RPC response contains an `"error"` field, if
 /// `transactionData` is missing or not a string, or if the base64 XDR
 /// cannot be decoded.
-fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
+fn extract_metrics(rpc_response: &serde_json::Value) -> Module10Result<(u32, u32, u32)> {
     if let Some(error) = rpc_response.get("error") {
         return Err(Error::Rpc(error.to_string()));
     }
@@ -382,9 +553,9 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
     if let Some(error) = rpc_response.get("result").and_then(|r| r.get("error")) {
         let err_msg = error.as_str().unwrap_or("");
         if !err_msg.is_empty() {
-            anyhow::bail!("{}", err_msg);
+            return Err(Error::Rpc(err_msg.to_string()));
         } else {
-            anyhow::bail!("{}", error);
+            return Err(Error::Rpc(error.to_string()));
         }
     }
 
@@ -402,35 +573,6 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
         tx_data.resources.read_bytes,
         tx_data.resources.write_bytes,
     ))
-}
-
-/// Why simulating a single exported function did not produce metrics.
-/// Carries the same text the caller previously logged inline, so extracting
-/// this out of the main loop doesn't change any user-facing diagnostics.
-///
-/// Each variant corresponds to a different failure point in the
-/// `stellar contract invoke --build-only` → `simulateTransaction` pipeline.
-enum SimulationFailure {
-    /// `stellar contract invoke --build-only` exited non-zero.
-    Invoke(String),
-    /// The RPC `simulateTransaction` response contained an `"error"` field.
-    Rpc(String),
-    /// The RPC response didn't contain a decodable `SorobanTransactionData`.
-    MetricsExtraction(String),
-}
-
-/// Outcome of simulating one exported function.
-///
-/// Distinguishes between a successful simulation (with extracted resource
-/// metrics) and a recoverable failure so the caller can continue iterating
-/// over remaining functions instead of aborting the entire report.
-enum SimulationOutcome {
-    Metrics {
-        instructions: u32,
-        read_bytes: u32,
-        write_bytes: u32,
-    },
-    Failed(SimulationFailure),
 }
 
 /// Builds the `stellar contract invoke --build-only -- <function> [args..]`
@@ -500,7 +642,7 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 ///
 /// Returns an error if `curl` cannot be spawned, the request fails, or
 /// the response body is not valid JSON.
-fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
+fn simulate_transaction_rpc(b64_xdr: &str, rpc_url: &str) -> Module10Result<serde_json::Value> {
     let rpc_payload = build_rpc_payload(b64_xdr);
 
     let mut curl = Command::new("curl")
@@ -512,7 +654,7 @@ fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
             "Content-Type: application/json",
             "-d",
             "@-",
-            "https://soroban-testnet.stellar.org:443",
+            rpc_url,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -553,7 +695,7 @@ fn simulate_function(
     network: &str,
     function: &str,
     func_args: &[String],
-) -> Result<SimulationOutcome> {
+) -> Module10Result<SimulationOutcome> {
     let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
     let invoke_output = Command::new("stellar")
         .args(&invoke_args)
@@ -570,7 +712,9 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
-    let rpc_resp = simulate_transaction_rpc(&b64_xdr)?;
+    let rpc_url = soroban_rpc_url(network)
+        .unwrap_or("https://soroban-testnet.stellar.org:443");
+    let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
         return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
@@ -598,9 +742,8 @@ fn simulate_function(
 /// # Errors
 ///
 /// Returns an error if the file exists but cannot be read or parsed.
-fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
+fn load_budget_toml<P: AsRef<Path>>(path: P) -> Module10Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents).map_err(Error::Toml),
         Ok(contents) => {
             let trimmed = contents.trim();
             if trimmed.is_empty()
@@ -611,9 +754,7 @@ fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
                 return Ok(BudgetToml::default());
             }
 
-            toml::from_str(&contents).map_err(|err| {
-                anyhow::anyhow!("failed to parse {}: {}", path.as_ref().display(), err)
-            })
+            toml::from_str(&contents).map_err(Error::Toml)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BudgetToml::default()),
         Err(err) => Err(Error::Io(err)),
@@ -738,20 +879,16 @@ fn render_check_report_json(
 
 /// Scaffold a commented `budget.toml` template. Errors if the file already
 /// exists and `force` is not set.
-fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
+fn scaffold_init(force: bool, quiet: bool) -> Module10Result<()> {
     let path = Path::new("budget.toml");
     if path.exists() && !force {
         return Err(Error::Message(
             "budget.toml already exists; use --force to overwrite".into(),
         ));
     }
-    std::fs::write(path, BUDGET_TOML_TEMPLATE)?;
-    eprintln!("Wrote {}", path.display());
     std::fs::write(path, BUDGET_TOML_TEMPLATE)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    if !quiet {
-        eprintln!("Wrote {}", path.display());
-    }
+        .map_err(Error::Io)?;
+    eprintln!("Wrote {}", path.display());
     Ok(())
 }
 
@@ -759,7 +896,7 @@ fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
 ///
 /// Each check fails fast with an actionable error message. Checks that are
 /// not applicable (e.g. rustup not installed) are silently skipped.
-fn run_preflight_checks(quiet: bool) -> Result<()> {
+fn run_preflight_checks(quiet: bool) -> Module10Result<()> {
     // ── stellar CLI ─────────────────────────────────────────────────────
     if !quiet {
         eprint!("Checking Stellar CLI... ");
@@ -848,7 +985,7 @@ fn deploy_contract_with_retry(
     source: &str,
     network: &str,
     package_name: &str,
-) -> Result<String> {
+) -> Module10Result<String> {
     let mut last_error = String::new();
 
     for attempt in 0..MAX_DEPLOY_ATTEMPTS {
@@ -900,9 +1037,8 @@ fn main() -> anyhow::Result<()> {
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
-        scaffold_init(args.force)?;
+        scaffold_init(args.force, args.quiet)?;
         return Ok(());
-        return scaffold_init(args.force, args.quiet);
     }
 
     // ── Preflight environment checks ──────────────────────────────────
@@ -922,6 +1058,8 @@ fn main() -> anyhow::Result<()> {
         .source
         .or(toml_config.source.clone())
         .context("missing --source or budget.toml source field")?;
+
+    let network_limits = get_network_limits(&network);
 
     if !args.quiet {
         eprintln!("Discovering workspace members...");
@@ -1077,6 +1215,21 @@ fn main() -> anyhow::Result<()> {
                         if pass == Some(false) {
                             checks_failed = true;
                         }
+                        let (resource_limit, share_pct) = match metric {
+                            "CPU Instructions" => (
+                                Some(network_limits.max_instructions),
+                                Some(value as f64 / network_limits.max_instructions as f64 * 100.0),
+                            ),
+                            "Read Bytes" => (
+                                Some(network_limits.max_read_bytes),
+                                Some(value as f64 / network_limits.max_read_bytes as f64 * 100.0),
+                            ),
+                            "Write Bytes" => (
+                                Some(network_limits.max_write_bytes),
+                                Some(value as f64 / network_limits.max_write_bytes as f64 * 100.0),
+                            ),
+                            _ => (None, None),
+                        };
                         reports.push(CostReport {
                             package: package.name.to_string(),
                             function: function.clone(),
@@ -1084,6 +1237,8 @@ fn main() -> anyhow::Result<()> {
                             value: Some(value),
                             limit: entry_limit,
                             pass,
+                            resource_limit,
+                            share_pct,
                         });
                     }
                 }
@@ -1250,7 +1405,12 @@ fn main() -> anyhow::Result<()> {
             .filter(|report| report.value.is_some())
             .map(|report| {
                 let value = report.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), report.metric);
+                let formatted = format_value_with_share(
+                    u64::from(value),
+                    report.metric,
+                    report.share_pct,
+                    args.share_threshold,
+                );
                 TableCostReport {
                     package: report.package.clone(),
                     function: report.function.clone(),
@@ -1278,7 +1438,12 @@ fn main() -> anyhow::Result<()> {
                 };
                 let status = if pass { "PASS" } else { "FAIL" };
                 let value_str = match report.value {
-                    Some(v) => format_with_commas_and_units(u64::from(v), report.metric),
+                    Some(v) => format_value_with_share(
+                        u64::from(v),
+                        report.metric,
+                        report.share_pct,
+                        args.share_threshold,
+                    ),
                     None => "<simulation failed>".to_string(),
                 };
                 let limit_str = report
@@ -1713,6 +1878,7 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            ..Default::default()
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -1731,6 +1897,7 @@ mod tests {
             check_baseline: None,
             tolerance: None,
             quiet: false,
+            ..Default::default()
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -1749,6 +1916,7 @@ mod tests {
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
             quiet: false,
+            ..Default::default()
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -2005,6 +2173,7 @@ write_limit = 1000
                 value: Some(1_000_000),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2013,6 +2182,7 @@ write_limit = 1000
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let csv = reports_to_csv(&reports, false);
@@ -2034,6 +2204,7 @@ write_limit = 1000
                 value: Some(1_000_000),
                 limit: Some(5_000_000),
                 pass: Some(true),
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2042,6 +2213,7 @@ write_limit = 1000
                 value: Some(4_096),
                 limit: Some(1_000),
                 pass: Some(false),
+                ..Default::default()
             },
         ];
         let csv = reports_to_csv(&reports, true);
@@ -2063,6 +2235,7 @@ write_limit = 1000
                 value: None,
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2071,6 +2244,7 @@ write_limit = 1000
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let csv = reports_to_csv(&reports, false);
@@ -2090,6 +2264,7 @@ write_limit = 1000
             value: None,
             limit: Some(5_000_000),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         let expected = concat!(
