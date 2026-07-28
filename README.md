@@ -2,12 +2,11 @@
   <h1>🛡️ Soroban Budget Assert</h1>
   <p><strong>Empirical cost measurement and assertion tooling for Soroban smart contracts.</strong></p>
   
-  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions)
+  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml)
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   <p>
     <a href="https://tollcraft.gitbook.io/docs/budget-assert"><strong>Documentation</strong></a> ·
-    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a> ·
-    <a href="https://asciinema.org/a/qqC0RysuCDBvfUXC"><strong>Demo</strong></a>
+    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a>
   </p>
 </div>
 
@@ -80,7 +79,13 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 ## 🚀 Quick Start
 
 ### 1. Installation
-Install the CLI tool locally from the repository root:
+
+Install from [crates.io](https://crates.io/crates/cargo-budget-report) (recommended):
+```bash
+cargo install cargo-budget-report
+```
+
+Alternatively, build from source:
 ```bash
 cargo install --path cargo-budget-report
 ```
@@ -130,6 +135,26 @@ complexity = "warn"           # accepted by cargo-budget-report.
 cargo budget-report
 ```
 
+**Use the same release profile for comparable numbers:**
+
+`cargo budget-report` builds contracts with `cargo build --release --target wasm32-unknown-unknown`, so the workspace's `[profile.release]` changes the WASM that gets deployed and simulated. The figures published by this project use the Soroban size-optimized release profile below; copy it into the workspace root before comparing your results to this repo's measurements:
+
+```toml
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+```
+
+These settings are measurement inputs, not cosmetic preferences. `opt-level = "z"` and `lto = true` optimize the generated WASM for size and cross-crate inlining; `codegen-units = 1` gives LLVM a whole-program optimization view; `panic = "abort"` removes unwinding code; `strip = "symbols"` and `debug = 0` remove symbol/debug payload from the artifact; `debug-assertions = false` matches production release behavior; and `overflow-checks = true` keeps arithmetic checks explicit when the release build is measured. Changing any of them can change CPU instructions, memory usage, read/write bytes, or WASM size.
+
+Figures produced under a different release profile are different builds and are not comparable to this project's published cost figures. In the existing fixture, `do_expensive_work(10_000)` measured 901,816 local WASM CPU instructions and 756,678 testnet instructions with the size-optimized profile, but 767,049 local WASM CPU instructions and 832,006 testnet instructions with Cargo's default release profile. A follow-up worth considering is a tool warning when `cargo budget-report` runs in a workspace that lacks these settings.
+
 **Enforce Regression Limits (`--check`):**
 
 Add per-function `cpu_limit`, `read_limit`, and/or `write_limit` to `budget.toml`.
@@ -158,7 +183,35 @@ cargo budget-report --check
 # Same, with machine-readable JSON entries that include `limit` and `pass`
 # fields per configured function+metric:
 cargo budget-report --check --json
+
+# Exit on the first violation instead of collecting all results:
+cargo budget-report --check --fail-fast
 ```
+
+### 📊 Share of Network Limits
+
+Each metric in the report now includes its percentage of the corresponding
+Soroban network resource limit alongside the raw number. For example, a
+function consuming 901,816 CPU instructions on a network with a 10,000,000
+instruction limit is reported as `901,816 inst. (9.0%)`. This lets developers
+immediately understand how close a function is to the on-chain ceiling without
+manual division.
+
+**Where the limits come from:** The limits are fetched live from the Soroban
+RPC endpoint via the `getNetworkLimits` JSON-RPC method. This means they
+reflect the current protocol's actual limits and are not hardcoded. For
+networks where the RPC is unreachable (e.g. `--network local`), the tool
+falls back to documented limits for **Soroban Protocol version 21** and
+prints a warning.
+
+**Visual distinction:** Functions where any metric exceeds a configurable
+share threshold are marked with a `⚠` warning marker in the table. The
+threshold is set with `--share-threshold N` (0 to disable, default 0). Example:
+`cargo budget-report --share-threshold 50` highlights any function using more
+than 50% of any network limit.
+
+The `--json` output carries `resource_limit` and `share_pct` fields on each
+entry so consumers can apply their own thresholds programmatically.
 
 ### 🛡️ Blocking Network-Cost Regressions in CI
 
@@ -188,6 +241,23 @@ CI surfaces the exact metric and limit on the failing run. Re-measure with
 `cargo budget-report` and either optimize the function or consciously raise
 the limit.
 
+### 💬 GitHub Actions Step Summary
+
+The report can be rendered as a GitHub-flavored Markdown table and published
+directly to the workflow run page and PR via `$GITHUB_STEP_SUMMARY`:
+
+```yaml
+# .github/workflows/budget.yml
+- name: Run Budget Report & Publish Step Summary
+  run: |
+    cargo run --bin cargo-budget-report -- budget-report --format md >> "$GITHUB_STEP_SUMMARY"
+```
+
+The `--format md` flag emits a Markdown table grouped by package, one row per
+function with CPU instructions, read bytes, and write bytes as columns. Piped
+to `$GITHUB_STEP_SUMMARY`, the table appears at the bottom of the workflow run
+page and, on pull requests, the "Summary" section of the PR.
+
 **Use Macros in Tests:**
 
 The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
@@ -196,36 +266,175 @@ The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test func
 use budget_macros::{budget_cpu_lt, budget_mem_lt};
 use soroban_sdk::Env;
 
-// CPU instruction assertion using the AMM pool fixture
+// CPU instruction assertion. The limit is read at test runtime from a
+// `KEY=VALUE` file generated by `cargo budget-report --derive-limits`
+// (see the "Deriving Tier A limits from a Tier B report" section below).
 #[test]
-#[budget_cpu_lt(2500000)] // local WASM ~2,307,555
+#[budget_cpu_lt(env_file = "../tier-a-limits.env",
+               env = "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU")]
 fn test_cpu_budget() {
     let env = Env::default();
     let contract_id = env.register(ConstantProductPool, ());
     let client = ConstantProductPoolClient::new(&env, &contract_id);
-
-    client.initialize();
-
-    env.cost_estimate().budget().reset_unlimited();
-    client.deposit(&user, &10_000_i128, &10_000_i128);
-    client.swap(&user, &true, &100_i128, &90_i128);
-    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
-}
-
-// Memory assertion — same shape
-#[test]
-#[budget_mem_lt(2000000)] // local WASM ~1,589,080
-fn test_mem_budget() {
-    let env = Env::default();
-    // register, initialize, reset_unlimited, deposit + swap + withdraw
+    // ... initialize + reset_unlimited + deposit + swap + withdraw ...
 }
 ```
+
+The macros also accept a literal integer, an `env = "VAR"` (process
+environment), and `config = "key"` (a `budget.json` file in the
+working directory); see `budget-macros/src/lib.rs` rustdoc for the full
+form catalogue. The `env_file` form is the recommended form for
+network-derived limits because it is thread-safe and review-friendly.
 
 ---
 
 ## 📊 Measurements
 
-The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/protocol-mechanics) cites this file as the source of truth for measured figures.
+The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/mechanics) cites this file as the source of truth for measured figures.
+
+## 🔁 Deriving Tier A limits from a Tier B report
+
+Tier A tests are fast, local, and CI-blocking — but the values they assert
+are ultimately down to a developer's reading of a Tier B number plus a margin
+applied in their head. Hand-tuning rots as soon as the contract (or the
+protocol) changes, and the reconciliation comments drift out of date within a
+few commits.
+
+This branch (`feat/derive-tier-a-limits-from-tier-b`) wires those two halves
+together with a single command and a checked-in artifact. The Tier A test
+annotations read limits out of a `KEY=VALUE` file at runtime, and a CLI
+sub-command regenerates that file from a network-verified `cargo
+budget-report --json` output, with the margin recorded as data instead of
+buried in human reasoning.
+
+### One-time setup
+
+Add a `[margin]` block to `budget.toml` so the derivation tool can read the
+multipliers without CLI flags:
+
+```toml
+[margin]
+cpu_margin    = 1.50
+memory_margin = 1.25
+read_margin   = 2.00
+write_margin  = 3.00
+```
+
+All four fields are required. The per-metric split is the minimum
+granularity that fights back against [issue #45](#related-issues): a single
+global margin is wrong across operation types because the local-vs-network
+gap has different shapes for host-calls vs. VM loops.
+
+For tests that exercise multi-step workflows (e.g. `test_budget_macro_gated`,
+which invokes `deposit + swap + withdraw` in a single test), declare the
+component set under `[scenarios.<name>]` so the derivation tool emits one
+`KEY=VALUE` per metric for the entire scenario:
+
+```toml
+[scenarios.full_workflow]
+package = "amm-pool-contract"
+functions = ["deposit", "swap", "withdraw"]
+```
+
+The tool will emit `TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU`
+= `ceil((deposit_cpu + swap_cpu + withdraw_cpu) × cpu_margin)`, alongside the
+per-function `KEY=VALUE` rows.
+
+### Re-derivation workflow
+
+```bash
+# 1) Refresh the Tier B report (network-verified ground truth).
+cargo budget-report --json > build/budget-report.json
+
+# 2) Regenerate the Tier A limit artifact from this Tier B input.
+cargo budget-report \
+  --derive-limits tier-a-limits.env \
+  --from build/budget-report.json
+
+# (Or pipe straight from --json into the derive step.)
+cargo budget-report --json | cargo budget-report \
+  --derive-limits tier-a-limits.env --from -
+
+# 3) Run the workspace tests. The Tier A assertions read from
+#    tier-a-limits.env at runtime via the macro's
+#    `env_file = "PATH"` + `env = "VAR"` form.
+cargo test --workspace
+```
+
+The CLI emits two companions next to `<OUT>`:
+
+- `<OUT>.provenance.md` — a Markdown table that pairs every Tier A limit
+  with its `(tier_b_value, margin)` inputs. Reviewers read this in PR diffs
+  to see exactly which Tier B number produced which Tier A limit.
+- A header block in `<OUT>` itself — the same provenance as
+  `#` comments so non-Rust tooling can grep it.
+
+Both files begin with `# tier-a-limits.env`, `# tier-a-limits provenance`
+respectively, and are atomically replaced on each write.
+
+### When to re-derive
+
+Re-run `cargo budget-report --derive-limits` whenever **any** of the
+following changes, in roughly decreasing order of urgency:
+
+1. The contract source (any code path that produces a Tier A regression
+   in CI is a sign that the Tier B report's underlying profile also moved).
+2. The release profile in the workspace's `Cargo.toml` — see
+   [_Use the same release profile for comparable numbers_](#use-the-same-release-profile-for-comparable-numbers)
+   above; an `opt-level` or `lto` flip silently re-prices every limit.
+3. The `soroban-sdk` or `stellar-xdr` version (different host metering,
+   different VM cost model; see `MEASUREMENTS.md` for SDK-versioned
+   calibration).
+4. The margin values in `budget.toml` — usually because a new operation
+   type lands with a different local-vs-network gap.
+
+For routine maintenance, treat the margin block as a stable input: change a
+margin once, in a PR that explains why, and let the resulting Tier B → Tier
+A re-derivation flow into git as the worked audit trail.
+
+### What to do when a limit moves
+
+A diff in `tier-a-limits.env` is **not** automatically correct. Walk through:
+
+1. Look at `tier-a-limits.provenance.md`. Same `tier_b_value`, higher
+   `tier_a_limit`? The Tier A assertion was too loose and you've widened
+   it. Tighten the limit by hand only if you understand why Tier B
+   hasn't grown the same way; otherwise update the margin in
+   `budget.toml` and re-derive.
+2. Same `tier_b_value`, lower `tier_a_limit`? This is the regression case.
+   Inspect the Tier A test — if WASM local has dropped below the Tier B
+   ceiling, you have a headroom win; if WASM local has fallen below the
+   new limit only because the Tier B measurement moved, accept the new
+   Tier A cap and that's the workflow working as designed.
+3. Different `tier_b_value`, same `margin`? Either the contract grew (so
+   re-derive is healthy) or `cargo budget-report --json` returned a
+   different value for a non-deterministic reason (ledger state, build
+   cache); re-run to disambiguate.
+
+If a limit surprises you, do **not** edit `tier-a-limits.env` by hand —
+that erases the provenance and breaks the audit trail. Re-run
+`--derive-limits` against a fresh report and let the new numbers land.
+
+### Related issues
+
+This change pairs with two open issues that sit outside its scope but
+consume the same primitives:
+
+- **Issue #45 — per-operation-type margin.** A single `[margin]` block
+  applies the same multiplier to every function and metric. Per-function
+  overrides would slot into the existing `(package, function)` index that
+  the derivation tool already iterates over; the TODO is in
+  `cargo-budget-report/src/derive.rs::Margin::for_metric`. The path is to
+  carry `Margin::defaults` plus a `margin_overrides: HashMap<Key, f64>`
+  through `DerivationConfig`, no macro changes required.
+- **Issue #10 — baseline / regression mode.** `cargo budget-report
+  --record-baseline <FILE>` already records the Tier B shapes into a
+  TOML baseline, and `--check-baseline <FILE>` enforces per-metric
+  tolerance against it. The two modes complement each other: use
+  `--derive-limits` to establish or refresh a Tier A artifact from a
+  ground-truth Tier B measurement, then use `--record-baseline` to
+  pin the Tier B that the artisan decision was based on, so a future
+  rerun can detect when the Tier B itself moves.
 
 ## 🤝 Community & Maintainers
 
