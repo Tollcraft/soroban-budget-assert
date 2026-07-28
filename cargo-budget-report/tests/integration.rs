@@ -90,6 +90,7 @@ fn discovers_mock_workspace_and_reports_cleanly() {
     );
     assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
     assert!(stdout.contains("mock-contract-b"), "got: {stdout}");
+    assert!(stdout.contains("mock-contract-renamed"), "got: {stdout}");
     assert!(stdout.contains("CPU Instructions"), "got: {stdout}");
     assert!(stdout.contains("1,000,000 inst."), "got: {stdout}");
     assert!(stdout.contains("2,048 B"), "got: {stdout}");
@@ -123,6 +124,10 @@ fn json_output_reports_both_mock_contracts() {
         .collect();
     assert!(packages.contains("mock-contract-a"), "got: {reports:?}");
     assert!(packages.contains("mock-contract-b"), "got: {reports:?}");
+    assert!(
+        packages.contains("mock-contract-renamed"),
+        "got: {reports:?}"
+    );
 
     let cpu_entry = reports
         .iter()
@@ -171,6 +176,9 @@ fn check_flag_passes_when_limits_are_generous() {
     let output = assert.success().get_output().clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("=== BUDGET CHECKS ==="), "got: {stdout}");
+    // Only ping (3 metrics) + pong (3 metrics) are configured in budget.toml.
+    // The new greet function has no config, so it adds 0 checks.
+    // WASM Bytes are not checked because limit_for_metric returns None.
     assert!(
         stdout.contains("Summary: 6 check(s) passed, 0 failed"),
         "got: {stdout}"

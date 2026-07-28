@@ -382,6 +382,78 @@ fn test_budget_macro_json_config_invalid_json() {
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
 }
 
+// ---------------------------------------------------------------------------
+// Macro hygiene regression test
+//
+// Verify that #[budget_cpu_lt] and #[budget_mem_lt] do not leak their
+// injected temporaries (budget, cpu_cost, mem_cost, limit_u64) into the
+// user's namespace by declaring identically-named locals in the test body.
+// These tests must compile and assert correctly.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[budget_cpu_lt(5000000)]
+fn test_macro_hygiene_cpu_shadows_budget_and_limit() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Deliberately shadow the macro's injected identifiers.
+    let budget = "this_is_not_a_soroban_budget";
+    let cpu_cost = "also_not_a_cost";
+    let limit_u64 = 9999;
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+
+    // Verify our shadowing locals are intact after the macro's injected
+    // assertions run.
+    assert_eq!(budget, "this_is_not_a_soroban_budget");
+    assert_eq!(cpu_cost, "also_not_a_cost");
+    assert_eq!(limit_u64, 9999);
+}
+
+#[test]
+#[budget_mem_lt(2000000)]
+fn test_macro_hygiene_mem_shadows_budget_and_limit() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Deliberately shadow the macro's injected identifiers.
+    let budget = "shadowed_budget";
+    let mem_cost = "shadowed_mem_cost";
+    let limit_u64 = 42;
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+
+    assert_eq!(budget, "shadowed_budget");
+    assert_eq!(mem_cost, "shadowed_mem_cost");
+    assert_eq!(limit_u64, 42);
+}
+
+#[test]
+#[budget_write_bytes_lt(5_000_000)]
+fn test_macro_hygiene_write_bytes_shadows_budget_and_limit() {
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+
+    // Deliberately shadow the macro's injected identifiers.
+    let budget = "i_am_a_string_not_a_budget";
+    let write_bytes_cost = "also_string_not_cost";
+    let limit_u64 = 777;
+
+    client.do_write_heavy_work(&50);
+
+    assert_eq!(budget, "i_am_a_string_not_a_budget");
+    assert_eq!(write_bytes_cost, "also_string_not_cost");
+    assert_eq!(limit_u64, 777);
+}
+
 /// Fixture: contract invocation stays within the read bytes budget.
 ///
 /// Runs a deposit + swap + withdraw cycle against the WASM contract and
@@ -439,4 +511,44 @@ fn test_read_bytes_budget_exceeds_limit() {
         "Read bytes {read_bytes} exceeded the expected limit of {limit} \
          - local estimate, real network cost may differ significantly in either direction"
     );
+}
+
+/// Measures the local WASM read-bytes cost of `do_read_heavy_work` for the
+/// storage-read gap measurement table in `MEASUREMENTS.md`.
+///
+/// Writes 100 keys (256 bytes each) to instance storage, then reads them
+/// all back.  The read-bytes figure is the isolated local estimate for the
+/// storage-read gap analysis; the CPU and memory figures are captured
+/// alongside so the entry has parity with the existing calibration table.
+///
+/// # Running
+///
+/// ```bash
+/// cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract
+/// cargo test -p amm-pool-contract test_storage_read_wasm_local -- --nocapture
+/// ```
+#[test]
+fn test_storage_read_wasm_local() {
+    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+
+    let env = Env::default();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+
+    // 100 keys × 256 bytes = 25 600 bytes of reads, plus per-key overhead.
+    client.do_read_heavy_work(&100);
+
+    let budget = env.cost_estimate().budget();
+    let read_bytes = env.cost_estimate().resources().read_bytes;
+    let cpu = budget.cpu_instruction_cost();
+    let mem = budget.memory_bytes_cost();
+
+    println!("=== STORAGE_READ_WASM_LOCAL ===");
+    println!("READ_BYTES={}", read_bytes);
+    println!("CPU_INSTRUCTIONS={}", cpu);
+    println!("MEMORY_BYTES={}", mem);
 }

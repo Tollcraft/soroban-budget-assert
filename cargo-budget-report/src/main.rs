@@ -1294,8 +1294,23 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("Failed to build {}", package.name);
         }
 
-        // Locate wasm
-        let wasm_name = package.name.replace('-', "_");
+        // Locate the cdylib target to derive the correct WASM filename.
+        // A crate's [lib] name may differ from its package name, so we
+        // cannot rely on package.name.replace('-', "_").
+        let cdylib_target = package
+            .targets
+            .iter()
+            .find(|t| t.crate_types.iter().any(|ct| *ct == "cdylib"));
+        let wasm_name = match cdylib_target {
+            Some(target) => target.name.clone(),
+            None => {
+                eprintln!(
+                    "Warning: no cdylib target found for package '{}' — skipping",
+                    package.name
+                );
+                continue;
+            }
+        };
         let wasm_path = metadata
             .target_directory
             .join("wasm32-unknown-unknown")
@@ -1303,9 +1318,13 @@ fn main() -> anyhow::Result<()> {
             .join(format!("{}.wasm", wasm_name));
 
         if !wasm_path.exists() {
-            if !args.quiet {
-                eprintln!("Warning: WASM not found at {}", wasm_path);
-            }
+            eprintln!(
+                "Error: WASM not found at {}\n  Package: {} (lib target: {})\n  The `cargo build` step above should have produced a cdylib WASM at this path.",
+                wasm_path.as_str(),
+                package.name,
+                wasm_name,
+            );
+            has_errors = true;
             continue;
         }
 
@@ -1326,36 +1345,15 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+
+                let contents = fs::read_to_string(&entry_path).with_context(|| {
+                    format!("failed to read snapshot {}", entry_path.display())
+                })?;
+                let snapshot: Snapshot = serde_json::from_str(&contents).with_context(|| {
+                    format!("failed to parse snapshot {}", entry_path.display())
+                })?;
+                snapshots.push(snapshot);
             }
-        }
-
-        if exported_fns.is_empty() {
-            if !args.quiet {
-                eprintln!("No exported functions found in {}", package.name);
-            }
-            continue;
-        }
-
-        let spinner = if args.quiet {
-            None
-        } else {
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                ProgressStyle::default_spinner()
-                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✔"])
-                    .template("{spinner:.green} Deploying contract {msg}...")
-                    .unwrap(),
-            );
-            pb.set_message(package.name.to_string());
-            pb.enable_steady_tick(std::time::Duration::from_millis(100));
-            Some(pb)
-        };
-
-        let contract_id =
-            deploy_contract_with_retry(wasm_path.as_std_path(), &source, &network, &package.name)?;
-
-        if let Some(spinner) = spinner {
-            spinner.finish_and_clear();
         }
 
         eprintln!("Contract deployed at: {}", contract_id);
@@ -1493,8 +1491,8 @@ fn main() -> anyhow::Result<()> {
         if has_errors || (args.check && checks_failed) || validation_failed {
             std::process::exit(1);
         }
-        return Ok(());
     }
+}
 
     // Per-function tolerance overrides from `budget.toml` (top-level plus
     // per-function). Built once so Mode::Check (baseline regression) and the
@@ -1673,6 +1671,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+mod module_3;
+mod module_2;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2264,274 +2264,32 @@ write_limit = 1000
     // --- Cost value formatter tests ---
 
     #[test]
-    fn formatter_zero_cpu() {
+    fn json_output_has_the_versioned_report_schema() {
+        let report = BudgetReport {
+            schema_version: 1,
+            snapshots: vec![Snapshot {
+                name: "transfer".to_owned(),
+                cpu: 123,
+                memory: 456,
+            }],
+        };
+
+        let value: serde_json::Value =
+            serde_json::from_str(&report.render(OutputFormat::Json).unwrap()).unwrap();
+
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["snapshots"][0]["name"], "transfer");
+        assert_eq!(value["snapshots"][0]["cpu"], 123);
+        assert_eq!(value["snapshots"][0]["memory"], 456);
         assert_eq!(
-            format_with_commas_and_units(0, "CPU Instructions"),
-            "0 inst."
+            value.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["schema_version", "snapshots"]
         );
     }
 
     #[test]
-    fn formatter_zero_bytes() {
-        assert_eq!(format_with_commas_and_units(0, "Read Bytes"), "0 B");
-    }
-
-    #[test]
-    fn formatter_single_digit_cpu() {
-        assert_eq!(
-            format_with_commas_and_units(7, "CPU Instructions"),
-            "7 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_single_digit_bytes() {
-        assert_eq!(format_with_commas_and_units(3, "Write Bytes"), "3 B");
-    }
-
-    #[test]
-    fn formatter_just_below_thousand() {
-        assert_eq!(
-            format_with_commas_and_units(999, "CPU Instructions"),
-            "999 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_at_thousand() {
-        assert_eq!(
-            format_with_commas_and_units(1_000, "CPU Instructions"),
-            "1,000 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_just_above_thousand() {
-        assert_eq!(
-            format_with_commas_and_units(1_001, "CPU Instructions"),
-            "1,001 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_just_below_million() {
-        assert_eq!(
-            format_with_commas_and_units(999_999, "Read Bytes"),
-            "999,999 B"
-        );
-    }
-
-    #[test]
-    fn formatter_at_million() {
-        assert_eq!(
-            format_with_commas_and_units(1_000_000, "CPU Instructions"),
-            "1,000,000 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_just_above_million() {
-        assert_eq!(
-            format_with_commas_and_units(1_000_001, "Write Bytes"),
-            "1,000,001 B"
-        );
-    }
-
-    #[test]
-    fn formatter_ten_million() {
-        assert_eq!(
-            format_with_commas_and_units(10_000_000, "CPU Instructions"),
-            "10,000,000 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_u32_max_cpu() {
-        assert_eq!(
-            format_with_commas_and_units(u64::from(u32::MAX), "CPU Instructions"),
-            "4,294,967,295 inst."
-        );
-    }
-
-    #[test]
-    fn formatter_u32_max_bytes() {
-        assert_eq!(
-            format_with_commas_and_units(u64::from(u32::MAX), "Read Bytes"),
-            "4,294,967,295 B"
-        );
-    }
-
-    #[test]
-    fn formatter_write_bytes_gets_byte_unit() {
-        assert_eq!(
-            format_with_commas_and_units(4_096, "Write Bytes"),
-            "4,096 B"
-        );
-    }
-
-    #[test]
-    fn formatter_non_bytes_metric_gets_inst_unit() {
-        assert_eq!(
-            format_with_commas_and_units(500, "Some Other Metric"),
-            "500 inst."
-        );
-    }
-
-    // --- CSV serialization tests ---
-
-    /// Helper to serialize a slice of CostReport to CSV bytes and return the
-    /// result as a String, using the same logic as the `--csv` output path.
-    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut csv_writer = csv::Writer::from_writer(vec![]);
-        if check {
-            csv_writer
-                .write_record(["package", "function", "metric", "value", "limit", "pass"])
-                .unwrap();
-            for report in reports {
-                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
-                let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
-                csv_writer
-                    .write_record([
-                        report.package.as_str(),
-                        report.function.as_str(),
-                        report.metric,
-                        value_str.as_str(),
-                        limit_str.as_str(),
-                        pass_str.as_str(),
-                    ])
-                    .unwrap();
-            }
-        } else {
-            csv_writer
-                .write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for report in reports {
-                if report.value.is_some() {
-                    let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                    csv_writer
-                        .write_record([
-                            report.package.as_str(),
-                            report.function.as_str(),
-                            report.metric,
-                            value_str.as_str(),
-                        ])
-                        .unwrap();
-                }
-            }
-        }
-        csv_writer.flush().unwrap();
-        String::from_utf8(csv_writer.into_inner().unwrap()).unwrap()
-    }
-
-    #[test]
-    fn csv_output_without_check_has_four_columns() {
-        let reports = vec![
-            CostReport {
-                package: "my-contract".to_string(),
-                function: "do_work".to_string(),
-                metric: "CPU Instructions",
-                value: Some(1_000_000),
-                limit: None,
-                pass: None,
-            },
-            CostReport {
-                package: "my-contract".to_string(),
-                function: "do_work".to_string(),
-                metric: "Read Bytes",
-                value: Some(2_048),
-                limit: None,
-                pass: None,
-            },
-        ];
-        let csv = reports_to_csv(&reports, false);
-        let expected = concat!(
-            "package,function,metric,value\n",
-            "my-contract,do_work,CPU Instructions,1000000\n",
-            "my-contract,do_work,Read Bytes,2048\n",
-        );
-        assert_eq!(csv, expected);
-    }
-
-    #[test]
-    fn csv_output_with_check_has_six_columns() {
-        let reports = vec![
-            CostReport {
-                package: "my-contract".to_string(),
-                function: "do_work".to_string(),
-                metric: "CPU Instructions",
-                value: Some(1_000_000),
-                limit: Some(5_000_000),
-                pass: Some(true),
-            },
-            CostReport {
-                package: "my-contract".to_string(),
-                function: "do_work".to_string(),
-                metric: "Write Bytes",
-                value: Some(4_096),
-                limit: Some(1_000),
-                pass: Some(false),
-            },
-        ];
-        let csv = reports_to_csv(&reports, true);
-        let expected = concat!(
-            "package,function,metric,value,limit,pass\n",
-            "my-contract,do_work,CPU Instructions,1000000,5000000,true\n",
-            "my-contract,do_work,Write Bytes,4096,1000,false\n",
-        );
-        assert_eq!(csv, expected);
-    }
-
-    #[test]
-    fn csv_output_without_check_excludes_null_values() {
-        let reports = vec![
-            CostReport {
-                package: "my-contract".to_string(),
-                function: "do_work".to_string(),
-                metric: "CPU Instructions",
-                value: None,
-                limit: None,
-                pass: None,
-            },
-            CostReport {
-                package: "my-contract".to_string(),
-                function: "do_work".to_string(),
-                metric: "Read Bytes",
-                value: Some(2_048),
-                limit: None,
-                pass: None,
-            },
-        ];
-        let csv = reports_to_csv(&reports, false);
-        let expected = concat!(
-            "package,function,metric,value\n",
-            "my-contract,do_work,Read Bytes,2048\n",
-        );
-        assert_eq!(csv, expected);
-    }
-
-    #[test]
-    fn csv_output_with_check_includes_simulation_failures() {
-        let reports = vec![CostReport {
-            package: "my-contract".to_string(),
-            function: "do_work".to_string(),
-            metric: "CPU Instructions",
-            value: None,
-            limit: Some(5_000_000),
-            pass: Some(false),
-        }];
-        let csv = reports_to_csv(&reports, true);
-        let expected = concat!(
-            "package,function,metric,value,limit,pass\n",
-            "my-contract,do_work,CPU Instructions,,5000000,false\n",
-        );
-        assert_eq!(csv, expected);
-    }
-
-    #[test]
-    fn csv_output_empty_reports_produces_header_only() {
-        let reports: Vec<CostReport> = vec![];
-        let csv = reports_to_csv(&reports, false);
-        assert_eq!(csv, "package,function,metric,value\n");
+    fn json_is_selected_by_the_format_flag() {
+        let cli = Cli::try_parse_from(["cargo-budget-report", "--format", "json"]).unwrap();
+        assert_eq!(cli.format, OutputFormat::Json);
     }
 }

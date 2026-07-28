@@ -1,0 +1,9 @@
+[package]
+name = "mock-contract-renamed"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "custom_lib_name"
+crate-type = ["cdylib"]
