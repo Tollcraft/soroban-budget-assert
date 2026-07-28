@@ -6,6 +6,8 @@ description = "Cargo subcommand that reports Soroban smart-contract resource cos
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
+keywords = ["soroban", "stellar", "testing", "budget", "cargo-subcommand"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

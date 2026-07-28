@@ -251,6 +251,7 @@ mod off_by_one_and_zero_length_tests {
             value: Some(1),
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "failed_fn", &config);
@@ -669,6 +670,7 @@ args = [""]
             value: Some(0),
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",,CPU Instructions,0\n") || csv.contains(",,CPU Instructions,0\r\n"));
@@ -683,6 +685,7 @@ args = [""]
             value: Some(0),
             limit: Some(0),
             pass: Some(true),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("pkg,fn,Read Bytes,0,0,true"));
@@ -697,6 +700,7 @@ args = [""]
             value: Some(1),
             limit: Some(0),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("pkg,fn,Write Bytes,1,0,false"));
@@ -711,6 +715,7 @@ args = [""]
             value: None,
             limit: Some(1),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");

@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
+    use crate::module_32::{isolate_temp_dir, reports_to_csv, restore_cwd};
     use crate::*;
 
     // ── evaluate_check off-by-one tests ─────────────────────────────────
@@ -365,46 +366,6 @@ mod off_by_one_and_zero_length_tests {
 
     // ── CSV output zero-value and edge case tests ──────────────────────
 
-    /// Helper that serializes reports via the same CSV logic used in `main`.
-    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut wtr = csv::Writer::from_writer(vec![]);
-        if check {
-            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
-                .unwrap();
-            for r in reports {
-                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
-                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
-                wtr.write_record([
-                    r.package.as_str(),
-                    r.function.as_str(),
-                    r.metric,
-                    value_str.as_str(),
-                    limit_str.as_str(),
-                    pass_str.as_str(),
-                ])
-                .unwrap();
-            }
-        } else {
-            wtr.write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for r in reports {
-                if r.value.is_some() {
-                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                    wtr.write_record([
-                        r.package.as_str(),
-                        r.function.as_str(),
-                        r.metric,
-                        value_str.as_str(),
-                    ])
-                    .unwrap();
-                }
-            }
-        }
-        wtr.flush().unwrap();
-        String::from_utf8(wtr.into_inner().unwrap()).unwrap()
-    }
-
     #[test]
     fn csv_output_with_zero_value_indicates_zero_resource_usage() {
         let reports = vec![CostReport {
@@ -414,6 +375,7 @@ mod off_by_one_and_zero_length_tests {
             value: Some(0),
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",0\n") || csv.contains(",0\r\n"));
@@ -428,6 +390,7 @@ mod off_by_one_and_zero_length_tests {
             value: Some(0),
             limit: Some(0),
             pass: Some(true),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains(",0,0,true"));
@@ -447,24 +410,10 @@ mod off_by_one_and_zero_length_tests {
 
     // ── scaffold_init edge case tests ──────────────────────────────────
     //
-    // These tests create a temporary working directory and change the
-    // process CWD into it so that `scaffold_init`'s hard-coded
+    // These tests use `isolate_temp_dir` / `restore_cwd` from the shared
+    // `module_32` helpers so that `scaffold_init`'s hard-coded
     // `Path::new("budget.toml")` does not clobber the real project file.
     // A shared lock prevents races with other CWD-mutating tests.
-
-    /// Change into a newly-created temp directory and return the old CWD
-    /// so the caller can restore it with [`restore_cwd`].
-    fn isolate_temp_dir() -> (tempfile::TempDir, std::path::PathBuf) {
-        let tmp = tempfile::tempdir().expect("failed to create temp dir");
-        let prev = std::env::current_dir().expect("failed to read current working directory");
-        std::env::set_current_dir(tmp.path()).expect("failed to change into temp dir");
-        (tmp, prev)
-    }
-
-    /// Restore the original CWD. The temp dir can then be dropped cleanly.
-    fn restore_cwd(prev: &std::path::Path) {
-        std::env::set_current_dir(prev).expect("failed to restore original working directory");
-    }
 
     #[test]
     fn scaffold_init_creates_file_when_not_exists() {

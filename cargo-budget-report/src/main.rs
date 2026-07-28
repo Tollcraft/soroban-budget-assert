@@ -87,7 +87,7 @@ enum CargoCli {
 ///
 /// All fields are optional; missing values fall back to the corresponding
 /// `budget.toml` configuration when available.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 struct BudgetReportArgs {
     /// Scaffold a commented `budget.toml` template and exit.
     #[arg(long)]
@@ -221,9 +221,13 @@ struct BudgetReportArgs {
 ///
 /// Contains optional network and source-account overrides, plus a map of
 /// per-function budget configurations keyed by exported function name.
-#[derive(serde::Deserialize, Default, Debug)]
+#[derive(serde::Deserialize, Debug)]
 struct BudgetToml {
+    /// Network to target. Defaults to `"testnet"` when not specified.
+    #[serde(default = "default_network")]
     network: Option<String>,
+    /// Stellar source account keypair name. Defaults to `"alice"` when not specified.
+    #[serde(default = "default_source")]
     source: Option<String>,
     /// Global default tolerance, used unless overridden per function or by `--tolerance`.
     #[serde(default)]
@@ -336,6 +340,139 @@ impl TransactionData {
     }
 }
 
+/// Network resource limits as reported by the Soroban JSON-RPC
+/// `getNetworkLimits` method.
+///
+/// These values define the per-transaction ceiling that Soroban
+/// enforces on the current protocol. They change with protocol
+/// upgrades, so they are fetched from the network at report time
+/// rather than hardcoded (see the fallback block below for the
+/// documented hardcoded defaults).
+#[derive(Debug, Clone)]
+struct NetworkLimits {
+    max_instructions: u64,
+    max_read_bytes: u64,
+    max_write_bytes: u64,
+}
+
+/// Maps a Soroban network name or alias to its JSON-RPC endpoint URL.
+///
+/// Known networks return their canonical Soroban RPC URL. For any
+/// other name (including custom networks), this function returns
+/// `None`, leaving the caller to fall back gracefully.
+fn soroban_rpc_url(network: &str) -> Option<&'static str> {
+    match network {
+        "testnet" => Some("https://soroban-testnet.stellar.org:443"),
+        "futurenet" => Some("https://soroban-futurenet.stellar.org:443"),
+        "pubnet" => Some("https://soroban-public.stellar.org:443"),
+        "local" => Some("http://localhost:8000"),
+        _ => None,
+    }
+}
+
+/// Fetches the current network resource limits via the Soroban
+/// JSON-RPC `getNetworkLimits` method.
+///
+/// Returns an error if the RPC call fails or the response cannot be
+/// parsed, so callers can fall back to documented hardcoded defaults.
+fn fetch_network_limits(rpc_url: &str) -> anyhow::Result<NetworkLimits> {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getNetworkLimits",
+        "params": {}
+    });
+
+    let mut curl = Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            "@-",
+            rpc_url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to execute curl for getNetworkLimits")?;
+
+    {
+        let stdin = curl.stdin.as_mut().context("Failed to open stdin for getNetworkLimits")?;
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .context("Failed to write getNetworkLimits payload to stdin")?;
+    }
+
+    let output = curl
+        .wait_with_output()
+        .context("Failed to read getNetworkLimits output")?;
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse getNetworkLimits response")?;
+
+    let result = json.get("result").ok_or_else(|| {
+        anyhow::anyhow!("getNetworkLimits response missing 'result' field")
+    })?;
+
+    Ok(NetworkLimits {
+        max_instructions: result
+            .get("maxInstructions")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxInstructions")?,
+        max_read_bytes: result
+            .get("maxReadBytes")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxReadBytes")?,
+        max_write_bytes: result
+            .get("maxWriteBytes")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxWriteBytes")?,
+    })
+}
+
+/// Hardcoded network resource limits as a fallback when the live
+/// RPC call cannot be reached (e.g. `--network local` or offline
+/// environments).
+///
+/// These values correspond to **Soroban Protocol version 21**
+/// (the current protocol on testnet as of late 2024). They MUST be
+/// reviewed and updated when the protocol is upgraded.
+const FALLBACK_NETWORK_LIMITS: NetworkLimits = NetworkLimits {
+    max_instructions: 10_000_000,
+    max_read_bytes: 100_000,
+    max_write_bytes: 100_000,
+};
+
+/// Fetches network resource limits, falling back to documented
+/// protocol-versioned hardcoded defaults when the RPC is unreachable.
+///
+/// The fallback is clearly tied to Soroban Protocol v21 so that
+/// consumers know when it may be stale.
+fn get_network_limits(network: &str) -> NetworkLimits {
+    let rpc_url = soroban_rpc_url(network);
+    match rpc_url {
+        Some(url) => fetch_network_limits(url).unwrap_or_else(|e| {
+            eprintln!(
+                "Warning: could not fetch network limits from {}: {} — \
+                 using documented fallback limits (Soroban Protocol v21)",
+                url, e
+            );
+            FALLBACK_NETWORK_LIMITS.clone()
+        }),
+        None => {
+            eprintln!(
+                "Warning: unknown network `{}` for Soroban RPC — \
+                 using documented fallback limits (Soroban Protocol v21)",
+                network
+            );
+            FALLBACK_NETWORK_LIMITS.clone()
+        }
+    }
+}
+
 /// Per-function configuration read from a `[functions.<name>]` section of
 /// `budget.toml`.
 ///
@@ -383,7 +520,7 @@ impl MeasuredResources {
 ///
 /// In `--check` mode the `limit` and `pass` fields are populated so that
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct CostReport {
     package: String,
     function: String,
@@ -402,6 +539,15 @@ struct CostReport {
     /// function. Emitted in `--check` mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pass: Option<bool>,
+    /// The network resource limit (instructions, read bytes, or write bytes)
+    /// that this metric's value is measured against. `None` for metrics
+    /// that have no corresponding network limit (e.g. `WASM Bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_limit: Option<u64>,
+    /// The measured value as a percentage of the corresponding network
+    /// resource limit (0-100). `None` when no network limit is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    share_pct: Option<f64>,
 }
 
 /// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
@@ -477,6 +623,8 @@ fn emit_check_failure_entries(
             value: None,
             limit,
             pass: Some(false),
+            resource_limit: None,
+            share_pct: None,
         });
     }
 }
@@ -490,6 +638,15 @@ fn emit_check_failure_entries(
 /// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
 ///   `B`, otherwise `inst.`.
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
+    format_value_with_share(value, metric, None, 0.0)
+}
+
+/// Formats a `u64` value with commas and unit suffix (`inst.` or `B`).
+///
+/// If `share_pct` is provided, it is appended as a percentage
+/// (e.g. `"901,816 inst. (12.3%)"`). When `threshold > 0.0` and the
+/// share exceeds it, a `" ⚠"` warning marker is appended.
+fn format_value_with_share(value: u64, metric: &str, share_pct: Option<f64>, threshold: f64) -> String {
     let value_str = value.to_string();
     let mut result = String::new();
     let mut digit_count = 0;
@@ -503,10 +660,20 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     }
     let formatted = result.chars().rev().collect::<String>();
 
-    if metric.contains("Bytes") {
+    let base = if metric.contains("Bytes") {
         format!("{} B", formatted)
     } else {
         format!("{} inst.", formatted)
+    };
+
+    if let Some(pct) = share_pct {
+        let mut s = format!("{} ({:.1}%)", base, pct);
+        if threshold > 0.0 && pct > threshold {
+            s.push_str(" ⚠");
+        }
+        s
+    } else {
+        base
     }
 }
 
@@ -707,7 +874,7 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 ///
 /// Returns an error if `curl` cannot be spawned, the request fails, or
 /// the response body is not valid JSON.
-fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
+fn simulate_transaction_rpc(b64_xdr: &str, rpc_url: &str) -> Module10Result<serde_json::Value> {
     let rpc_payload = build_rpc_payload(b64_xdr);
 
     let mut curl = Command::new("curl")
@@ -719,7 +886,7 @@ fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
             "Content-Type: application/json",
             "-d",
             "@-",
-            "https://soroban-testnet.stellar.org:443",
+            rpc_url,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -760,7 +927,7 @@ fn simulate_function(
     network: &str,
     function: &str,
     func_args: &[String],
-) -> Result<SimulationOutcome> {
+) -> Module10Result<SimulationOutcome> {
     let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
     let invoke_output = Command::new("stellar")
         .args(&invoke_args)
@@ -777,7 +944,9 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
-    let rpc_resp = simulate_transaction_rpc(&b64_xdr)?;
+    let rpc_url = soroban_rpc_url(network)
+        .unwrap_or("https://soroban-testnet.stellar.org:443");
+    let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
         return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
@@ -817,7 +986,7 @@ fn simulate_function(
 /// # Errors
 ///
 /// Returns an error if the file exists but cannot be read or parsed.
-fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
+fn load_budget_toml<P: AsRef<Path>>(path: P) -> Module10Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
             let trimmed = contents.trim();
@@ -954,7 +1123,7 @@ fn render_check_report_json(
 
 /// Scaffold a commented `budget.toml` template. Errors if the file already
 /// exists and `force` is not set.
-fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
+fn scaffold_init(force: bool, quiet: bool) -> Module10Result<()> {
     let path = Path::new("budget.toml");
     if path.exists() && !force {
         return Err(Error::Message(
@@ -973,7 +1142,7 @@ fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
 ///
 /// Each check fails fast with an actionable error message. Checks that are
 /// not applicable (e.g. rustup not installed) are silently skipped.
-fn run_preflight_checks(quiet: bool) -> Result<()> {
+fn run_preflight_checks(quiet: bool) -> Module10Result<()> {
     // ── stellar CLI ─────────────────────────────────────────────────────
     if !quiet {
         eprint!("Checking Stellar CLI... ");
@@ -1062,7 +1231,7 @@ fn deploy_contract_with_retry(
     source: &str,
     network: &str,
     package_name: &str,
-) -> Result<String> {
+) -> Module10Result<String> {
     let mut last_error = String::new();
 
     for attempt in 0..MAX_DEPLOY_ATTEMPTS {
@@ -1351,6 +1520,8 @@ fn main() -> anyhow::Result<()> {
         .or(toml_config.source.clone())
         .context("missing --source or budget.toml source field")?;
 
+    let network_limits = get_network_limits(&network);
+
     if !args.quiet {
         eprintln!("Discovering workspace members...");
     }
@@ -1537,6 +1708,21 @@ fn main() -> anyhow::Result<()> {
                         if pass == Some(false) {
                             checks_failed = true;
                         }
+                        let (resource_limit, share_pct) = match metric {
+                            "CPU Instructions" => (
+                                Some(network_limits.max_instructions),
+                                Some(value as f64 / network_limits.max_instructions as f64 * 100.0),
+                            ),
+                            "Read Bytes" => (
+                                Some(network_limits.max_read_bytes),
+                                Some(value as f64 / network_limits.max_read_bytes as f64 * 100.0),
+                            ),
+                            "Write Bytes" => (
+                                Some(network_limits.max_write_bytes),
+                                Some(value as f64 / network_limits.max_write_bytes as f64 * 100.0),
+                            ),
+                            _ => (None, None),
+                        };
                         reports.push(CostReport {
                             package: package.name.to_string(),
                             function: function.clone(),
@@ -1544,6 +1730,8 @@ fn main() -> anyhow::Result<()> {
                             value: Some(value),
                             limit: entry_limit,
                             pass,
+                            resource_limit,
+                            share_pct,
                         });
                     }
 
@@ -1746,7 +1934,12 @@ fn main() -> anyhow::Result<()> {
             .filter(|report| report.value.is_some())
             .map(|report| {
                 let value = report.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), report.metric);
+                let formatted = format_value_with_share(
+                    u64::from(value),
+                    report.metric,
+                    report.share_pct,
+                    args.share_threshold,
+                );
                 TableCostReport {
                     package: report.package.clone(),
                     function: report.function.clone(),
@@ -1774,7 +1967,12 @@ fn main() -> anyhow::Result<()> {
                 };
                 let status = if pass { "PASS" } else { "FAIL" };
                 let value_str = match report.value {
-                    Some(v) => format_with_commas_and_units(u64::from(v), report.metric),
+                    Some(v) => format_value_with_share(
+                        u64::from(v),
+                        report.metric,
+                        report.share_pct,
+                        args.share_threshold,
+                    ),
                     None => "<simulation failed>".to_string(),
                 };
                 let limit_str = report
@@ -1842,10 +2040,19 @@ impl Mode {
 }
 
 #[cfg(test)]
+mod module_32;
+
+#[cfg(test)]
 mod module_8;
 
 #[cfg(test)]
+mod module_17;
+
+#[cfg(test)]
 mod module_18;
+
+#[cfg(test)]
+mod module_23;
 
 /// Serializes tests that mutate the process working directory.
 #[cfg(test)]
@@ -2517,51 +2724,6 @@ write_limit = 1000
 
     // --- CSV serialization tests ---
 
-    /// Helper to serialize a slice of CostReport to CSV bytes and return the
-    /// result as a String, using the same logic as the `--csv` output path.
-    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut csv_writer = csv::Writer::from_writer(vec![]);
-        if check {
-            csv_writer
-                .write_record(["package", "function", "metric", "value", "limit", "pass"])
-                .unwrap();
-            for report in reports {
-                let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                let limit_str = report.limit.map(|lim| lim.to_string()).unwrap_or_default();
-                let pass_str = report.pass.map(|p| p.to_string()).unwrap_or_default();
-                csv_writer
-                    .write_record([
-                        report.package.as_str(),
-                        report.function.as_str(),
-                        report.metric,
-                        value_str.as_str(),
-                        limit_str.as_str(),
-                        pass_str.as_str(),
-                    ])
-                    .unwrap();
-            }
-        } else {
-            csv_writer
-                .write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for report in reports {
-                if report.value.is_some() {
-                    let value_str = report.value.map(|val| val.to_string()).unwrap_or_default();
-                    csv_writer
-                        .write_record([
-                            report.package.as_str(),
-                            report.function.as_str(),
-                            report.metric,
-                            value_str.as_str(),
-                        ])
-                        .unwrap();
-                }
-            }
-        }
-        csv_writer.flush().unwrap();
-        String::from_utf8(csv_writer.into_inner().unwrap()).unwrap()
-    }
-
     #[test]
     fn csv_output_without_check_has_four_columns() {
         let reports = vec![
@@ -2582,7 +2744,7 @@ write_limit = 1000
                 pass: None,
             },
         ];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
             "package,function,metric,value\n",
             "my-contract,do_work,CPU Instructions,1000000\n",
@@ -2611,7 +2773,7 @@ write_limit = 1000
                 pass: Some(false),
             },
         ];
-        let csv = reports_to_csv(&reports, true);
+        let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
             "package,function,metric,value,limit,pass\n",
             "my-contract,do_work,CPU Instructions,1000000,5000000,true\n",
@@ -2640,7 +2802,7 @@ write_limit = 1000
                 pass: None,
             },
         ];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
             "package,function,metric,value\n",
             "my-contract,do_work,Read Bytes,2048\n",
@@ -2658,7 +2820,7 @@ write_limit = 1000
             limit: Some(5_000_000),
             pass: Some(false),
         }];
-        let csv = reports_to_csv(&reports, true);
+        let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
             "package,function,metric,value,limit,pass\n",
             "my-contract,do_work,CPU Instructions,,5000000,false\n",
@@ -2669,7 +2831,213 @@ write_limit = 1000
     #[test]
     fn csv_output_empty_reports_produces_header_only() {
         let reports: Vec<CostReport> = vec![];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
+    }
+
+    // ── JSON serialization tests ────────────────────────────────────────
+
+    /// Helper to serialize a slice of CostReport to a pretty-printed JSON
+    /// string, matching the `--json` output path.
+    fn reports_to_json(reports: &[CostReport]) -> String {
+        serde_json::to_string_pretty(reports).unwrap()
+    }
+
+    #[test]
+    fn json_output_without_check_has_package_function_metric_value() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        assert_eq!(arr[0]["package"], "my-contract");
+        assert_eq!(arr[0]["function"], "do_work");
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+        assert_eq!(arr[0]["value"], 1_000_000);
+        assert!(arr[0].get("limit").is_none());
+        assert!(arr[0].get("pass").is_none());
+
+        assert_eq!(arr[1]["package"], "my-contract");
+        assert_eq!(arr[1]["function"], "do_work");
+        assert_eq!(arr[1]["metric"], "Read Bytes");
+        assert_eq!(arr[1]["value"], 2_048);
+        assert!(arr[1].get("limit").is_none());
+        assert!(arr[1].get("pass").is_none());
+    }
+
+    #[test]
+    fn json_output_with_check_includes_limit_and_pass() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: Some(5_000_000),
+                pass: Some(true),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: Some(1_000),
+                pass: Some(false),
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        assert_eq!(arr[0]["package"], "my-contract");
+        assert_eq!(arr[0]["function"], "do_work");
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+        assert_eq!(arr[0]["value"], 1_000_000);
+        assert_eq!(arr[0]["limit"], 5_000_000);
+        assert_eq!(arr[0]["pass"], true);
+
+        assert_eq!(arr[1]["package"], "my-contract");
+        assert_eq!(arr[1]["function"], "do_work");
+        assert_eq!(arr[1]["metric"], "Write Bytes");
+        assert_eq!(arr[1]["value"], 4_096);
+        assert_eq!(arr[1]["limit"], 1_000);
+        assert_eq!(arr[1]["pass"], false);
+    }
+
+    #[test]
+    fn json_output_without_check_excludes_null_values() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: None,
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        // The CPU Instructions entry has value: None; with
+        // skip_serializing_if, "value" is absent from the JSON object.
+        assert!(arr[0].get("value").is_none());
+        // But the entry itself is still present in the array.
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+
+        assert_eq!(arr[1]["metric"], "Read Bytes");
+        assert_eq!(arr[1]["value"], 2_048);
+    }
+
+    #[test]
+    fn json_output_with_check_includes_simulation_failures() {
+        let reports = vec![CostReport {
+            package: "my-contract".to_string(),
+            function: "do_work".to_string(),
+            metric: "CPU Instructions",
+            value: None,
+            limit: Some(5_000_000),
+            pass: Some(false),
+        }];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+
+        assert_eq!(arr[0]["package"], "my-contract");
+        assert_eq!(arr[0]["function"], "do_work");
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+        assert!(arr[0].get("value").is_none());
+        assert_eq!(arr[0]["limit"], 5_000_000);
+        assert_eq!(arr[0]["pass"], false);
+    }
+
+    #[test]
+    fn json_output_empty_reports_produces_empty_array() {
+        let reports: Vec<CostReport> = vec![];
+        let json = reports_to_json(&reports);
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn json_output_with_all_metric_types() {
+        let reports = vec![
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "WASM Bytes",
+                value: Some(12_345),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 4);
+
+        let metrics: Vec<&str> = arr.iter().map(|r| r["metric"].as_str().unwrap()).collect();
+        assert_eq!(
+            metrics,
+            vec![
+                "CPU Instructions",
+                "Read Bytes",
+                "Write Bytes",
+                "WASM Bytes"
+            ]
+        );
     }
 }
