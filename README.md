@@ -210,6 +210,23 @@ than 50% of any network limit.
 The `--json` output carries `resource_limit` and `share_pct` fields on each
 entry so consumers can apply their own thresholds programmatically.
 
+### 🧮 Per-Package Subtotals & Workspace Total (`--totals`)
+
+Append `--totals` to the table output to see per-package subtotal rows and one
+workspace-total row per metric:
+
+```bash
+cargo budget-report --totals
+```
+
+For each package, three subtotal rows appear at the end of its block
+(`── SUBTOTAL ──`); three workspace-total rows appear at the very end of the
+table (`<workspace>` / `── WORKSPACE TOTAL ──`). Sums are computed only over
+functions whose simulation succeeded. Metrics are summed individually —
+instructions and bytes are not added to one another. JSON, CSV, `--check`,
+and baseline/derive flows are unchanged by the flag; they continue to consume
+the raw row stream so existing consumers don't need to be updated.
+
 ### 🛡️ Blocking Network-Cost Regressions in CI
 
 ```yaml
