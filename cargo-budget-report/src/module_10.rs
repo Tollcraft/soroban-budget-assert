@@ -118,12 +118,24 @@ impl From<stellar_xdr::curr::Error> for Error {
 // ── Simulation types ───────────────────────────────────────────────────
 
 /// Outcome of simulating one exported function.
+///
+/// On success, `transaction_data_xdr` carries the base64-encoded
+/// `SorobanTransactionData` from the RPC response so that optional validation
+/// (via `--validate`) can re-decode it through the Stellar CLI's own XDR
+/// decoder without a second RPC call.
 pub enum SimulationOutcome {
     /// Successfully extracted resource metrics.
     Metrics {
         instructions: u32,
         read_bytes: u32,
         write_bytes: u32,
+        /// Memory bytes extracted from `result.cost.memBytes` on Protocol 22+.
+        /// `None` when the field is absent (older protocol responses or
+        /// malformed payloads); callers should continue without surfacing
+        /// the metric rather than treating absence as zero cost.
+        memory_bytes: Option<u32>,
+        /// Base64-encoded `SorobanTransactionData` from the RPC response.
+        transaction_data_xdr: String,
     },
     /// Simulation did not produce metrics (recoverable).
     Failed(SimulationFailure),

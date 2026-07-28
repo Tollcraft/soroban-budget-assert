@@ -1,8 +1,8 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitInt, LitStr, Token};
+use quote::{quote, ToTokens};
+use syn::{parse::Parse, parse::ParseStream, Expr, Ident, ItemFn, LitInt, LitStr, Token};
 
 #[derive(Clone)]
 enum BudgetLimit {
@@ -16,7 +16,10 @@ enum BudgetLimit {
     /// runtime, so a single checked-in `tier-a-limits.env` can drive many
     /// tests without any global environment mutation (and therefore no
     /// `unsafe std::env::set_var` call).
-    EnvFile { path: String, var_name: String },
+    EnvFile {
+        path: proc_macro2::TokenStream,
+        var_name: String,
+    },
 }
 
 #[derive(Default)]
@@ -45,7 +48,7 @@ struct BudgetSpec {
 impl Parse for BudgetLimit {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut env_var: Option<String> = None;
-        let mut env_file: Option<String> = None;
+        let mut env_file: Option<proc_macro2::TokenStream> = None;
         let mut config_key: Option<String> = None;
 
         // The leading form may also be a bare integer literal. Detect that
@@ -66,24 +69,62 @@ impl Parse for BudgetLimit {
         }
 
         while !input.is_empty() {
+            // When called from BudgetSpec::parse the input may contain
+            // tokens for other spec keys (`cpu`, `mem`, `env_ident`).
+            // Only consume key=value pairs whose key is a known
+            // BudgetLimit key; stop before anything else.
+            // `fork()`, not `clone()`: `ParseStream` is `&ParseBuffer`, so
+            // cloning the reference aliases the same buffer and the
+            // "lookahead" parse below would consume from the real stream.
+            if input.peek(Token![,]) {
+                let ahead = input.fork();
+                let _ = ahead.parse::<Token![,]>();
+                if !(ahead.peek(Ident)
+                    && matches!(
+                        ahead.fork().parse::<Ident>().unwrap().to_string().as_str(),
+                        "env" | "env_file" | "config"
+                    ))
+                {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+            } else if input.peek(Ident) {
+                let ahead = input.fork();
+                let key: Ident = ahead.parse().unwrap();
+                if !matches!(key.to_string().as_str(), "env" | "env_file" | "config") {
+                    break;
+                }
+            } else {
+                break;
+            }
+
             let ident: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let lit: LitStr = input.parse()?;
-            match ident.to_string().as_str() {
-                "env" => env_var = Some(lit.value()),
-                "env_file" => env_file = Some(lit.value()),
-                "config" => config_key = Some(lit.value()),
-                other => {
-                    return Err(syn::Error::new(
-                        ident.span(),
-                        format!(
-                            "expected `env`, `env_file`, or `config`, got `{other}`"
-                        ),
-                    ));
+            let ident_str = ident.to_string();
+            if ident_str == "env_file" {
+                // Accept either a string literal or an identifier/const path
+                // for env_file, so callers can write `env_file = "path"` or
+                // `env_file = CONST_NAME`.
+                let path: proc_macro2::TokenStream = if input.peek(LitStr) {
+                    let lit: LitStr = input.parse()?;
+                    lit.into_token_stream()
+                } else {
+                    let expr: Expr = input.parse()?;
+                    expr.into_token_stream()
+                };
+                env_file = Some(path);
+            } else {
+                let lit: LitStr = input.parse()?;
+                match ident_str.as_str() {
+                    "env" => env_var = Some(lit.value()),
+                    "config" => config_key = Some(lit.value()),
+                    other => {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            format!("expected `env`, `env_file`, or `config`, got `{other}`"),
+                        ));
+                    }
                 }
-            }
-            if !input.is_empty() {
-                input.parse::<Token![,]>()?;
             }
         }
 
@@ -266,6 +307,25 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         });
     }
 
+    let prelude = quote! {
+        #[allow(unused_variables)]
+        let budget_env_resolve = |var: &str| -> Option<String> {
+            std::env::var(var).ok()
+        };
+    };
+
+            // Wrap injected temporaries in their own scope so they never
+            // collide with user-declared `budget`, `cpu_cost`, `mem_cost`,
+            // or `limit_u64` names in the test function body.
+            {
+                let budget = #env_ident.cost_estimate().budget();
+                #(#asserts)*
+            }
+    // Injected at every path that leaves the test, not just after the last
+    // statement, so an early `return` cannot skip it. It stays inside the body's
+    // scope so each limit still resolves against the body's own bindings — tests
+    // that shadow `budget_env_resolve` rely on that.
+    let assertion = quote! {
     let new_block = quote! {
         {
             #[allow(unused_variables)]
@@ -441,6 +501,53 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     )
 }
 
+/// Asserts that the ledger write bytes used by `env` are less than N.
+///
+/// Write bytes represent the total bytes written to ledger storage during
+/// contract execution. This macro measures the local `memory_bytes_cost` as a
+/// proxy, which correlates with storage serialization overhead even though the
+/// exact on-network write-bytes figure is only available via RPC simulation.
+/// Must be placed on a test function that has a local `env` variable.
+#[proc_macro_attribute]
+pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let limit = match syn::parse::<BudgetLimit>(attr) {
+        Ok(l) => l,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+    let mut input_fn = match syn::parse::<ItemFn>(item) {
+        Ok(f) => f,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+
+    let stmts = &input_fn.block.stmts;
+
+    let limit_expr = generate_limit_expr(&limit, "budget_write_bytes_lt");
+
+    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+
+    let new_block = quote! {
+        {
+            #(#stmts)*
+
+            let budget = #env_ident.cost_estimate().budget();
+            let write_bytes_cost = budget.memory_bytes_cost();
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                write_bytes_cost < limit_u64,
+                "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
+                write_bytes_cost,
+                limit_u64
+            );
+        }
+    };
+
+    *input_fn.block = syn::parse2(new_block).unwrap();
+
+    TokenStream::from(quote! {
+        #input_fn
+    })
+}
+
 /// Asserts that the memory bytes used by `env` are strictly less than a specified limit.
 ///
 /// Must be placed on a test function that contains a local `env` variable (a `soroban_sdk::Env`).
@@ -485,12 +592,14 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// #[test]
 /// #[budget_mem_lt(env = "MAX_MEMORY_BYTES")]
+/// fn test_memory_budget_dynamic() {
 /// fn test_mem_budget_dynamic() {
 ///     let env = Env::default();
 ///     // ... setup contract client and invoke contract function ...
 /// }
 /// ```
 ///
+/// When using `env = "VAR_NAME"`:
 /// ## Limit from a `.env` File (`env_file = "PATH"` + `env = "VAR_NAME"`)
 ///
 /// Same as the `budget_cpu_lt` form: the limit is read at test runtime from

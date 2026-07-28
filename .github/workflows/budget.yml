@@ -49,7 +49,7 @@ jobs:
           attempt=0
           max_attempts=4
           delay=5
-          until cargo run --bin cargo-budget-report -- budget-report --json > current_report.json; do
+          until cargo run --bin cargo-budget-report -- budget-report --json --validate > current_report.json; do
             attempt=$((attempt + 1))
             if [ "$attempt" -ge "$max_attempts" ]; then
               echo "cargo-budget-report failed after $max_attempts attempts. Aborting."
@@ -81,7 +81,7 @@ jobs:
     - name: Download Budget Report
       uses: actions/download-artifact@v4
       with:
-name: budget-report
+        name: budget-report
 
     - name: Record History Dataset
       run: |
