@@ -295,12 +295,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "budget-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "budget-macros"
 version = "0.1.0"
 dependencies = [
+ "budget-core",
  "proc-macro2",
  "quote",
- "serde_json",
  "syn 2.0.118",
  "trybuild",
 ]
@@ -344,6 +352,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "budget-core",
  "cargo_metadata",
  "clap",
  "csv",

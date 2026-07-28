@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
+use budget_core::{CostReport, evaluate_check, emit_check_failure_entries, limit_for_metric, BudgetToml};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -118,18 +118,6 @@ struct BudgetReportArgs {
     quiet: bool,
 }
 
-/// Top-level configuration deserialized from `budget.toml`.
-///
-/// Contains optional network and source-account overrides, plus a map of
-/// per-function budget configurations keyed by exported function name.
-#[derive(serde::Deserialize, Default, Debug)]
-struct BudgetToml {
-    network: Option<String>,
-    source: Option<String>,
-    #[serde(default)]
-    functions: HashMap<String, FunctionConfig>,
-}
-
 /// Raw resource metrics returned by the Soroban `simulateTransaction` RPC.
 ///
 /// Maps directly to the `resources` field of a `SorobanTransactionData` XDR
@@ -163,52 +151,6 @@ impl TransactionData {
     }
 }
 
-/// Per-function configuration read from a `[functions.<name>]` section of
-/// `budget.toml`.
-///
-/// Controls which CLI arguments are forwarded to the contract invocation
-/// and which resource limits are enforced in `--check` mode.
-#[derive(serde::Deserialize, Default, Debug)]
-#[serde(deny_unknown_fields)]
-struct FunctionConfig {
-    #[serde(default)]
-    args: Vec<String>,
-    /// Inclusive upper bound on the measured CPU `Instructions` metric. `None`
-    /// means this metric is reported but not enforced by `--check`.
-    #[serde(default)]
-    cpu_limit: Option<u64>,
-    #[serde(default)]
-    read_limit: Option<u64>,
-    #[serde(default)]
-    write_limit: Option<u64>,
-}
-
-/// A single row in the budget report, representing one metric for one
-/// exported function of one workspace package.
-///
-/// In `--check` mode the `limit` and `pass` fields are populated so that
-/// consumers (table, JSON, CSV) can render per-metric pass/fail status.
-#[derive(Serialize)]
-struct CostReport {
-    package: String,
-    function: String,
-    metric: &'static str,
-    /// The measured value, or `None` if the simulation failed to produce one
-    /// (only emitted in `--check` mode for functions declared in
-    /// `budget.toml`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<u32>,
-    /// Configured upper bound for the metric, if any. Emitted in `--check`
-    /// mode only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u64>,
-    /// `true` if the measured value is within the configured limit, `false`
-    /// if it exceeds the limit **or** the simulation failed for a configured
-    /// function. Emitted in `--check` mode only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pass: Option<bool>,
-}
-
 /// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
 ///
 /// Only rows with a measured value (`value.is_some()`) are included in the
@@ -222,72 +164,8 @@ struct TableCostReport {
     value: String,
 }
 
-/// Returns the configured limit (if any) for the given metric name.
-fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
-    match metric {
-        "CPU Instructions" => func_config.cpu_limit,
-        "Read Bytes" => func_config.read_limit,
-        "Write Bytes" => func_config.write_limit,
-        _ => None,
-    }
-}
-
-/// Given a measured value and an optional configured limit, returns the
-/// `(limit, pass)` pair that should be attached to a `CostReport`.
-///
-/// * No limit configured → `(None, None)`; the metric is reported but not
-///   enforced.
-/// * Limit configured and value is within it → `(Some(limit), Some(true))`.
-/// * Limit configured and value exceeds it → `(Some(limit), Some(false))`;
-///   the caller should mark the check as failed.
-fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
-    match limit {
-        Some(limit_value) => (Some(limit_value), Some(u64::from(value) <= limit_value)),
-        None => (None, None),
-    }
-}
-
-/// Emit one stub `CostReport` per metric (`CPU Instructions`, `Read Bytes`,
-/// `Write Bytes`) so that the `--check` JSON output and check summary make
-/// the failure visible per metric.
-///
-/// * Metrics with a configured `*_limit` get `value: None, limit: Some(n),
-///   pass: Some(false)` — the consumer can read the breached limit.
-/// * Metrics without a configured limit get `value: None, limit: None,
-///   pass: Some(false)` — still a hook for `--check --json` consumers, but
-///   the table filter (`value.is_some()`) keeps it out of the plain-text
-///   report and the summary lines remain unchanged.
-///
-/// The caller has already set the `checks_failed` flag for the function as a
-/// whole, so emitting one entry per metric — even metrics without a limit —
-/// does not change the exit-code semantics.
-fn emit_check_failure_entries(
-    reports: &mut Vec<CostReport>,
-    package_name: &str,
-    function: &str,
-    func_config: &FunctionConfig,
-) {
-    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
-        let limit = limit_for_metric(func_config, metric);
-        reports.push(CostReport {
-            package: package_name.to_string(),
-            function: function.to_string(),
-            metric,
-            value: None,
-            limit,
-            pass: Some(false),
-        });
-    }
-}
-
 /// Formats a `u64` value with commas for readability and appends the
 /// appropriate unit suffix (`inst.` for instructions, `B` for bytes).
-///
-/// # Arguments
-///
-/// * `value` - The raw numeric value to format.
-/// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
-///   `B`, otherwise `inst.`.
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let value_str = value.to_string();
     let mut result = String::new();

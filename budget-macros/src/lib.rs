@@ -1,5 +1,6 @@
 extern crate proc_macro;
 
+use budget_core::{resolve_config_value, ConfigResolution};
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
 use quote::quote;
@@ -20,6 +21,7 @@ enum BudgetLimit {
 struct BudgetSpec {
     cpu: Option<BudgetLimit>,
     mem: Option<BudgetLimit>,
+    pct: Option<u64>,
     env_ident: Option<Ident>,
 }
 
@@ -51,6 +53,43 @@ impl Parse for BudgetLimit {
     }
 }
 
+/// Parses a `BudgetLimit` with an optional `pct = N` modifier.
+///
+/// Accepted forms:
+/// - `950_000` (bare integer, no pct)
+/// - `config = "key"` (no pct)
+/// - `env = "VAR"` (no pct)
+/// - `config = "key", pct = 110` (with percentage modifier)
+/// - `env = "VAR", pct = 110` (with percentage modifier)
+struct BudgetLimitWithPct {
+    limit: BudgetLimit,
+    pct: Option<u64>,
+}
+
+impl Parse for BudgetLimitWithPct {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let limit: BudgetLimit = input.parse()?;
+        let mut pct = None;
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            if input.peek(Ident) {
+                let ident: Ident = input.parse()?;
+                if ident.to_string() == "pct" {
+                    input.parse::<Token![=]>()?;
+                    let lit: LitInt = input.parse()?;
+                    pct = Some(lit.base10_parse()?);
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("expected `pct`, got `{}`", ident),
+                    ));
+                }
+            }
+        }
+        Ok(BudgetLimitWithPct { limit, pct })
+    }
+}
+
 impl Parse for BudgetSpec {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut spec = BudgetSpec::default();
@@ -66,6 +105,9 @@ impl Parse for BudgetSpec {
                 spec.cpu = Some(input.parse()?);
             } else if ident_str == "mem" {
                 spec.mem = Some(input.parse()?);
+            } else if ident_str == "pct" {
+                let lit: LitInt = input.parse()?;
+                spec.pct = Some(lit.base10_parse()?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -90,34 +132,6 @@ impl Parse for BudgetSpec {
 }
 
 /// Outcome of resolving a config value from `budget.json` at compile time.
-enum ConfigResolution {
-    /// Value found and parsed successfully.
-    Value(u64),
-    /// `budget.json` does not exist — caller should fall back to `u64::MAX`
-    /// for backward compatibility.
-    MissingFile,
-    /// File exists but could not be parsed as valid JSON.
-    MalformedJson,
-    /// File exists, is valid JSON, but the requested key was not found.
-    KeyNotFound,
-}
-
-/// Resolve a config value from `budget.json` at compile time using serde_json.
-fn resolve_config_value(key: &str) -> ConfigResolution {
-    let path = std::path::Path::new("budget.json");
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return ConfigResolution::MissingFile,
-    };
-    let parsed: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return ConfigResolution::MalformedJson,
-    };
-    match parsed.get(key).and_then(|v| v.as_u64()) {
-        Some(n) => ConfigResolution::Value(n),
-        None => ConfigResolution::KeyNotFound,
-    }
-}
 
 fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::TokenStream {
     match limit {
@@ -139,7 +153,7 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
             // When `budget.json` exists during compilation, the value is injected
             // directly as a literal — zero runtime overhead (O(1) HashMap lookup
             // done once during macro expansion).
-            match resolve_config_value(key) {
+            match resolve_config_value(&key) {
                 ConfigResolution::Value(n) => quote! { #n },
                 // Fall back to runtime resolution when `budget.json` is not
                 // available at compile time (e.g. tests that create the file
@@ -379,6 +393,8 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         .env_ident
         .unwrap_or_else(|| proc_macro2::Ident::new("env", proc_macro2::Span::call_site()));
 
+    let pct = spec.pct;
+
     let mut asserts = Vec::new();
 
     if let Some(limit) = spec.cpu {
@@ -386,6 +402,10 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         let cost_ident = proc_macro2::Ident::new("cpu_cost", proc_macro2::Span::call_site());
         let cost_expr = quote! { budget.cpu_instruction_cost() };
         let assert_msg = "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction";
+        let limit_expr = match pct {
+            Some(p) => quote! { (#limit_expr) * #p / 100 },
+            None => limit_expr,
+        };
         asserts.push(quote! {
             let #cost_ident = #cost_expr;
             let limit_u64: u64 = #limit_expr;
@@ -403,6 +423,10 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         let cost_ident = proc_macro2::Ident::new("mem_cost", proc_macro2::Span::call_site());
         let cost_expr = quote! { budget.memory_bytes_cost() };
         let assert_msg = "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction";
+        let limit_expr = match pct {
+            Some(p) => quote! { (#limit_expr) * #p / 100 },
+            None => limit_expr,
+        };
         asserts.push(quote! {
             let #cost_ident = #cost_expr;
             let limit_u64: u64 = #limit_expr;
@@ -510,6 +534,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
         BudgetSpec {
             cpu: Some(limit),
             mem: None,
+            pct: None,
             env_ident: None,
         },
         item,
@@ -598,18 +623,73 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(u64::MAX)
         },
-        BudgetLimit::Config(key) => quote! {
-            std::fs::read_to_string(std::path::Path::new("budget.json"))
-                .ok()
-                .map(|content| {
-                    parse_config_value(&content, #key).unwrap_or_else(|| {
-                        panic!(
-                            "budget_write_bytes_lt: key '{}' not found or invalid in budget.json",
-                            #key,
-                        )
-                    })
-                })
-                .unwrap_or(u64::MAX)
+        BudgetLimit::Config(key) => {
+            match resolve_config_value(&key) {
+                ConfigResolution::Value(n) => quote! { #n },
+                // Fall back to runtime resolution when `budget.json` is not
+                // available at compile time (e.g. tests that create the file
+                // dynamically). Uses std-only code for maximum compatibility.
+                _ => quote! {
+                    {
+                        let path = ::std::path::Path::new("budget.json");
+                        match ::std::fs::read_to_string(path) {
+                            Ok(content) => {
+                                let config_map: ::std::collections::HashMap<String, u64> = {
+                                    let mut map = ::std::collections::HashMap::new();
+                                    let bytes = content.as_bytes();
+                                    let mut i = 0;
+                                    while i < bytes.len() {
+                                        match bytes[i] {
+                                            b'{' | b',' | b' ' | b'\n' | b'\t' | b'\r' => {
+                                                i += 1;
+                                            }
+                                            b'}' => break,
+                                            b'"' => {
+                                                i += 1;
+                                                let key_start = i;
+                                                while i < bytes.len() && bytes[i] != b'"' {
+                                                    i += 1;
+                                                }
+                                                let key = ::std::string::String::from_utf8_lossy(
+                                                    &bytes[key_start..i]
+                                                ).into_owned();
+                                                i += 1;
+                                                while i < bytes.len()
+                                                    && (bytes[i] == b':' || bytes[i] == b' '
+                                                        || bytes[i] == b'\n' || bytes[i] == b'\t')
+                                                {
+                                                    i += 1;
+                                                }
+                                                let val_start = i;
+                                                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                                                    i += 1;
+                                                }
+                                                if val_start < i {
+                                                    if let Ok(n) = ::std::string::String::from_utf8_lossy(
+                                                        &bytes[val_start..i]
+                                                    ).parse::<u64>() {
+                                                        map.insert(key, n);
+                                                    }
+                                                }
+                                            }
+                                            _ => { i += 1; }
+                                        }
+                                    }
+                                    map
+                                };
+                                match config_map.get(#key).copied() {
+                                    Some(v) => v,
+                                    None => ::std::panic!(
+                                        "budget_write_bytes_lt: key '{}' not found or invalid in budget.json",
+                                        #key,
+                                    ),
+                                }
+                            }
+                            Err(_) => u64::MAX,
+                        }
+                    }
+                },
+            }
         },
     };
 
@@ -706,6 +786,7 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
         BudgetSpec {
             cpu: None,
             mem: Some(limit),
+            pct: None,
             env_ident: None,
         },
         item,

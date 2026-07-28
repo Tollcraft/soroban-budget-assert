@@ -9,6 +9,7 @@
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
     use crate::*;
+    use budget_core::{emit_check_failure_entries, evaluate_check, limit_for_metric, BudgetToml, CostReport, FunctionConfig};
 
     // ── evaluate_check off-by-one tests ─────────────────────────────────
 
