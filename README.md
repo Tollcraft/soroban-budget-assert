@@ -2,7 +2,7 @@
   <h1>🛡️ Soroban Budget Assert</h1>
   <p><strong>Empirical cost measurement and assertion tooling for Soroban smart contracts.</strong></p>
   
-  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions)
+  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml)
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   <p>
     <a href="https://tollcraft.gitbook.io/docs/budget-assert"><strong>Documentation</strong></a> ·
@@ -79,7 +79,13 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 ## 🚀 Quick Start
 
 ### 1. Installation
-Install the CLI tool locally from the repository root:
+
+Install from [crates.io](https://crates.io/crates/cargo-budget-report) (recommended):
+```bash
+cargo install cargo-budget-report
+```
+
+Alternatively, build from source:
 ```bash
 cargo install --path cargo-budget-report
 ```
@@ -177,7 +183,35 @@ cargo budget-report --check
 # Same, with machine-readable JSON entries that include `limit` and `pass`
 # fields per configured function+metric:
 cargo budget-report --check --json
+
+# Exit on the first violation instead of collecting all results:
+cargo budget-report --check --fail-fast
 ```
+
+### 📊 Share of Network Limits
+
+Each metric in the report now includes its percentage of the corresponding
+Soroban network resource limit alongside the raw number. For example, a
+function consuming 901,816 CPU instructions on a network with a 10,000,000
+instruction limit is reported as `901,816 inst. (9.0%)`. This lets developers
+immediately understand how close a function is to the on-chain ceiling without
+manual division.
+
+**Where the limits come from:** The limits are fetched live from the Soroban
+RPC endpoint via the `getNetworkLimits` JSON-RPC method. This means they
+reflect the current protocol's actual limits and are not hardcoded. For
+networks where the RPC is unreachable (e.g. `--network local`), the tool
+falls back to documented limits for **Soroban Protocol version 21** and
+prints a warning.
+
+**Visual distinction:** Functions where any metric exceeds a configurable
+share threshold are marked with a `⚠` warning marker in the table. The
+threshold is set with `--share-threshold N` (0 to disable, default 0). Example:
+`cargo budget-report --share-threshold 50` highlights any function using more
+than 50% of any network limit.
+
+The `--json` output carries `resource_limit` and `share_pct` fields on each
+entry so consumers can apply their own thresholds programmatically.
 
 ### 🛡️ Blocking Network-Cost Regressions in CI
 

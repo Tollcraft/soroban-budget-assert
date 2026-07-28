@@ -1,12 +1,13 @@
 [package]
 name = "cargo-budget-report"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[[bin]]
-name = "cargo-budget-report"
-path = "src/main.rs"
+version.workspace = true
+edition.workspace = true
+description = "Cargo subcommand that reports Soroban smart-contract resource costs across a workspace."
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["soroban", "stellar", "testing", "budget", "cargo-subcommand"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing"]
 
 [dependencies]
 anyhow = "1"

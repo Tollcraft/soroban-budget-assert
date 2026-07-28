@@ -7,9 +7,9 @@
 //!
 //! The mock workspace's two contracts are bare `no_std` WASM exports with no
 //! dependencies (not real Soroban contracts), so `cargo build` for them is
-//! near-instant. `cargo-budget-report` still shells out to the real
-//! `stellar` CLI and `curl` to deploy/simulate, so both are replaced with
-//! deterministic scripts in `tests/fixtures/fake_bin` (prepended to `PATH`
+//! near-instant. `cargo-budget-report` still shells out to the real `stellar`
+//! CLI and `curl` to deploy/simulate, so both are replaced with deterministic
+//! scripts in `tests/fixtures/fake_bin` (prepended to `PATH`
 //! for the child process). This keeps the suite offline and reproducible:
 //! no live network call, no funded/configured Stellar identity required.
 
@@ -95,6 +95,76 @@ fn discovers_mock_workspace_and_reports_cleanly() {
     assert!(stdout.contains("1,000,000 inst."), "got: {stdout}");
     assert!(stdout.contains("2,048 B"), "got: {stdout}");
     assert!(stdout.contains("4,096 B"), "got: {stdout}");
+}
+
+#[test]
+fn function_filter_reports_only_the_selected_function() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--function",
+            "ping",
+            "--json",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reports: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    let reports = reports.as_array().expect("report should be a JSON array");
+
+    assert!(
+        !reports.is_empty(),
+        "the selected function should be reported"
+    );
+    assert!(
+        reports
+            .iter()
+            .all(|report| report["package"] == "mock-contract-a"),
+        "--function ping should exclude mock-contract-b: {reports:?}"
+    );
+}
+
+#[test]
+fn function_filter_selects_a_function_from_the_other_contract() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--function",
+            "pong",
+            "--json",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reports: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    let reports = reports.as_array().expect("report should be a JSON array");
+
+    assert!(
+        !reports.is_empty(),
+        "the selected function should be reported"
+    );
+    assert!(
+        reports
+            .iter()
+            .all(|report| report["package"] == "mock-contract-b"),
+        "--function pong should exclude mock-contract-a: {reports:?}"
+    );
 }
 
 #[test]
