@@ -46,6 +46,16 @@ write_limit = 1000
 [functions.require_auth_only]
 args = ["--addr", "alice"]
 
+# The `allocate_vec` function is the fixture for the local-vs-network gap
+# measurement of memory-bytes (issue #122). It pushes `n` elements into a
+# host-resident Vec with no auth/storage side-effects so the simulation's
+# reported `result.cost.memBytes` is dominated by the allocation itself.
+# A 5 MB memory ceiling is generous for n = 10_000; tighten once a
+# network baseline is recorded with `cargo budget-report`.
+[functions.allocate_vec]
+args = ["--n", "10000"]
+mem_limit = 5000000
+
 # The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
 # local test-harness measurement and exercise multiple storage keys, authorization,
 # events, and simulated token flows. They require pre-deployed token contracts and

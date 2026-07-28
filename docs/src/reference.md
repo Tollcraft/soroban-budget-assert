@@ -2,7 +2,10 @@
 
 ## Macros: `budget_macros`
 
-Both macros are attribute macros for test functions. They require a local variable named `env` (a `soroban_sdk::Env`) in the function body — the injected check reads `env.cost_estimate().budget()` after the original test statements run.
+The budget macros are attribute macros that inject budget-measurement assertions
+into test functions.  They require a local variable named `env` (a
+`soroban_sdk::Env`) — the injected check reads `env.cost_estimate().budget()`
+after the original test statements run.
 
 The check runs on every path that leaves the test, so all of these body shapes work:
 
@@ -170,6 +173,61 @@ fn test_memory_budget() {
 }
 ```
 
+### `#[budget_scaling(…)]` — growth-model assertion
+
+Asserts that the CPU cost *grows* according to a declared model as input size
+increases.  This is a multi-point assertion: the macro measures the annotated
+function at several caller-provided sizes and validates the cost-growth curve.
+
+```rust
+use budget_macros::budget_scaling;
+use soroban_sdk::Env;
+
+#[budget_scaling(
+    sizes = [10, 100, 1000],
+    model = linear,
+    tolerance = 0.3,
+)]
+fn operation_scales_linearly(env: Env, size: u32) {
+    // body runs once per input size with `env` and `size` in scope
+}
+```
+
+**Attribute fields:**
+
+| Field       | Type              | Description |
+|-------------|-------------------|-------------|
+| `sizes`     | `[u32; N]` (N≥2) | Input sizes to measure. |
+| `model`     | `linear` / `quadratic` | Expected growth model. |
+| `tolerance` | `f64`             | Max allowed relative deviation (e.g. `0.3` = 30%). |
+
+**How it works:**
+
+1. For each `size` in `sizes` a fresh `Env` is created and its budget reset.
+2. The function body executes (it may read `env` and `size`).
+3. `cpu_instruction_cost()` is recorded.
+4. Consecutive (size, cost) pairs are compared: the observed cost ratio is
+   checked against the ratio the model predicts.
+
+**Growth models:**
+
+- **`linear`** — cost ∝ n.  Expected ratio = `size_{i+1} / size_i`.
+- **`quadratic`** — cost ∝ n².  Expected ratio = `(size_{i+1} / size_i)²`.
+
+If the absolute deviation `|observed/expected - 1|` exceeds `tolerance`, the
+test panics with a diagnostic that lists the offending size, expected and
+observed ratios, deviation, and all measurements.
+
+**Limitations:**
+
+- The body must not use `return`, `break`, or `continue` that would exit the
+  measurement loop.
+- A fresh `Env` is created per iteration — setup that must persist across sizes
+  should be extracted outside the macro.
+- Small base costs can mask the growth signal at tiny sizes; choose sizes where
+  the measured work dominates.
+- Only CPU cost is checked.
+
 ### Requirements and caveats
 
 {% hint style="warning" %}
@@ -334,7 +392,7 @@ For a function declared in `budget.toml` whose simulation fails, an entry still 
 
 ## Configuration: `budget.toml`
 
-Read from the directory the command runs in (the workspace root):
+The CLI walks upward from the current directory looking for `budget.toml`. When the file is present at the workspace root, running `cargo budget-report` from any subdirectory (e.g. inside a member crate) still finds it. If no `budget.toml` is found in any ancestor directory the CLI falls back to its defaults (network and source must be supplied via flags).
 
 {% code title="budget.toml" %}
 ```toml
@@ -389,10 +447,8 @@ When `--check --json` is used, configured functions gain `limit` and `pass` (see
 fields out of the `SorobanTransactionData` returned by `simulateTransaction` —
 `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — plus the
 compiled WASM binary size from the build step, and prints
-them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
-total.
-
-### In scope
+them unchanged. On Soroban Protocol 22+ it additionally reads `result.cost.memBytes` from the JSON-RPC `cost` block and surfaces it as a `Memory Bytes` row. Nothing in the output is denominated in stroops, and no figure it prints is a
+total.### In scope
 
 | Reported | Stellar resource it corresponds to |
 |---|---|
@@ -400,9 +456,9 @@ total.
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
 | `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
+| `Memory Bytes` (Protocol 22+) | `result.cost.memBytes` — memory-bytes cost from the Protocol 22 JSON-RPC `cost` block; absent on older protocol responses |
 
-These four quantities are *inputs* to the **non-refundable resource fee**. They are not the
-whole of it.
+These four (or five on Protocol 22+) quantities are *inputs* to the **non-refundable resource fee**. They are not the whole of it.
 
 ### Not in scope
 
