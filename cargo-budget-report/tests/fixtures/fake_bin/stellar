@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Deterministic stand-in for the real `stellar` CLI. `tests/integration.rs`
+# prepends this directory to PATH so `cargo-budget-report` resolves `stellar`
+# to this script instead of the real CLI, keeping the integration test free
+# of network calls and a funded/configured Stellar identity.
+set -euo pipefail
+
+# ---- Retry simulation support -------------------------------------------
+# Set MOCK_STELLAR_FAIL_COUNT=N to make the `deploy` subcommand fail the
+# first N times (useful for testing the friendbot retry mechanism). The
+# actual number of deploy invocations is tracked in a temp file so it
+# survives across separate process invocations.
+FAIL_COUNT="${MOCK_STELLAR_FAIL_COUNT:-0}"
+FAIL_COUNT_FILE="${MOCK_STELLAR_FAIL_COUNT_FILE:-}"
+
+case "${1:-}" in
+  --version)
+    echo "stellar-cli 0.0.0-mock"
+    ;;
+  contract)
+    case "${2:-}" in
+      deploy)
+        if [ "$FAIL_COUNT" -gt 0 ] && [ -n "$FAIL_COUNT_FILE" ]; then
+            if [ ! -f "$FAIL_COUNT_FILE" ]; then
+                echo "0" > "$FAIL_COUNT_FILE"
+            fi
+            call_num=$(cat "$FAIL_COUNT_FILE")
+            if [ "$call_num" -lt "$FAIL_COUNT" ]; then
+                echo "$((call_num + 1))" > "$FAIL_COUNT_FILE"
+                echo "Error: friendbot rate-limited (try again later)" >&2
+                exit 1
+            fi
+        fi
+        echo "CAMOCKCONTRACTIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ;;
+      invoke)
+        # Real output is a base64 XDR transaction envelope. Its content is
+        # opaque to cargo-budget-report (it's forwarded verbatim to the RPC
+        # `simulateTransaction` call), so any placeholder string is fine here
+        # since `curl` is also mocked below.
+        echo "AAAAAgAAAAA="
+        ;;
+      *)
+        echo "mock stellar: unsupported 'contract' subcommand: ${2:-}" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  xdr)
+    # Support `stellar xdr decode --type SorobanTransactionData --output json`
+    # for validation integration tests.
+    if [ "${2:-}" = "decode" ]; then
+        # Drain stdin (the base64 XDR piped in)
+        cat >/dev/null
+        # Output the JSON that the real CLI would produce when decoding the
+        # fixture XDR. The fixture XDR "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA="
+        # decodes to instructions=1000000, read_bytes=2048, write_bytes=4096.
+        cat <<'XDRJSON'
+{
+  "ext": "V0",
+  "resources": {
+    "footprint": {
+      "read_only": [],
+      "read_write": []
+    },
+    "instructions": 1000000,
+    "read_bytes": 2048,
+    "write_bytes": 4096
+  },
+  "resource_fee": 0
+}
+XDRJSON
+    else
+        echo "mock stellar: unsupported 'xdr' subcommand: ${2:-}" >&2
+        exit 1
+    fi
+    ;;
+  *)
+    echo "mock stellar: unsupported command: ${1:-}" >&2
+    exit 1
+    ;;
+esac

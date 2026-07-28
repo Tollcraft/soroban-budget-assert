@@ -1,0 +1,79 @@
+=== inspect versions ===
+--- rust-toolchain.toml ---
+[toolchain]
+channel = "1.85.0"
+targets = ["wasm32v1-none"]
+components = ["rustfmt", "clippy"]
+--- HEAD rust-toolchain ---
+[toolchain]
+channel = "1.85.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]
+--- MERGE_HEAD rust-toolchain ---
+[toolchain]
+channel = "1.85.0"
+targets = ["wasm32v1-none"]
+components = ["rustfmt", "clippy"]
+--- origin/main via MERGE_HEAD Cargo.toml workspace / amm ---
+[package]
+name = "amm-pool-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "27.0.2"
+
+[dev-dependencies]
+soroban-sdk = { version = "27.0.2", features = ["testutils"] }
+budget-macros = { path = "../budget-macros" }
+
+[features]
+sdk20 = []
+--- HEAD amm Cargo.toml ---
+[package]
+name = "amm-pool-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = "22.0.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+budget-macros = { path = "../budget-macros" }
+--- budget-macros Cargo.toml current ---
+[package]
+name = "budget-macros"
+version.workspace = true
+edition.workspace = true
+description = "Proc-macro crate providing budget assertion attributes for Soroban contract tests."
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["soroban", "stellar", "testing", "budget", "proc-macro"]
+categories = ["development-tools::testing", "development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3.0", features = ["full", "extra-traits", "visit-mut"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+
+[dev-dependencies]
+proptest = "1.6"
+trybuild = "1.0"
+--- quality workflow rust ---
+19:        uses: actions-rust-lang/setup-rust-toolchain@v1
+21:          components: rustfmt, clippy
+24:        uses: Swatinem/rust-cache@v2
+INSPECT_OK

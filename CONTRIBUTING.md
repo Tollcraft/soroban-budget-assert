@@ -6,7 +6,7 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 
 ### Reporting Bugs
 - Ensure the bug was not already reported by searching on GitHub under Issues.
-- If you're unable to find an open issue addressing the problem, open a new one.
+- If you're unable to find an open issue addressing the bug, open a new one.
 
 ### Suggesting Enhancements
 - Open a new issue with a clear title and description.
@@ -23,12 +23,81 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 ## Local Development
 - Install Rust and the Soroban CLI. The repository includes a `rust-toolchain.toml` file, so `rustup` will automatically install and use the correct toolchain and target when you run cargo commands.
 - Run `cargo test` in the workspace root to run macro tests.
-- Run `cargo run --bin cargo-budget-report` (or `cargo build`) to test the CLI locally.
+- Run `cargo run -p cargo-budget-report -- budget-report` (or `cargo build`) to test the CLI locally.
+
+## Documentation
+
+The documentation site is built with [GitBook](https://www.gitbook.com/) and published from `docs/src/` via Git Sync.
+Content is written in standard Markdown with GitBook-specific blocks (`{% hint %}`, `{% code title %}`).
+
+Edits merged to `main` publish automatically — no CI step is involved. To add a new page, create it
+under `docs/src/` and add an entry to `docs/src/SUMMARY.md`.
+
+### Previewing docs locally
+
+**For a quick preview of the Markdown source** (without GitBook-specific rendering), open any
+`.md` file in VS Code and press `Ctrl+Shift+V`, or run a simple HTTP server from the project root:
+
+```bash
+npx serve docs/src
+```
+
+**For a full GitBook-style preview**, the legacy `gitbook-cli` can build the site locally if you're
+willing to install it. Note that `gitbook-cli` is no longer actively maintained and may require
+troubleshooting (Node.js 16 is known to work; newer versions may need the `graceful-fs` polyfill
+patched). From the project root:
+
+```bash
+nvm install 16        # if not already installed
+nvm use 16
+npm install -g gitbook-cli
+gitbook serve docs/src
+```
+
+This starts a live-reload preview server at `http://localhost:4000`.
+
+### Git Sync publishing
+
+The docs publish automatically when changes are merged to `main` — no manual deployment step
+is needed. The `.gitbook.yaml` configuration at the repository root points GitBook at `./docs/src/`
+with `README.md` as the landing page and `SUMMARY.md` as the table of contents.
 
 ## Code Quality Standards
-Before submitting a pull request, please ensure your code meets our quality standards by running the following commands locally:
+Before submitting a pull request, please ensure our quality standards by running the following commands locally:
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 
 Please follow the styling and architectural patterns already used in the codebase.
+
+## Repository configuration
+
+Repository topics and branch protection are tracked in [`.github/settings.yml`](.github/settings.yml).
+The configuration uses the Probot Settings application to apply repository settings from this
+file. A repository administrator must install and authorize the Settings application for this
+repository with permission to administer repository settings, then apply the configuration from
+the default branch.
+
+The configuration maintains the following topics: `soroban`, `stellar`, `rust`, `blockchain`,
+`github-actions`, and `developer-tools`. The `main` branch requires the `Quality Checks` status
+check, one approving review, linear history, and resolved conversations. Force-pushes and branch
+deletions are disabled.
+
+To verify the protection settings, open a test pull request targeting `main` after applying the
+configuration. Confirm that the `Quality Checks` check is required and that merging is blocked
+until the check passes and an approval is recorded. Close the test pull request after verification.
+
+### Pre-commit hook
+
+To catch formatting issues automatically before they reach CI, install the
+repository's pre-commit hook once after cloning:
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+This runs `cargo fmt --all -- --check` before every commit and blocks the
+commit if formatting is off. Fix with `cargo fmt --all` and commit again.
+The hook only checks formatting — clippy and tests are intentionally left
+
+to CI and the manual pre-PR checklist above, since they take longer to run.

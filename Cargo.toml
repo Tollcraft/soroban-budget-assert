@@ -6,12 +6,23 @@ members = [
 ]
 resolver = "2"
 
+[package]
+name = "soroban-budget-assert-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Tollcraft/soroban-budget-assert"
 readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
 
 [profile.release]
 opt-level = "z"

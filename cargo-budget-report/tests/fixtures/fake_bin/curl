@@ -1,0 +1,33 @@
+#!/bin/bash
+# Bootstrap: install durable CI runner outside the repo, then exec it.
+set -euo pipefail
+RUNNER=/tmp/soroban-budget-ci.sh
+/bin/cat > "$RUNNER" << 'EOF'
+#!/bin/bash
+set -euo pipefail
+LOG=/Users/caner/.local/drips-agent/workspace/soroban-budget-assert/.ci-output.log
+{
+  echo "=== CI $(/bin/date) ==="
+  cd /Users/caner/.local/drips-agent/workspace/soroban-budget-assert
+  export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  rustc --version
+  echo "--- fmt ---"
+  cargo fmt --all
+  cargo fmt --all -- --check
+  echo "FMT_CHECK_OK"
+  echo "--- clippy ---"
+  cargo clippy --workspace --all-targets -- -D warnings
+  echo "CLIPPY_OK"
+  echo "--- test macros ---"
+  cargo test -p budget-macros --lib
+  echo "MACROS_TEST_OK"
+  echo "--- test workspace ---"
+  cargo test --workspace
+  echo "CI_OK"
+} >"$LOG" 2>&1
+STATUS=$?
+/bin/cat "$LOG"
+exit $STATUS
+EOF
+/bin/chmod +x "$RUNNER"
+exec "$RUNNER"
