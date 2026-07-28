@@ -93,6 +93,8 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(1),
             read_limit: Some(1),
             write_limit: Some(1),
+            mem_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, ""), None);
     }
@@ -104,6 +106,8 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(9),
             read_limit: Some(8),
             write_limit: Some(7),
+            mem_limit: None,
+            tolerance: None,
         };
         // Substring / prefix matches must not succeed — matching is exact.
         assert_eq!(limit_for_metric(&config, "CPU"), None);
@@ -119,6 +123,8 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(0),
             read_limit: Some(0),
             write_limit: Some(0),
+            mem_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), Some(0));
         assert_eq!(limit_for_metric(&config, "Read Bytes"), Some(0));
@@ -132,6 +138,8 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(u64::MAX),
             read_limit: Some(u64::MAX),
             write_limit: Some(u64::MAX),
+            mem_limit: None,
+            tolerance: None,
         };
         assert_eq!(
             limit_for_metric(&config, "CPU Instructions"),
@@ -221,9 +229,12 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(0),
             read_limit: Some(0),
             write_limit: Some(0),
+            mem_limit: None,
+            tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "", "", &config);
-        assert_eq!(reports.len(), 3);
+        // 4 failure stubs (CPU, Memory, Read, Write).
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].package, "");
         assert_eq!(reports[0].function, "");
         assert_eq!(reports[0].limit, Some(0));
@@ -240,15 +251,17 @@ mod off_by_one_and_zero_length_tests {
             value: Some(1),
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "failed_fn", &config);
-        // 1 existing + 3 failure stubs
-        assert_eq!(reports.len(), 4);
+        // 1 existing + 4 failure stubs (CPU, Memory, Read, Write).
+        assert_eq!(reports.len(), 5);
         assert_eq!(reports[0].package, "existing");
         assert_eq!(reports[1].function, "failed_fn");
         assert_eq!(reports[2].function, "failed_fn");
         assert_eq!(reports[3].function, "failed_fn");
+        assert_eq!(reports[4].function, "failed_fn");
     }
 
     #[test]
@@ -259,14 +272,19 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(1),
             read_limit: Some(2),
             write_limit: Some(3),
+            mem_limit: None,
+            tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
+        // Iteration order: [CPU, Memory, Read, Write].
         assert_eq!(reports[0].metric, "CPU Instructions");
         assert_eq!(reports[0].limit, Some(1));
-        assert_eq!(reports[1].metric, "Read Bytes");
-        assert_eq!(reports[1].limit, Some(2));
-        assert_eq!(reports[2].metric, "Write Bytes");
-        assert_eq!(reports[2].limit, Some(3));
+        assert_eq!(reports[1].metric, "Memory Bytes");
+        assert_eq!(reports[1].limit, None);
+        assert_eq!(reports[2].metric, "Read Bytes");
+        assert_eq!(reports[2].limit, Some(2));
+        assert_eq!(reports[3].metric, "Write Bytes");
+        assert_eq!(reports[3].limit, Some(3));
     }
 
     // ── scaffold_init edge case tests ──────────────────────────────────
@@ -652,6 +670,7 @@ args = [""]
             value: Some(0),
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",,CPU Instructions,0\n") || csv.contains(",,CPU Instructions,0\r\n"));
@@ -666,6 +685,7 @@ args = [""]
             value: Some(0),
             limit: Some(0),
             pass: Some(true),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("pkg,fn,Read Bytes,0,0,true"));
@@ -680,6 +700,7 @@ args = [""]
             value: Some(1),
             limit: Some(0),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("pkg,fn,Write Bytes,1,0,false"));
@@ -694,6 +715,7 @@ args = [""]
             value: None,
             limit: Some(1),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");

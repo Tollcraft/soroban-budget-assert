@@ -77,6 +77,7 @@ source = "alice"
 #   [functions.<function_name>]
 #   args = ["--arg1", "value1"]   # CLI arguments forwarded to the function
 #   cpu_limit  = 5000000          # optional, inclusive CPU instruction limit
+#   mem_limit  = 5000000          # optional, inclusive memory-bytes limit
 #   read_limit = 5000             # optional, inclusive read-bytes limit
 #   write_limit = 1000            # optional, inclusive write-bytes limit
 #
@@ -112,8 +113,13 @@ struct BudgetReportArgs {
     #[arg(long)]
     source: Option<String>,
 
-    #[arg(long, default_value_t = false)]
+    /// Deprecated alias for `--format json` (use `--format json` instead).
+    #[arg(long, hide = true)]
     json: bool,
+
+    /// Output format: table, json, or md (markdown).
+    #[arg(long, default_value = "table")]
+    format: OutputFormat,
 
     /// Enforce per-function limits declared in `budget.toml`.
     ///
@@ -125,6 +131,11 @@ struct BudgetReportArgs {
     /// declared in `budget.toml` are reported only.
     #[arg(long, default_value_t = false)]
     check: bool,
+
+    /// Exit immediately on the first budget violation instead of collecting
+    /// all results before reporting. Only meaningful with `--check`.
+    #[arg(long, default_value_t = false)]
+    fail_fast: bool,
 
     /// Emit the report as CSV instead of a table or JSON.
     #[arg(long, default_value_t = false)]
@@ -138,7 +149,11 @@ struct BudgetReportArgs {
 
 #[derive(serde::Deserialize, Default, Debug)]
 struct BudgetToml {
+    /// Network to target. Defaults to `"testnet"` when not specified.
+    #[serde(default = "default_network")]
     network: Option<String>,
+    /// Stellar source account keypair name. Defaults to `"alice"` when not specified.
+    #[serde(default = "default_source")]
     source: Option<String>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
@@ -177,6 +192,8 @@ struct FunctionConfig {
     #[serde(default)]
     cpu_limit: Option<u64>,
     #[serde(default)]
+    mem_limit: Option<u64>,
+    #[serde(default)]
     read_limit: Option<u64>,
     #[serde(default)]
     write_limit: Option<u64>,
@@ -201,6 +218,15 @@ struct CostReport {
     /// function. Emitted in `--check` mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pass: Option<bool>,
+    /// The network resource limit (instructions, read bytes, or write bytes)
+    /// that this metric's value is measured against. `None` for metrics
+    /// that have no corresponding network limit (e.g. `WASM Bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_limit: Option<u64>,
+    /// The measured value as a percentage of the corresponding network
+    /// resource limit (0-100). `None` when no network limit is available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    share_pct: Option<f64>,
 }
 
 #[derive(Tabled)]
@@ -211,10 +237,69 @@ struct TableCostReport {
     value: String,
 }
 
+struct FunctionMetrics {
+    cpu: u32,
+    read: u32,
+    write: u32,
+    wasm: u32,
+}
+
+fn build_markdown_report(reports: &[CostReport]) -> String {
+    use std::collections::BTreeMap;
+
+    let mut packages: BTreeMap<String, BTreeMap<String, FunctionMetrics>> = BTreeMap::new();
+
+    for r in reports {
+        let Some(value) = r.value else { continue };
+        let functions = packages.entry(r.package.clone()).or_default();
+        let metrics = functions
+            .entry(r.function.clone())
+            .or_insert(FunctionMetrics {
+                cpu: 0,
+                read: 0,
+                write: 0,
+                wasm: 0,
+            });
+        match r.metric {
+            "CPU Instructions" => metrics.cpu = value,
+            "Read Bytes" => metrics.read = value,
+            "Write Bytes" => metrics.write = value,
+            "WASM Bytes" => metrics.wasm = value,
+            _ => {}
+        }
+    }
+
+    let mut output = String::new();
+    output.push_str("# Workspace Budget Report\n\n");
+
+    for (pkg_name, functions) in &packages {
+        output.push_str(&format!("## {}\n\n", pkg_name));
+        output.push_str("| Function | CPU Instructions | Read Bytes | Write Bytes |\n");
+        output.push_str("|----------|-----------------|------------|-------------|\n");
+
+        for (func_name, m) in functions {
+            let cpu = format_with_commas_and_units(u64::from(m.cpu), "CPU Instructions");
+            let read = format_with_commas_and_units(u64::from(m.read), "Read Bytes");
+            let write = format_with_commas_and_units(u64::from(m.write), "Write Bytes");
+            output.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                func_name, cpu, read, write
+            ));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("---\n");
+    output.push_str("_The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee._\n");
+
+    output
+}
+
 /// Returns the configured limit (if any) for the given metric name.
 fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
     match metric {
         "CPU Instructions" => func_config.cpu_limit,
+        "Memory Bytes" => func_config.mem_limit,
         "Read Bytes" => func_config.read_limit,
         "Write Bytes" => func_config.write_limit,
         _ => None,
@@ -256,7 +341,12 @@ fn emit_check_failure_entries(
     function: &str,
     func_config: &FunctionConfig,
 ) {
-    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
+    for metric in [
+        "CPU Instructions",
+        "Memory Bytes",
+        "Read Bytes",
+        "Write Bytes",
+    ] {
         let limit = limit_for_metric(func_config, metric);
         reports.push(CostReport {
             package: package_name.to_string(),
@@ -265,6 +355,8 @@ fn emit_check_failure_entries(
             value: None,
             limit,
             pass: Some(false),
+            resource_limit: None,
+            share_pct: None,
         });
     }
 }
@@ -283,10 +375,20 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     }
     let formatted = result.chars().rev().collect::<String>();
 
-    if metric.contains("Bytes") {
+    let base = if metric.contains("Bytes") {
         format!("{} B", formatted)
     } else {
         format!("{} inst.", formatted)
+    };
+
+    if let Some(pct) = share_pct {
+        let mut s = format!("{} ({:.1}%)", base, pct);
+        if threshold > 0.0 && pct > threshold {
+            s.push_str(" ⚠");
+        }
+        s
+    } else {
+        base
     }
 }
 
@@ -389,7 +491,7 @@ fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
             "Content-Type: application/json",
             "-d",
             "@-",
-            "https://soroban-testnet.stellar.org:443",
+            rpc_url,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -426,7 +528,7 @@ fn simulate_function(
     network: &str,
     function: &str,
     func_args: &[String],
-) -> Result<SimulationOutcome> {
+) -> Module10Result<SimulationOutcome> {
     let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
     let invoke_output = Command::new("stellar")
         .args(&invoke_args)
@@ -441,7 +543,9 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
-    let rpc_resp = simulate_transaction_rpc(&b64_xdr)?;
+    let rpc_url = soroban_rpc_url(network)
+        .unwrap_or("https://soroban-testnet.stellar.org:443");
+    let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
         return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
@@ -449,11 +553,23 @@ fn simulate_function(
         )));
     }
 
+    // Capture the raw transactionData XDR before decode, so --validate
+    // can re-decode it through the Stellar CLI independently.
+    let tx_data_xdr_b64 = rpc_resp["result"]["transactionData"]
+        .as_str()
+        .map(|s| s.to_string());
+
+    // `result.cost.memBytes` is a Protocol 22+ field. Older responses or
+    // malformed payloads do not surface it; absence is not zero cost.
+    let memory_bytes = extract_memory_bytes_cost(&rpc_resp);
+
     match extract_metrics(&rpc_resp) {
         Ok((instructions, read_bytes, write_bytes)) => Ok(SimulationOutcome::Metrics {
             instructions,
             read_bytes,
             write_bytes,
+            memory_bytes,
+            transaction_data_xdr: tx_data_xdr_b64.unwrap_or_default(),
         }),
         Err(err) => Ok(SimulationOutcome::Failed(
             SimulationFailure::MetricsExtraction(format!("{:#}", err)),
@@ -546,6 +662,63 @@ fn run_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+/// Loads the contract ID cache from `.budget-cache.toml`.
+fn load_cache() -> BudgetCache {
+    std::fs::read_to_string(CACHE_FILE)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_cache(cache: &BudgetCache) {
+    let toml_str = toml::to_string_pretty(cache).unwrap_or_default();
+    let _ = std::fs::write(CACHE_FILE, toml_str);
+}
+
+fn wasm_sha256(wasm_bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(wasm_bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn get_contract_id_for_package(
+    package_name: &str,
+    wasm_bytes: &[u8],
+    network: &str,
+    source: &str,
+    wasm_path: &Path,
+    force_deploy: bool,
+    cache: &mut BudgetCache,
+) -> Result<String> {
+    let hash = wasm_sha256(wasm_bytes);
+
+    if !force_deploy {
+        if let Some(entry) = cache.package.get(package_name) {
+            if entry.wasm_sha256 == hash && entry.network == network {
+                eprintln!(
+                    "Cache hit for '{}' — reusing contract id {}",
+                    package_name, entry.contract_id
+                );
+                return Ok(entry.contract_id.clone());
+            }
+        }
+    }
+
+    let contract_id = deploy_contract_with_retry(wasm_path, source, network, package_name)?;
+
+    cache.package.insert(
+        package_name.to_string(),
+        CacheEntry {
+            wasm_sha256: hash,
+            contract_id: contract_id.clone(),
+            network: network.to_string(),
+        },
+    );
+    save_cache(cache);
+
+    Ok(contract_id)
+}
+
 /// Deploys a contract WASM to the network with automatic retry on
 /// friendbot-related transient failures.
 ///
@@ -559,7 +732,7 @@ fn deploy_contract_with_retry(
     source: &str,
     network: &str,
     package_name: &str,
-) -> Result<String> {
+) -> Module10Result<String> {
     let mut last_error = String::new();
 
     for attempt in 0..MAX_DEPLOY_ATTEMPTS {
@@ -637,6 +810,7 @@ fn main() -> Result<()> {
     let mut reports = Vec::new();
     let mut has_errors = false;
     let mut checks_failed = false;
+    let mut validation_failed = false;
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -664,8 +838,23 @@ fn main() -> Result<()> {
             anyhow::bail!("Failed to build {}", package.name);
         }
 
-        // Locate wasm
-        let wasm_name = package.name.replace('-', "_");
+        // Locate the cdylib target to derive the correct WASM filename.
+        // A crate's [lib] name may differ from its package name, so we
+        // cannot rely on package.name.replace('-', "_").
+        let cdylib_target = package
+            .targets
+            .iter()
+            .find(|t| t.crate_types.iter().any(|ct| *ct == "cdylib"));
+        let wasm_name = match cdylib_target {
+            Some(target) => target.name.clone(),
+            None => {
+                eprintln!(
+                    "Warning: no cdylib target found for package '{}' — skipping",
+                    package.name
+                );
+                continue;
+            }
+        };
         let wasm_path = metadata
             .target_directory
             .join("wasm32-unknown-unknown")
@@ -712,8 +901,15 @@ fn main() -> Result<()> {
         spinner.set_message(package.name.to_string());
         spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
-        let contract_id =
-            deploy_contract_with_retry(wasm_path.as_std_path(), &source, &network, &package.name)?;
+        let contract_id = get_contract_id_for_package(
+            &package.name,
+            &wasm_bytes,
+            &network,
+            &source,
+            wasm_path.as_std_path(),
+            force_deploy,
+            &mut cache,
+        )?;
 
         spinner.finish_and_clear();
 
@@ -826,11 +1022,18 @@ fn main() -> Result<()> {
                     instructions,
                     read_bytes,
                     write_bytes,
+                    memory_bytes,
+                    transaction_data_xdr,
                 } => {
                     // Build four CostReport entries for this function.
                     // In --check mode, attach the configured limit and
                     // pass/fail to each entry.
-                    for (metric, value) in [
+                    //
+                    // `Memory Bytes` is appended only when the Protocol 22+
+                    // `result.cost.memBytes` field was present, so older
+                    // protocol simulations cleanly skip the metric rather
+                    // than reporting a misleading zero.
+                    let mut reporting_metrics: Vec<(&'static str, u32)> = vec![
                         ("CPU Instructions", instructions),
                         ("Read Bytes", read_bytes),
                         ("Write Bytes", write_bytes),
@@ -840,7 +1043,44 @@ fn main() -> Result<()> {
                         let (entry_limit, pass) = evaluate_check(value, limit);
                         if pass == Some(false) {
                             checks_failed = true;
+                            if args.check && args.fail_fast {
+                                let value_str =
+                                    format_with_commas_and_units(u64::from(value), metric);
+                                let limit_str = entry_limit
+                                    .map(|limit_val| {
+                                        let display_value =
+                                            u32::try_from(limit_val).unwrap_or(u32::MAX);
+                                        format_with_commas_and_units(
+                                            u64::from(display_value),
+                                            metric,
+                                        )
+                                    })
+                                    .unwrap_or_else(|| "-".to_string());
+                                println!("\n=== BUDGET CHECKS ===");
+                                println!(
+                                    "{}::{} [{}] value={} limit={} FAIL",
+                                    package.name, function, metric, value_str, limit_str
+                                );
+                                println!("Summary: 0 check(s) passed, 1 failed");
+                                println!("(--fail-fast: stopped on first violation)");
+                                std::process::exit(1);
+                            }
                         }
+                        let (resource_limit, share_pct) = match metric {
+                            "CPU Instructions" => (
+                                Some(network_limits.max_instructions),
+                                Some(value as f64 / network_limits.max_instructions as f64 * 100.0),
+                            ),
+                            "Read Bytes" => (
+                                Some(network_limits.max_read_bytes),
+                                Some(value as f64 / network_limits.max_read_bytes as f64 * 100.0),
+                            ),
+                            "Write Bytes" => (
+                                Some(network_limits.max_write_bytes),
+                                Some(value as f64 / network_limits.max_write_bytes as f64 * 100.0),
+                            ),
+                            _ => (None, None),
+                        };
                         reports.push(CostReport {
                             package: package.name.to_string(),
                             function: function.clone(),
@@ -848,7 +1088,44 @@ fn main() -> Result<()> {
                             value: Some(value),
                             limit: entry_limit,
                             pass,
+                            resource_limit,
+                            share_pct,
                         });
+                    }
+
+                    // ── Optional Stellar CLI validation ──────────────
+                    if args.validate {
+                        let v_result = validate::validate_metrics(
+                            &transaction_data_xdr,
+                            instructions,
+                            read_bytes,
+                            write_bytes,
+                        );
+                        match v_result {
+                            validate::ValidationResult::Match => {
+                                if !args.quiet {
+                                    eprintln!("  ✓ validation passed for '{}'", function);
+                                }
+                            }
+                            validate::ValidationResult::Mismatch { diagnostics } => {
+                                validation_failed = true;
+                                eprintln!(
+                                    "  ✗ VALIDATION FAILED for '{}' in package '{}':",
+                                    function, package.name
+                                );
+                                for d in &diagnostics {
+                                    eprintln!("    {}", d);
+                                }
+                            }
+                            validate::ValidationResult::Skipped { reason } => {
+                                if !args.quiet {
+                                    eprintln!(
+                                        "  - validation skipped for '{}': {}",
+                                        function, reason
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 SimulationOutcome::Failed(failure) => {
@@ -990,7 +1267,6 @@ fn main() -> Result<()> {
                     failed += 1;
                 }
             }
-            println!("Summary: {} check(s) passed, {} failed", passed, failed);
         }
     }
 
@@ -1483,7 +1759,7 @@ mod tests {
                 pass: None,
             },
         ];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
             "package,function,metric,value\n",
             "my-contract,do_work,CPU Instructions,1000000\n",
@@ -1512,7 +1788,7 @@ mod tests {
                 pass: Some(false),
             },
         ];
-        let csv = reports_to_csv(&reports, true);
+        let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
             "package,function,metric,value,limit,pass\n",
             "my-contract,do_work,CPU Instructions,1000000,5000000,true\n",
@@ -1541,7 +1817,7 @@ mod tests {
                 pass: None,
             },
         ];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
             "package,function,metric,value\n",
             "my-contract,do_work,Read Bytes,2048\n",
@@ -1559,7 +1835,7 @@ mod tests {
             limit: Some(5_000_000),
             pass: Some(false),
         }];
-        let csv = reports_to_csv(&reports, true);
+        let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
             "package,function,metric,value,limit,pass\n",
             "my-contract,do_work,CPU Instructions,,5000000,false\n",
@@ -1570,7 +1846,213 @@ mod tests {
     #[test]
     fn csv_output_empty_reports_produces_header_only() {
         let reports: Vec<CostReport> = vec![];
-        let csv = reports_to_csv(&reports, false);
+        let csv = module_32::reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
+    }
+
+    // ── JSON serialization tests ────────────────────────────────────────
+
+    /// Helper to serialize a slice of CostReport to a pretty-printed JSON
+    /// string, matching the `--json` output path.
+    fn reports_to_json(reports: &[CostReport]) -> String {
+        serde_json::to_string_pretty(reports).unwrap()
+    }
+
+    #[test]
+    fn json_output_without_check_has_package_function_metric_value() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        assert_eq!(arr[0]["package"], "my-contract");
+        assert_eq!(arr[0]["function"], "do_work");
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+        assert_eq!(arr[0]["value"], 1_000_000);
+        assert!(arr[0].get("limit").is_none());
+        assert!(arr[0].get("pass").is_none());
+
+        assert_eq!(arr[1]["package"], "my-contract");
+        assert_eq!(arr[1]["function"], "do_work");
+        assert_eq!(arr[1]["metric"], "Read Bytes");
+        assert_eq!(arr[1]["value"], 2_048);
+        assert!(arr[1].get("limit").is_none());
+        assert!(arr[1].get("pass").is_none());
+    }
+
+    #[test]
+    fn json_output_with_check_includes_limit_and_pass() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: Some(5_000_000),
+                pass: Some(true),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: Some(1_000),
+                pass: Some(false),
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        assert_eq!(arr[0]["package"], "my-contract");
+        assert_eq!(arr[0]["function"], "do_work");
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+        assert_eq!(arr[0]["value"], 1_000_000);
+        assert_eq!(arr[0]["limit"], 5_000_000);
+        assert_eq!(arr[0]["pass"], true);
+
+        assert_eq!(arr[1]["package"], "my-contract");
+        assert_eq!(arr[1]["function"], "do_work");
+        assert_eq!(arr[1]["metric"], "Write Bytes");
+        assert_eq!(arr[1]["value"], 4_096);
+        assert_eq!(arr[1]["limit"], 1_000);
+        assert_eq!(arr[1]["pass"], false);
+    }
+
+    #[test]
+    fn json_output_without_check_excludes_null_values() {
+        let reports = vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: None,
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        // The CPU Instructions entry has value: None; with
+        // skip_serializing_if, "value" is absent from the JSON object.
+        assert!(arr[0].get("value").is_none());
+        // But the entry itself is still present in the array.
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+
+        assert_eq!(arr[1]["metric"], "Read Bytes");
+        assert_eq!(arr[1]["value"], 2_048);
+    }
+
+    #[test]
+    fn json_output_with_check_includes_simulation_failures() {
+        let reports = vec![CostReport {
+            package: "my-contract".to_string(),
+            function: "do_work".to_string(),
+            metric: "CPU Instructions",
+            value: None,
+            limit: Some(5_000_000),
+            pass: Some(false),
+        }];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+
+        assert_eq!(arr[0]["package"], "my-contract");
+        assert_eq!(arr[0]["function"], "do_work");
+        assert_eq!(arr[0]["metric"], "CPU Instructions");
+        assert!(arr[0].get("value").is_none());
+        assert_eq!(arr[0]["limit"], 5_000_000);
+        assert_eq!(arr[0]["pass"], false);
+    }
+
+    #[test]
+    fn json_output_empty_reports_produces_empty_array() {
+        let reports: Vec<CostReport> = vec![];
+        let json = reports_to_json(&reports);
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn json_output_with_all_metric_types() {
+        let reports = vec![
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "pkg".to_string(),
+                function: "f".to_string(),
+                metric: "WASM Bytes",
+                value: Some(12_345),
+                limit: None,
+                pass: None,
+            },
+        ];
+        let json = reports_to_json(&reports);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 4);
+
+        let metrics: Vec<&str> = arr.iter().map(|r| r["metric"].as_str().unwrap()).collect();
+        assert_eq!(
+            metrics,
+            vec![
+                "CPU Instructions",
+                "Read Bytes",
+                "Write Bytes",
+                "WASM Bytes"
+            ]
+        );
     }
 }
