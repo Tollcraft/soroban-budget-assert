@@ -6,15 +6,13 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 
 1. Clone the repository.
 2. Install Rust with the WASM target: `rustup target add wasm32-unknown-unknown`.
-3. Install the Stellar CLI: `cargo install --locked stellar-cli` (on Debian/Ubuntu, first `sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev`).
-4. Create and fund a testnet identity: `stellar keys generate alice --network testnet --fund`.
 
 ## Workspace structure
 
 | Crate | Role |
 |---|---|
 | `budget-macros` | Proc-macro crate. `budget_cpu_lt` / `budget_mem_lt` / `budget_lt` / `budget_write_bytes_lt` rewrite a test function's block so a budget assertion against its `env` variable runs on every exit path. They all go through `instrument_exit_paths()`; `ReturnRewriter` handles the `return` cases. |
-| `cargo-budget-report` | The CLI (`cargo budget-report` subcommand). Uses `cargo_metadata` for workspace discovery, `wasmparser` for export scanning, shells out to `stellar` for deploy/invoke/XDR decode, and `tabled`/`serde_json` for output. |
+| `cargo-budget-report` | The CLI (`cargo budget-report` subcommand). Uses `cargo_metadata` for workspace discovery, `wasmparser` for export scanning, RPC calls via `reqwest` for contract deployment and simulation, and `tabled`/`serde_json` for output. |
 | `amm-pool-contract` | Reference contract (`do_expensive_work`) plus the integration tests that double as the research measurements. |
 
 `budget.toml` at the root configures the CLI for the example contract, and `.github/workflows/budget.yml` runs the Tier A tests in CI.
@@ -40,7 +38,7 @@ cargo test
 
 `budget-macros/tests/ui.rs` is a `trybuild` suite that needs no WASM and no SDK. `tests/ui/*.rs` must fail to compile, with the diagnostic pinned in the matching `.stderr` — regenerate those with `TRYBUILD=overwrite cargo test -p budget-macros`. `tests/ui/pass/*.rs` must compile *and run*: each one exercises a test-body shape against the mock `env` in `tests/ui/support/mock_env.rs` (fixed costs) and asserts which cost and limit the injected check reports, so a body shape that silently stops being checked fails there.
 
-To exercise the CLI end-to-end against testnet (requires the funded `alice` identity):
+To exercise the CLI end-to-end against testnet (requires a funded source account):
 
 ```bash
 cargo run -p cargo-budget-report -- budget-report
@@ -49,7 +47,7 @@ cargo run -p cargo-budget-report -- budget-report
 ## Extending
 
 - **New assertion metrics** — follow the pattern in `budget-macros/src/lib.rs`: build the metric's `assert!` with its accessor on `env.cost_estimate().budget()`, then hand the function and that assertion to `instrument_exit_paths()` so the check reaches every exit path. Keep the failure message explicit. Add a passing test and a `#[should_panic]` regression test in `amm-pool-contract`, plus a `tests/ui/pass/` UI case.
-- **CLI changes** — no panics; return `anyhow::Result` with `.context()` on every external call (network, `stellar` invocations, file I/O). Any new output must also work under `--json`.
+- **CLI changes** — no panics; return `anyhow::Result` with `.context()` on every external call (network, file I/O). Any new output must also work under `--json`.
 - **Docs** — this site is GitBook, synced from the repository via Git Sync (`.gitbook.yaml` points at `docs/src`). Edits merged to `main` publish automatically; no CI step is involved. Add pages to `docs/src/SUMMARY.md` (GitBook's table of contents). GitBook-specific blocks (`{% hint %}`, `{% code title %}`) are available in any page.
 
 ## Docs site appearance

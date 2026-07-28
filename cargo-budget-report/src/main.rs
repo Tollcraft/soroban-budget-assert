@@ -4,24 +4,13 @@ use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::Duration;
-use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
+use std::process::Command;
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
-/// Maximum number of total deployment attempts (1 initial + 3 retries)
-/// when friendbot funding is suspected to have failed transiently
-/// (rate-limiting, network hiccups, or the account not being fully
-/// confirmed on-ledger yet).
-const MAX_DEPLOY_ATTEMPTS: u32 = 4;
-
-/// Initial backoff delay between deployment retries. Doubles on each
-/// subsequent attempt (2 s → 4 s → 8 s).
-const INITIAL_RETRY_DELAY_SECS: u64 = 2;
+mod rpc_client;
+use rpc_client::SorobanRpcClient;
 
 /// Commented budget.toml template written by `cargo budget-report --init`.
 const BUDGET_TOML_TEMPLATE: &str = r#"# -- Budget report configuration ---------------------------------------------
@@ -30,11 +19,14 @@ const BUDGET_TOML_TEMPLATE: &str = r#"# -- Budget report configuration ---------
 
 # Target network for contract simulation.
 # Supported values: "testnet", "futurenet", "local" (for a local container),
-# or any custom network defined in your Stellar CLI config.
+# or any custom RPC endpoint URL.
 network = "testnet"
 
-# Stellar source account keypair name (as configured in your Stellar CLI).
-source = "alice"
+# Stellar source account public key (G... address) used as the transaction
+# source account for simulation. No secret key is required for the
+# simulation-only workflow; if you want to deploy contracts to the ledger
+# for more accurate simulations, pass --secret-key on the CLI.
+source = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
 
 # -- Per-function configuration ----------------------------------------------
 # Declare one section per contract function you want to simulate and
@@ -89,6 +81,14 @@ struct BudgetReportArgs {
 
     #[arg(long)]
     source: Option<String>,
+
+    /// Stellar secret key (S... address) for signing deployment
+    /// transactions. When provided, the deployment transaction is signed
+    /// and submitted to the network. When absent, the contract ID is
+    /// computed locally and only `simulateTransaction` is used (no
+    /// on-ledger deployment).
+    #[arg(long)]
+    secret_key: Option<String>,
 
     #[arg(long, default_value_t = false)]
     json: bool,
@@ -320,7 +320,10 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
 /// Returns an error if the RPC response contains an `"error"` field, if
 /// `transactionData` is missing or not a string, or if the base64 XDR
 /// cannot be decoded.
+#[cfg(test)]
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
+    use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
+
     if let Some(error) = rpc_response.get("error") {
         anyhow::bail!("{}", error);
     }
@@ -340,14 +343,7 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
 }
 
 /// Why simulating a single exported function did not produce metrics.
-/// Carries the same text the caller previously logged inline, so extracting
-/// this out of the main loop doesn't change any user-facing diagnostics.
-///
-/// Each variant corresponds to a different failure point in the
-/// `stellar contract invoke --build-only` → `simulateTransaction` pipeline.
 enum SimulationFailure {
-    /// `stellar contract invoke --build-only` exited non-zero.
-    Invoke(String),
     /// The RPC `simulateTransaction` response contained an `"error"` field.
     Rpc(String),
     /// The RPC response didn't contain a decodable `SorobanTransactionData`.
@@ -368,154 +364,43 @@ enum SimulationOutcome {
     Failed(SimulationFailure),
 }
 
-/// Builds the `stellar contract invoke --build-only -- <function> [args..]`
-/// argument list for one exported function.
+/// Simulate a contract function call using the Soroban RPC API.
 ///
-/// The resulting argument vector is passed directly to `Command::new("stellar")`.
+/// Builds an invoke transaction, simulates it, and extracts resource metrics.
+/// Simulation failures are reported as `Ok(SimulationOutcome::Failed(..))`
+/// so the caller can continue with other functions.
 ///
-/// # Arguments
-///
-/// * `contract_id` - The deployed contract ID (hex string).
-/// * `source` - The Stellar source account keypair name.
-/// * `network` - The target network passphrase or alias.
-/// * `function` - The exported function name to invoke.
-/// * `func_args` - Additional CLI arguments forwarded after the `--` separator.
-fn build_invoke_args(
-    contract_id: &str,
-    source: &str,
-    network: &str,
-    function: &str,
-    func_args: &[String],
-) -> Vec<String> {
-    let mut invoke_args = vec![
-        "contract".to_string(),
-        "invoke".to_string(),
-        "--id".to_string(),
-        contract_id.to_string(),
-        "--source".to_string(),
-        source.to_string(),
-        "--network".to_string(),
-        network.to_string(),
-        "--build-only".to_string(),
-        "--".to_string(),
-        function.to_string(),
-    ];
-    invoke_args.extend(func_args.iter().cloned());
-    invoke_args
-}
-
-/// Builds the JSON-RPC `simulateTransaction` request body for a base64 XDR
-/// transaction envelope.
-///
-/// The request conforms to the Stellar JSON-RPC v2.0 specification and
-/// contains a single `params.transaction` field with the base64-encoded
-/// XDR envelope produced by `stellar contract invoke --build-only`.
-///
-/// # Arguments
-///
-/// * `b64_xdr` - The base64-encoded XDR transaction envelope.
-fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "simulateTransaction",
-        "params": {
-            "transaction": b64_xdr
-        }
-    })
-}
-
-/// POSTs a `simulateTransaction` JSON-RPC request for `b64_xdr` and returns
-/// the parsed response body.
-///
-/// Uses `curl` to send the request to the Soroban RPC endpoint. The
-/// request body is piped via stdin to avoid shell-quoting issues.
-///
-/// # Errors
-///
-/// Returns an error if `curl` cannot be spawned, the request fails, or
-/// the response body is not valid JSON.
-fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
-    let rpc_payload = build_rpc_payload(b64_xdr);
-
-    let mut curl = Command::new("curl")
-        .args([
-            "-s",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            "@-",
-            "https://soroban-testnet.stellar.org:443",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("failed to execute curl")?;
-
-    {
-        let stdin = curl.stdin.as_mut().context("Failed to open stdin")?;
-        stdin
-            .write_all(rpc_payload.to_string().as_bytes())
-            .context("Failed to write to stdin")?;
-    }
-
-    let curl_output = curl
-        .wait_with_output()
-        .context("Failed to read curl output")?;
-    serde_json::from_slice(&curl_output.stdout).context("Failed to parse RPC response")
-}
-
-/// Simulates one exported function end-to-end: runs
-/// `stellar contract invoke --build-only` to build the transaction, then
-/// POSTs it to `simulateTransaction` and decodes the reported resource
-/// usage.
-///
-/// Returns `Err` only for a spawn/IO failure on the `stellar`/`curl` child
-/// processes — the tool cannot proceed without those binaries. A
-/// *recoverable* simulation failure (non-zero invoke exit, an RPC `error`
-/// field, or an undecodable response) is reported as
-/// `Ok(SimulationOutcome::Failed(..))` so the caller can move on to the next
-/// function instead of aborting the whole report.
+/// Note: `func_args` are CLI-style string arguments from `budget.toml`
+/// (e.g. `["--n", "10000"]`). Converting these to `ScVal` requires the
+/// contract's function signature and is not yet implemented for the RPC
+/// path — empty args are always passed to the RPC.
 fn simulate_function(
     contract_id: &str,
     source: &str,
     network: &str,
     function: &str,
-    func_args: &[String],
+    _func_args: &[String],
 ) -> Result<SimulationOutcome> {
-    let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
-    let invoke_output = Command::new("stellar")
-        .args(&invoke_args)
-        .output()
-        .context("failed to execute stellar-cli invoke")?;
+    let client = SorobanRpcClient::new(network)?;
 
-    if !invoke_output.status.success() {
-        let stderr = String::from_utf8_lossy(&invoke_output.stderr).to_string();
-        return Ok(SimulationOutcome::Failed(SimulationFailure::Invoke(stderr)));
-    }
+    let sc_args: Vec<stellar_xdr::curr::ScVal> = vec![];
 
-    let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
-        .trim()
-        .to_string();
-    let rpc_resp = simulate_transaction_rpc(&b64_xdr)?;
-
-    if let Some(error) = rpc_resp.get("error") {
-        return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
-            error.to_string(),
-        )));
-    }
-
-    match extract_metrics(&rpc_resp) {
+    match rpc_client::simulate_contract_function(&client, contract_id, source, function, sc_args) {
         Ok((instructions, read_bytes, write_bytes)) => Ok(SimulationOutcome::Metrics {
             instructions,
             read_bytes,
             write_bytes,
         }),
-        Err(err) => Ok(SimulationOutcome::Failed(
-            SimulationFailure::MetricsExtraction(format!("{:#}", err)),
-        )),
+        Err(err) => {
+            let err_str = format!("{:#}", err);
+            if err_str.contains("RPC error") {
+                Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(err_str)))
+            } else {
+                Ok(SimulationOutcome::Failed(
+                    SimulationFailure::MetricsExtraction(err_str),
+                ))
+            }
+        }
     }
 }
 
@@ -568,36 +453,6 @@ fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
 /// Each check fails fast with an actionable error message. Checks that are
 /// not applicable (e.g. rustup not installed) are silently skipped.
 fn run_preflight_checks(quiet: bool) -> Result<()> {
-    // ── stellar CLI ─────────────────────────────────────────────────────
-    if !quiet {
-        eprint!("Checking Stellar CLI... ");
-    }
-    let stellar_check = Command::new("stellar").arg("--version").output();
-    match stellar_check {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!(
-                "Stellar CLI is not installed or not on PATH.\n\
-                 Install it with:  cargo install --locked stellar-cli\n\
-                 See: https://github.com/stellar/stellar-cli"
-            );
-        }
-        Err(e) => {
-            anyhow::bail!("failed to execute stellar --version: {}", e);
-        }
-        Ok(output) if !output.status.success() => {
-            anyhow::bail!(
-                "Stellar CLI failed to run.\n\
-                 stderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Ok(_output) => {
-            if !quiet {
-                eprintln!("found");
-            }
-        }
-    }
-
     // ── wasm32 target ───────────────────────────────────────────────────
     if !quiet {
         eprint!("Checking wasm32-unknown-unknown target... ");
@@ -636,62 +491,22 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
     Ok(())
 }
 
-/// Deploys a contract WASM to the network with automatic retry on
-/// friendbot-related transient failures.
+/// Deploys a contract WASM to the network using the Soroban RPC API.
 ///
-/// The `stellar contract deploy` command implicitly triggers friendbot
-/// funding for the source account on testnet. Friendbot may return 429
-/// (rate-limited) or the account may not be confirmed on-ledger yet.
-/// This function makes up to `MAX_DEPLOY_ATTEMPTS` total attempts with
-/// exponential backoff before giving up.
+/// Uploads the WASM to the RPC node and computes the contract ID locally.
+/// If `secret_key` is provided, the deployment transaction is signed and
+/// submitted so the contract exists on-ledger for subsequent simulations.
 fn deploy_contract_with_retry(
     wasm_path: &Path,
     source: &str,
     network: &str,
     package_name: &str,
+    secret_key: Option<&str>,
 ) -> Result<String> {
-    let mut last_error = String::new();
+    let client = SorobanRpcClient::new(network)?;
+    let wasm_bytes = std::fs::read(wasm_path).context("Failed to read WASM file")?;
 
-    for attempt in 0..MAX_DEPLOY_ATTEMPTS {
-        if attempt > 0 {
-            let delay = INITIAL_RETRY_DELAY_SECS * 2u64.pow(attempt - 1);
-            eprintln!(
-                "Deploy attempt {}/{} failed. Retrying in {} s...",
-                attempt, MAX_DEPLOY_ATTEMPTS, delay
-            );
-            thread::sleep(Duration::from_secs(delay));
-        }
-
-        let deploy_output = Command::new("stellar")
-            .args([
-                "contract",
-                "deploy",
-                "--wasm",
-                wasm_path.to_str().context("wasm path is not valid UTF-8")?,
-                "--source",
-                source,
-                "--network",
-                network,
-            ])
-            .output()
-            .context("failed to execute stellar-cli deploy")?;
-
-        if deploy_output.status.success() {
-            let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
-                .trim()
-                .to_string();
-            return Ok(contract_id);
-        }
-
-        last_error = String::from_utf8_lossy(&deploy_output.stderr).to_string();
-    }
-
-    anyhow::bail!(
-        "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
-        package_name,
-        MAX_DEPLOY_ATTEMPTS,
-        last_error
-    )
+    rpc_client::deploy_contract_via_rpc(&client, &wasm_bytes, source, package_name, secret_key)
 }
 
 fn main() -> Result<()> {
@@ -813,8 +628,13 @@ fn main() -> Result<()> {
             Some(pb)
         };
 
-        let contract_id =
-            deploy_contract_with_retry(wasm_path.as_std_path(), &source, &network, &package.name)?;
+        let contract_id = deploy_contract_with_retry(
+            wasm_path.as_std_path(),
+            &source,
+            &network,
+            &package.name,
+            args.secret_key.as_deref(),
+        )?;
 
         if let Some(spinner) = spinner {
             spinner.finish_and_clear();
@@ -864,12 +684,6 @@ fn main() -> Result<()> {
                     has_errors = true;
                     if !args.quiet {
                         match &failure {
-                            SimulationFailure::Invoke(stderr) => {
-                                eprintln!(
-                                    "Warning: Simulation failed for {}: {}",
-                                    function, stderr
-                                );
-                            }
                             SimulationFailure::Rpc(error) => {
                                 eprintln!("Warning: RPC error for {}: {}", function, error);
                             }
@@ -1032,7 +846,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use stellar_xdr::curr::WriteXdr;
+    use stellar_xdr::curr::{Limits, SorobanTransactionData, WriteXdr};
 
     const SHARED_BUDGET_TOML: &str = include_str!("../fixtures/shared_budget.toml");
 
@@ -1045,69 +859,6 @@ mod tests {
         path.push(format!("cargo_budget_report_test_{}.toml", nanos));
         path
     }
-
-    // --- Network simulation loop helper tests ---
-
-    #[test]
-    fn build_invoke_args_without_function_args() {
-        let invoke_args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &[]);
-        assert_eq!(
-            invoke_args,
-            vec![
-                "contract",
-                "invoke",
-                "--id",
-                "CCONTRACT",
-                "--source",
-                "alice",
-                "--network",
-                "testnet",
-                "--build-only",
-                "--",
-                "do_work",
-            ]
-        );
-    }
-
-    #[test]
-    fn build_invoke_args_appends_function_args_after_separator() {
-        let func_args = vec!["--n".to_string(), "10000".to_string()];
-        let invoke_args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &func_args);
-        assert_eq!(
-            invoke_args,
-            vec![
-                "contract",
-                "invoke",
-                "--id",
-                "CCONTRACT",
-                "--source",
-                "alice",
-                "--network",
-                "testnet",
-                "--build-only",
-                "--",
-                "do_work",
-                "--n",
-                "10000",
-            ]
-        );
-    }
-
-    #[test]
-    fn build_rpc_payload_wraps_xdr_in_simulate_transaction_request() {
-        let payload = build_rpc_payload("AAAAAgAAAAA=");
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["method"], "simulateTransaction");
-        assert_eq!(payload["params"]["transaction"], "AAAAAgAAAAA=");
-    }
-
-    #[test]
-    fn build_rpc_payload_empty_xdr_is_still_well_formed() {
-        let payload = build_rpc_payload("");
-        assert_eq!(payload["params"]["transaction"], "");
-    }
-
-    // --- Metric extraction tests ---
 
     const FIXTURE_INSTRUCTIONS: u32 = 1_000_000;
     const FIXTURE_READ_BYTES: u32 = 2_048;

@@ -2,16 +2,11 @@
 //!
 //! These run the real compiled binary (via `assert_cmd`) against the
 //! isolated, deterministic mock workspace in `tests/fixtures/mock_workspace`
-//! rather than against Tollcraft's own contracts, which made prior ad-hoc
-//! testing brittle and circular.
+//! rather than against Tollcraft's own contracts.
 //!
-//! The mock workspace's two contracts are bare `no_std` WASM exports with no
-//! dependencies (not real Soroban contracts), so `cargo build` for them is
-//! near-instant. `cargo-budget-report` still shells out to the real
-//! `stellar` CLI and `curl` to deploy/simulate, so both are replaced with
-//! deterministic scripts in `tests/fixtures/fake_bin` (prepended to `PATH`
-//! for the child process). This keeps the suite offline and reproducible:
-//! no live network call, no funded/configured Stellar identity required.
+//! The RPC calls (`uploadContractWasm`, `simulateTransaction`) are mocked
+//! via `mockito` so the suite is offline and reproducible: no live network
+//! call, no funded/configured Stellar identity required.
 
 use assert_cmd::Command;
 use predicates::str::contains;
@@ -26,16 +21,7 @@ fn mock_workspace_fixture() -> PathBuf {
     manifest_dir().join("tests/fixtures/mock_workspace")
 }
 
-fn fake_bin_dir() -> PathBuf {
-    manifest_dir().join("tests/fixtures/fake_bin")
-}
-
 /// Recursively copies `src` into `dst`, creating `dst` if needed.
-///
-/// The mock workspace is copied into a fresh tempdir per test because
-/// `cargo build` writes `Cargo.lock` and `target/` into its working
-/// directory; running in place would leave build artifacts next to the
-/// checked-in fixture.
 fn copy_dir_all(src: &Path, dst: &Path) {
     fs::create_dir_all(dst).expect("failed to create destination directory");
     for entry in fs::read_dir(src).expect("failed to read source directory") {
@@ -57,29 +43,88 @@ fn setup_mock_workspace() -> tempfile::TempDir {
     tmp
 }
 
-/// `PATH` with the fake `stellar`/`curl` scripts prepended so the CLI under
-/// test resolves them ahead of (or instead of) any real installation, while
-/// still finding the real `cargo`/`rustc` used to build the mock contracts.
-fn mocked_path() -> String {
-    let real_path = std::env::var("PATH").unwrap_or_default();
-    format!("{}:{}", fake_bin_dir().display(), real_path)
+/// Base64-encoded `SorobanTransactionData` XDR that decodes to
+/// instructions=1000000, read_bytes=2048, write_bytes=4096, resource_fee=0
+/// — same fixture values used by the unit tests.
+const FIXTURE_TRANSACTION_DATA_B64: &str = "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA=";
+
+/// Set up mockito mocks for the RPC endpoints the tool calls.
+///
+/// Returns the mockito server and mocks so they stay alive for the
+/// duration of the test function.
+#[allow(clippy::type_complexity)]
+fn setup_rpc_mocks() -> (mockito::ServerGuard, Vec<mockito::Mock>) {
+    let mut server = mockito::Server::new();
+
+    // Mock uploadContractWasm — returns a dummy hash
+    let upload_mock = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(
+            r#""method"\s*:\s*"uploadContractWasm""#.to_string(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                }
+            })
+            .to_string(),
+        )
+        .expect_at_least(2)
+        .create();
+
+    // Mock simulateTransaction — returns the fixture transaction data
+    let simulate_mock = server
+        .mock("POST", "/")
+        .match_body(mockito::Matcher::Regex(
+            r#""method"\s*:\s*"simulateTransaction""#.to_string(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "transactionData": FIXTURE_TRANSACTION_DATA_B64,
+                    "minResourceFee": "1000"
+                }
+            })
+            .to_string(),
+        )
+        .expect_at_least(3)
+        .create();
+
+    (server, vec![upload_mock, simulate_mock])
 }
 
 /// Builds a ready-to-run `Command` for the compiled `cargo-budget-report`
-/// binary, with its cwd set to `dir` and `PATH` mocked as above.
-fn budget_report_cmd(dir: &Path) -> Command {
+/// binary, with its cwd set to `dir` and the RPC URL pointed at the mockito server.
+fn budget_report_cmd(dir: &Path, rpc_url: &str) -> Command {
     let mut cmd = Command::cargo_bin("cargo-budget-report").expect("binary should be built");
-    cmd.current_dir(dir).env("PATH", mocked_path());
+    // Use a valid Stellar public key (G...) as source
+    const SOURCE_PUBKEY: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    cmd.current_dir(dir).args([
+        "budget-report",
+        "--network",
+        rpc_url,
+        "--source",
+        SOURCE_PUBKEY,
+    ]);
     cmd
 }
 
 #[test]
 fn discovers_mock_workspace_and_reports_cleanly() {
     let workspace = setup_mock_workspace();
+    let (_server, _mocks) = setup_rpc_mocks();
+    let rpc_url = _server.url();
 
-    let assert = budget_report_cmd(workspace.path())
-        .args(["budget-report", "--network", "local", "--source", "alice"])
-        .assert();
+    let assert = budget_report_cmd(workspace.path(), &rpc_url).assert();
 
     let output = assert.success().get_output().clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -99,16 +144,11 @@ fn discovers_mock_workspace_and_reports_cleanly() {
 #[test]
 fn json_output_reports_both_mock_contracts() {
     let workspace = setup_mock_workspace();
+    let (_server, _mocks) = setup_rpc_mocks();
+    let rpc_url = _server.url();
 
-    let assert = budget_report_cmd(workspace.path())
-        .args([
-            "budget-report",
-            "--network",
-            "local",
-            "--source",
-            "alice",
-            "--json",
-        ])
+    let assert = budget_report_cmd(workspace.path(), &rpc_url)
+        .arg("--json")
         .assert();
 
     let output = assert.success().get_output().clone();
@@ -143,6 +183,9 @@ fn json_output_reports_both_mock_contracts() {
 #[test]
 fn check_flag_passes_when_limits_are_generous() {
     let workspace = setup_mock_workspace();
+    let (_server, _mocks) = setup_rpc_mocks();
+    let rpc_url = _server.url();
+
     fs::write(
         workspace.path().join("budget.toml"),
         "[functions.ping]\n\
@@ -157,15 +200,8 @@ fn check_flag_passes_when_limits_are_generous() {
     )
     .expect("failed to write budget.toml");
 
-    let assert = budget_report_cmd(workspace.path())
-        .args([
-            "budget-report",
-            "--network",
-            "local",
-            "--source",
-            "alice",
-            "--check",
-        ])
+    let assert = budget_report_cmd(workspace.path(), &rpc_url)
+        .arg("--check")
         .assert();
 
     let output = assert.success().get_output().clone();
@@ -180,6 +216,9 @@ fn check_flag_passes_when_limits_are_generous() {
 #[test]
 fn check_flag_fails_when_a_limit_is_exceeded() {
     let workspace = setup_mock_workspace();
+    let (_server, _mocks) = setup_rpc_mocks();
+    let rpc_url = _server.url();
+
     fs::write(
         workspace.path().join("budget.toml"),
         "[functions.ping]\n\
@@ -190,82 +229,11 @@ fn check_flag_fails_when_a_limit_is_exceeded() {
     )
     .expect("failed to write budget.toml");
 
-    let mut cmd = budget_report_cmd(workspace.path());
-    cmd.args([
-        "budget-report",
-        "--network",
-        "local",
-        "--source",
-        "alice",
-        "--check",
-    ]);
+    let mut cmd = budget_report_cmd(workspace.path(), &rpc_url);
+    cmd.arg("--check");
 
     cmd.assert()
         .failure()
         .stdout(contains("mock-contract-a::ping [CPU Instructions]"))
         .stdout(contains("FAIL"));
-}
-
-// ── Retry mechanism integration tests ───────────────────────────────────
-
-#[test]
-fn retry_mechanism_succeeds_after_transient_deploy_failures() {
-    let workspace = setup_mock_workspace();
-    let fail_count_file = workspace.path().join(".mock_stellar_fail_count");
-    let _ = fs::remove_file(&fail_count_file);
-
-    let assert = budget_report_cmd(workspace.path())
-        .args(["budget-report", "--network", "local", "--source", "alice"])
-        .env("MOCK_STELLAR_FAIL_COUNT", "3")
-        .env(
-            "MOCK_STELLAR_FAIL_COUNT_FILE",
-            fail_count_file.to_str().unwrap(),
-        )
-        .assert();
-
-    let output = assert.success().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Should still produce a valid report even after 3 retries.
-    assert!(
-        stdout.contains("WORKSPACE BUDGET REPORT"),
-        "report should succeed after transient failures, got: {stdout}"
-    );
-    assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
-
-    // The stderr should contain retry messages.
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Retrying in"),
-        "stderr should contain retry messages, got: {stderr:?}"
-    );
-}
-
-#[test]
-fn retry_mechanism_fails_after_exhausting_all_attempts() {
-    let workspace = setup_mock_workspace();
-    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_2");
-    let _ = fs::remove_file(&fail_count_file);
-
-    let assert = budget_report_cmd(workspace.path())
-        .args(["budget-report", "--network", "local", "--source", "alice"])
-        .env("MOCK_STELLAR_FAIL_COUNT", "10")
-        .env(
-            "MOCK_STELLAR_FAIL_COUNT_FILE",
-            fail_count_file.to_str().unwrap(),
-        )
-        .assert();
-
-    let output = assert.failure().get_output().clone();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Should fail after MAX_DEPLOY_ATTEMPTS attempts.
-    assert!(
-        stderr.contains("after 4 attempts"),
-        "stderr should mention exhausted retries, got: {stderr:?}"
-    );
-    assert!(
-        stderr.contains("source account is funded"),
-        "stderr should mention source account funding, got: {stderr:?}"
-    );
 }

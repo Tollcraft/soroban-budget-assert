@@ -19,9 +19,8 @@ A one-paragraph recap of the architecture. The full conceptual model lives in [P
 
 - A Soroban contract repo with at least one `cdylib` package.
 - Rust and the `wasm32-unknown-unknown` target installed locally.
-- The `stellar` CLI installed locally (used once for the Tier B identity setup).
 - Push access to `.github/workflows/*` on the target repo.
-- For Tier B only: an account on testnet funded by Friendbot (the Stellar CLI's `--fund` flag drops you there automatically), plus permissions to add a GitHub repository secret.
+- For Tier B only: an account on testnet funded with native XLM (enough to deploy contracts and pay simulation fees), plus permissions to add a GitHub repository secret for the signing key.
 
 ## Tier A — gate PRs with budget assertions
 
@@ -82,11 +81,6 @@ jobs:
 
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
-
-      - name: Install Stellar CLI
-        run: |
-          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          mv stellar ~/.cargo/bin/
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
@@ -150,31 +144,15 @@ Tier B is what makes the workflow a *real* CI pipeline rather than a local test 
 
 ### Step 1: Create and fund a testnet identity (one-time, locally)
 
-You're going to need an account on testnet that holds enough native XLM to deploy contracts and pay a handful of simulation fees. Use the Stellar CLI's built-in Friendbot funding so you do not have to touch a faucet page:
+The tool no longer depends on the Stellar CLI. You still need a funded testnet account for deployment and simulation. Create one using any Stellar wallet or the Stellar Lab:
 
-```bash
-stellar keys generate alice --network testnet --fund
-```
-
-`--network testnet --fund` creates a local keypair and tells Friendbot to airdrop ~10,000 XLM into it. Confirm with:
-
-```bash
-stellar keys show alice
-```
-
-You should see a public key starting with `G...` — that is the on-chain address. Friendbot funding is instant on testnet.
-
-> **Notice:** Friendbot-funded testnet accounts are periodically reset by network policy (inactive accounts get wiped). If a workflow run fails on first attempt after the repo has been idle for a week, re-fund with `stellar keys fund alice --network testnet` before debugging further — see [Troubleshooting](#troubleshooting).
+1. Generate a new Ed25519 keypair (e.g. using `stellar keys generate alice --network testnet --fund` if you have the CLI, or use a tool like [Stellar Lab](https://lab.stellar.org/)).
+2. Fund the account via Friendbot (see the [Stellar documentation](https://developers.stellar.org/docs/learn/fundamentals/testnet#getting-testnet-xlm)).
+3. Note the public key (G...) and secret key (S...) — you will need both.
 
 ### Step 2: Store the secret key as `ALICE_SECRET_KEY`
 
-The same local identity has a secret key beginning with `S...`. The Stellar CLI prints it on demand:
-
-```bash
-stellar keys show alice --secret
-```
-
-Take the output and add it as a repository secret named `ALICE_SECRET_KEY`:
+Take the secret key (S... address) and add it as a repository secret named `ALICE_SECRET_KEY`:
 
 1. Repo → **Settings** → **Secrets and variables** → **Actions**.
 2. **New repository secret**.
@@ -192,25 +170,22 @@ Look at the `Run Budget Report (Tier B)` step in the workflow above. The shippin
 ```yaml
       - name: Run Budget Report (Tier B)
         run: |
-          # Optionally, this uses budget.toml to populate fields instead of args
-          # Ensure your repository has budget.toml configured for this to work
-          # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-          # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
+          # The tool uses RPC directly and needs --network and --source.
+          # --secret-key is required for on-ledger deployment.
+          # cargo run --bin cargo-budget-report -- budget-report --network testnet --source G... --secret-key "${{ secrets.ALICE_SECRET_KEY }}" --json > current_report.json
 
           # Mocking the JSON output for the demo so CI passes without testnet secrets:
           echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
 ```
 
-The commented-out `cargo run --bin cargo-budget-report -- ...` line is the real invocation. When you copy the workflow into your own repo and store `ALICE_SECRET_KEY` as a repository secret (Step 2 above), uncommenting that line and exposing the secret to the step is the entire Tier B swap. Once you've authored your own workflow:
+The commented-out line is the real invocation. When you copy the workflow into your own repo and store `ALICE_SECRET_KEY` as a repository secret (Step 2 above), uncommenting that line and exposing the secret to the step is the entire Tier B swap. Once you've authored your own workflow:
 
 1. Replace the `echo` block in the `Run Budget Report (Tier B)` step with a real invocation that reads the secret:
 
    ```yaml
          - name: Run Budget Report (Tier B)
-           env:
-             ALICE_SECRET_KEY: ${{ secrets.ALICE_SECRET_KEY }}
            run: |
-             cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
+             cargo run --bin cargo-budget-report -- budget-report --network testnet --source G... --secret-key "${{ secrets.ALICE_SECRET_KEY }}" --json > current_report.json
    ```
 
 2. Keep the `upload-artifact` step as-is. The artifact shape (`current_report.json`) is the same regardless of which branch produced it.
@@ -233,32 +208,17 @@ Friendbot-funded testnet accounts are reset periodically (network policy wipes i
 - The deploy step fails with `txBadSeq` or `txInsufficientBalance`.
 - The build succeeds, the test runs, and the budget-report upload shows an empty artifact.
 
-Fix:
+Fix: re-fund the account through Friendbot or a Stellar wallet, then re-run the workflow. If the workflow fails on first run after being idle for a week, this is the first thing to check before suspecting the workflow itself.
 
-```bash
-stellar keys fund alice --network testnet
-```
-
-For deeper rot (the account exists but has zero balance after a long gap), re-run the funding command and re-try. If the workflow fails on first run after being idle for a week, this is the first thing to check before suspecting the workflow itself.
-
-If the funding command itself 404s or rate-limits, Friendbot is having a bad day — wait a few minutes and re-try. Friendbot is shared infrastructure, not the workflow's problem.
+If Friendbot itself 404s or rate-limits, wait a few minutes and re-try. Friendbot is shared infrastructure, not the workflow's problem.
 
 ### Simulation variance between runs
 
 The report's summary line warns: _"These are simulated numbers on testnet and may vary slightly depending on ledger state."_ The `Write Bytes` metric moves more than `CPU Instructions` because the write-fee multiplier grows with the global ledger size. Two consecutive runs of the same WASM can differ by a few percentage points. Treat the report as a snapshot, not a pass/fail signal. If a number regresses by more than ~10% between pushes with no contract change, that warrants a real investigation — the network is telling you something.
 
-### stellar CLI missing on the runner
+### No Stellar CLI dependency on the runner
 
-The `stellar` CLI is not on GitHub-hosted `ubuntu-latest` runners out of the box. The workflow installs it directly rather than `cargo install` because the prebuilt tarball is ~30 MB and avoids a multi-minute Rust build inside CI:
-
-```yaml
-      - name: Install Stellar CLI
-        run: |
-          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          mv stellar ~/.cargo/bin/
-```
-
-Bump the version number in the URL (`stellar-cli-X.Y.Z-x86_64-unknown-linux-gnu.tar.gz`) when you upgrade — there is no auto-update. The release page publishes these tarballs under each GitHub release (`https://github.com/stellar/stellar-cli/releases`).
+The tool communicates with the Stellar network through direct RPC calls. The `stellar` CLI is no longer a runtime dependency — no installation or configuration step is needed in CI. The source account and secret key are passed directly via `--source` and `--secret-key` CLI flags (or configured in `budget.toml`).
 
 ### Build failures before the Tier A check runs
 

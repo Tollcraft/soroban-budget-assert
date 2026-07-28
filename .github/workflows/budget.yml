@@ -27,16 +27,6 @@ jobs:
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
-      - name: Install Stellar CLI
-        run: |
-          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          mv stellar ~/.cargo/bin/
-
-      - name: Configure Stellar Identity
-        run: stellar keys add alice --secret-key "${{ secrets.ALICE_SECRET_KEY }}"
-        env:
-          STELLAR_ACCOUNT: alice
-
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32v1-none
 
@@ -49,7 +39,7 @@ jobs:
           attempt=0
           max_attempts=4
           delay=5
-          until cargo run --bin cargo-budget-report -- budget-report --json > current_report.json; do
+          until cargo run --bin cargo-budget-report -- budget-report --network testnet --source GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF --secret-key "${{ secrets.ALICE_SECRET_KEY }}" --json > current_report.json; do
             attempt=$((attempt + 1))
             if [ "$attempt" -ge "$max_attempts" ]; then
               echo "cargo-budget-report failed after $max_attempts attempts. Aborting."

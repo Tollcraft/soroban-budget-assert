@@ -9,7 +9,7 @@ natively on GitHub and GitBook.
 ## Diagram 1 — `cargo-budget-report` Pipeline
 
 Shows the end-to-end lifecycle from the developer running `cargo budget-report`
-through WASM compilation, export discovery, RPC simulation, metric extraction,
+through WASM compilation, export discovery, RPC simulation via `reqwest`, metric extraction,
 and final report generation. The `--check` path is highlighted to show how CI
 enforcement works.
 
@@ -21,7 +21,6 @@ sequenceDiagram
     participant Cargo as Cargo / rustc
     participant WASM as WASM Binary
     participant Parser as WASM Parser
-    participant Stellar as Stellar CLI
     participant RPC as Soroban RPC
     participant Report as Budget Report
 
@@ -35,12 +34,10 @@ sequenceDiagram
     CLI->>CLI: Read budget.toml\n(network, source, per-function args/limits)
 
     loop For each exported function in budget.toml
-        CLI->>Stellar: stellar contract invoke\n--function <fn> --args <args>
-        Stellar->>RPC: simulateTransaction (XDR)
-        RPC-->>Stellar: SimulateTransactionResponse\n(transactionData XDR)
-        Stellar-->>CLI: stdout JSON response
+        CLI->>RPC: simulateTransaction (XDR via reqwest)
+        RPC-->>CLI: SimulateTransactionResponse\n(transactionData XDR)
 
-        CLI->>CLI: Decode transactionData XDR\nExtract: CPU instructions,\nread bytes, write bytes
+        CLI->>CLI: Decode transactionData XDR\n(using stellar-xdr)\nExtract: CPU instructions,\nread bytes, write bytes
 
         alt --check mode and limit configured
             CLI->>CLI: Compare value vs cpu_limit /\nread_limit / write_limit

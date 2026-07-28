@@ -669,68 +669,6 @@ write_limit = 0
         );
     }
 
-    // ── build_invoke_args additional edge cases ────────────────────────
-
-    #[test]
-    fn build_invoke_args_multiple_function_arguments() {
-        let args = build_invoke_args(
-            "C",
-            "alice",
-            "testnet",
-            "transfer",
-            &["--to".into(), "GBP".into(), "--amount".into(), "100".into()],
-        );
-        // Expected structure: [<11 standard args>, "--to", "GBP", "--amount", "100"]
-        assert_eq!(args.len(), 15);
-        assert_eq!(args[10], "transfer");
-        assert_eq!(args[11], "--to");
-        assert_eq!(args[12], "GBP");
-        assert_eq!(args[13], "--amount");
-        assert_eq!(args[14], "100");
-    }
-
-    #[test]
-    fn build_invoke_args_empty_source_string() {
-        let args = build_invoke_args("C", "", "testnet", "f", &[]);
-        assert_eq!(args[5], ""); // source
-    }
-
-    #[test]
-    fn build_invoke_args_empty_network_string() {
-        let args = build_invoke_args("C", "alice", "", "f", &[]);
-        assert_eq!(args[7], ""); // network
-    }
-
-    #[test]
-    fn build_invoke_args_function_name_with_hyphens() {
-        let args = build_invoke_args("C", "alice", "testnet", "do-something", &[]);
-        assert_eq!(args.last(), Some(&"do-something".to_string()));
-    }
-
-    // ── build_rpc_payload additional edge cases ────────────────────────
-
-    #[test]
-    fn build_rpc_payload_json_structure_is_consistent() {
-        // Verify the JSON structure regardless of XDR content.
-        let payload = build_rpc_payload("test");
-        assert_eq!(payload["id"], 1);
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["method"], "simulateTransaction");
-        assert!(payload["params"].is_object());
-        assert_eq!(payload["params"]["transaction"], "test");
-    }
-
-    #[test]
-    fn build_rpc_payload_very_long_xdr() {
-        // Simulate a realistic-length base64 XDR string.
-        let long_xdr = "A".repeat(10_000);
-        let payload = build_rpc_payload(&long_xdr);
-        assert_eq!(
-            payload["params"]["transaction"].as_str().unwrap().len(),
-            10_000
-        );
-    }
-
     // ── emit_check_failure_entries additional edge cases ───────────────
 
     #[test]
@@ -767,53 +705,6 @@ write_limit = 0
             assert_eq!(r.limit, None);
             assert_eq!(r.pass, Some(false));
         }
-    }
-
-    // ── build_invoke_args zero-length edge cases ────────────────────────
-
-    #[test]
-    fn build_invoke_args_zero_arguments_empty_slice() {
-        // Function with no arguments — already tested in main.rs tests, but
-        // included here for the focused edge-case module.
-        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "ping", &[]);
-        assert_eq!(args.len(), 11);
-        assert_eq!(args.last(), Some(&"ping".to_string()));
-    }
-
-    #[test]
-    fn build_invoke_args_single_argument_boundary() {
-        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &["--n".into()]);
-        // After "--", we expect: ["do_work", "--n"]
-        assert_eq!(args[args.len() - 2], "do_work");
-        assert_eq!(args[args.len() - 1], "--n");
-    }
-
-    #[test]
-    fn build_invoke_args_zero_length_contract_id() {
-        let args = build_invoke_args("", "alice", "testnet", "f", &[]);
-        assert_eq!(args[3], ""); // contract ID
-    }
-
-    #[test]
-    fn build_invoke_args_zero_length_function_name() {
-        let args = build_invoke_args("C", "alice", "testnet", "", &[]);
-        assert_eq!(args.last(), Some(&"".to_string()));
-    }
-
-    // ── build_rpc_payload zero-length edge cases ────────────────────────
-
-    #[test]
-    fn build_rpc_payload_zero_length_xdr() {
-        let payload = build_rpc_payload("");
-        assert_eq!(payload["jsonrpc"], "2.0");
-        assert_eq!(payload["method"], "simulateTransaction");
-        assert_eq!(payload["params"]["transaction"], "");
-    }
-
-    #[test]
-    fn build_rpc_payload_single_byte_xdr() {
-        let payload = build_rpc_payload("A");
-        assert_eq!(payload["params"]["transaction"], "A");
     }
 
     // ── TransactionData parse_json zero-value edge cases ────────────────

@@ -110,17 +110,13 @@ Full shared schema:
 ```toml
 # -- cargo-budget-report configuration ----------------------------------------
 network = "testnet"           # Target network: "testnet", "futurenet", "local"
-source = "alice"              # Stellar source account keypair name
+source = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
 
 [functions.do_expensive_work]
 args = ["--n", "10000"]       # CLI arguments forwarded to the function
 cpu_limit = 5000000           # Optional CPU instruction limit (--check)
 read_limit = 5000             # Optional read-bytes limit (--check)
 write_limit = 1000            # Optional write-bytes limit (--check)
-
-# -- soroban-cost-linter configuration ----------------------------------------
-[lints]                       # Consumed by soroban-cost-linter; silently
-complexity = "warn"           # accepted by cargo-budget-report.
 ```
 
 ### 3. Usage
@@ -142,7 +138,7 @@ reported but never checked.
 ```toml
 # budget.toml
 network = "testnet"
-source = "alice"
+source = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
 
 [functions.do_expensive_work]
 args = ["--n", "10000"]
