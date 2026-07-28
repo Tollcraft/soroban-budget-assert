@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+payload=$(cat)
+
+if echo "$payload" | grep -q '"getNetworkLimits"'; then
+    cat <<'JSON'
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "maxInstructions": 10000000,
+    "maxReadBytes": 100000,
+    "maxWriteBytes": 100000
+  }
+}
+JSON
+else
+    cat <<'JSON'
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "transactionData": "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA=",
+    "minResourceFee": "1000"
+  }
+}
+JSON
+fi

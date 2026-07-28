@@ -2,9 +2,11 @@ target/
 venv/
 .venv/
 contract_id.txt
+.budget-cache.toml
 req.json
 node_modules/
-docs/book/
+/dist
+site/dist
 *.pdf
 current_report.json
 .soroban/

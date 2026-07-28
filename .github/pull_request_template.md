@@ -14,6 +14,7 @@ Closes #
 - [ ] Passed `cargo test`
 - [ ] Passed `cargo clippy`
 - [ ] Formatted with `cargo fmt`
+- [ ] Reviewed or re-measured budget limits in `amm-pool-contract/tests/budget_test.rs` when contract, build profile, or toolchain changes may affect them
 
 ## Types of changes
 <!-- What types of changes does your code introduce? -->
