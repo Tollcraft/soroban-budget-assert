@@ -91,12 +91,16 @@ The CLI measures ground truth. One invocation walks this pipeline:
 3. **Scan exports** — parses the `.wasm` binary with `wasmparser` and collects every exported function, skipping internals (names starting with `_`, and `memory`).
 4. **Deploy** — deploys the WASM to the configured network with `stellar contract deploy`.
 5. **Simulate** — for each exported function, builds an unsigned transaction (`stellar contract invoke --build-only`, with per-function arguments from `budget.toml`), then POSTs it to the Soroban RPC `simulateTransaction` endpoint.
-6. **Decode** — decodes the returned `SorobanTransactionData` XDR (`stellar xdr decode`) and extracts `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes`.
+6. **Decode** — decodes the returned `SorobanTransactionData` XDR (`stellar xdr decode`) and extracts `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes`; on Soroban Protocol 22+, additionally reads `result.cost.memBytes` from the JSON-RPC `cost` block (see Memory Bytes below). On older protocol responses the `Memory Bytes` row is simply omitted (absence is not zero).
 7. **Report** — aggregates every package/function pair into one table, or JSON with `--json`.
 
 Simulated numbers vary slightly with ledger state, but they are the network's own measurement of the exact WASM you deploy, not a local approximation.
 
 These three figures are resource *amounts*, and they are inputs to the non-refundable resource fee — not the fee itself and not a total cost. Rent, other refundable fees, transaction size, footprint entry counts, and the inclusion fee are outside what the tool measures. See [Measurement scope](reference.md#measurement-scope) for the full boundary and where to find the omitted pieces.
+
+### Memory Bytes (Protocol 22+)
+
+The fourth reported row, `Memory Bytes`, does not come from the `SorobanTransactionData` XDR — Protocol 22 simulations return a separate `result.cost` JSON object alongside the XDR, and it carries per-metric human-readable `cpuInsns` and `memBytes` strings (stringified for `u64` precision over JSON). The CLI reads `result.cost.memBytes` from the JSON-RPC response in addition to the XDR fields, accepting both integer and string forms. This is the Source for the local-vs-network memory-bytes gap measurement series (issue #122).
 
 ## How the tiers work together
 

@@ -129,6 +129,11 @@ pub enum SimulationOutcome {
         instructions: u32,
         read_bytes: u32,
         write_bytes: u32,
+        /// Memory bytes extracted from `result.cost.memBytes` on Protocol 22+.
+        /// `None` when the field is absent (older protocol responses or
+        /// malformed payloads); callers should continue without surfacing
+        /// the metric rather than treating absence as zero cost.
+        memory_bytes: Option<u32>,
         /// Base64-encoded `SorobanTransactionData` from the RPC response.
         transaction_data_xdr: String,
     },

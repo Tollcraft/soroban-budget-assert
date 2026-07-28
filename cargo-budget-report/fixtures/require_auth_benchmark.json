@@ -1,0 +1,38 @@
+{
+  "operation_type": "Authorization (require_auth)",
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "function": "require_auth_only",
+    "arguments": {
+      "addr": "<generated Address>"
+    },
+    "registration": "register_contract_wasm"
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.85.0",
+  "network": {
+    "method": "simulateTransaction",
+    "network": "Soroban testnet"
+  },
+  "measurements": {
+    "cpu_instructions": {
+      "local_estimate": 2864886,
+      "network_figure": null,
+      "delta": null,
+      "delta_percent": null,
+      "note": "network figure pending — requires simulateTransaction against Soroban testnet"
+    },
+    "memory_bytes": {
+      "local_estimate": 1721879,
+      "network_figure": null,
+      "delta": null,
+      "delta_percent": null,
+      "note": "network figure pending — requires simulateTransaction against Soroban testnet"
+    }
+  },
+  "capture": {
+    "local_command": "cargo test -p amm-pool-contract --test measure_auth_gap -- --nocapture",
+    "network_command": "cargo run --bin cargo-budget-report -- --fixture cargo-budget-report/fixtures/require_auth_benchmark.json",
+    "recorded_at": "2026-07-28"
+  }
+}
