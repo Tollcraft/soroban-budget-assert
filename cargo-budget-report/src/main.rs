@@ -1,7 +1,6 @@
-use crate::derive::{DerivationConfig, Margin};
-use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
-use anyhow::Context;
-mod compare;
+pub mod module_11;
+
+use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
 use clap::Parser;
 use compare::{
@@ -16,6 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
+
+mod module_35;
+use module_35::FilterSet;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
@@ -83,11 +85,15 @@ enum CargoCli {
     BudgetReport(BudgetReportArgs),
 }
 
-/// CLI arguments for `cargo budget-report`.
-///
-/// All fields are optional; missing values fall back to the corresponding
-/// `budget.toml` configuration when available.
-#[derive(Parser, Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum OutputFormat {
+    Table,
+    Json,
+    #[value(name = "md")]
+    Markdown,
+}
+
+#[derive(Parser, Debug)]
 struct BudgetReportArgs {
     /// Scaffold a commented `budget.toml` template and exit.
     #[arg(long)]
@@ -103,8 +109,13 @@ struct BudgetReportArgs {
     #[arg(long)]
     source: Option<String>,
 
-    #[arg(long, default_value_t = false)]
+    /// Deprecated alias for `--format json` (use `--format json` instead).
+    #[arg(long, hide = true)]
     json: bool,
+
+    /// Output format: table, json, or md (markdown).
+    #[arg(long, default_value = "table")]
+    format: OutputFormat,
 
     /// Enforce per-function limits declared in `budget.toml`.
     ///
@@ -515,6 +526,18 @@ impl MeasuredResources {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug)]
+struct CacheEntry {
+    wasm_sha256: String,
+    contract_id: String,
+    network: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug)]
+struct BudgetCache {
+    package: HashMap<String, CacheEntry>,
+}
+
 /// A single row in the budget report, representing one metric for one
 /// exported function of one workspace package.
 ///
@@ -561,6 +584,64 @@ struct TableCostReport {
     function: String,
     metric: &'static str,
     value: String,
+}
+
+struct FunctionMetrics {
+    cpu: u32,
+    read: u32,
+    write: u32,
+    wasm: u32,
+}
+
+fn build_markdown_report(reports: &[CostReport]) -> String {
+    use std::collections::BTreeMap;
+
+    let mut packages: BTreeMap<String, BTreeMap<String, FunctionMetrics>> = BTreeMap::new();
+
+    for r in reports {
+        let Some(value) = r.value else { continue };
+        let functions = packages.entry(r.package.clone()).or_default();
+        let metrics = functions
+            .entry(r.function.clone())
+            .or_insert(FunctionMetrics {
+                cpu: 0,
+                read: 0,
+                write: 0,
+                wasm: 0,
+            });
+        match r.metric {
+            "CPU Instructions" => metrics.cpu = value,
+            "Read Bytes" => metrics.read = value,
+            "Write Bytes" => metrics.write = value,
+            "WASM Bytes" => metrics.wasm = value,
+            _ => {}
+        }
+    }
+
+    let mut output = String::new();
+    output.push_str("# Workspace Budget Report\n\n");
+
+    for (pkg_name, functions) in &packages {
+        output.push_str(&format!("## {}\n\n", pkg_name));
+        output.push_str("| Function | CPU Instructions | Read Bytes | Write Bytes |\n");
+        output.push_str("|----------|-----------------|------------|-------------|\n");
+
+        for (func_name, m) in functions {
+            let cpu = format_with_commas_and_units(u64::from(m.cpu), "CPU Instructions");
+            let read = format_with_commas_and_units(u64::from(m.read), "Read Bytes");
+            let write = format_with_commas_and_units(u64::from(m.write), "Write Bytes");
+            output.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                func_name, cpu, read, write
+            ));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("---\n");
+    output.push_str("_The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee._\n");
+
+    output
 }
 
 /// Returns the configured limit (if any) for the given metric name.
@@ -978,6 +1059,26 @@ fn simulate_function(
     }
 }
 
+/// Walk upward from the current directory looking for `budget.toml`.
+///
+/// Returns the path to the first `budget.toml` found, or `"budget.toml"`
+/// (relative to the original CWD) when no ancestor contains one—which
+/// lets `load_budget_toml` fall back to its default-empty behaviour.
+fn find_budget_toml() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("budget.toml");
+        if candidate.exists() {
+            return candidate;
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => return PathBuf::from("budget.toml"),
+        }
+    }
+}
+
 /// Loads and parses a `budget.toml` configuration file.
 ///
 /// If the file does not exist, returns a default (empty) configuration
@@ -1216,6 +1317,63 @@ fn run_preflight_checks(quiet: bool) -> Module10Result<()> {
     }
 
     Ok(())
+}
+
+/// Loads the contract ID cache from `.budget-cache.toml`.
+fn load_cache() -> BudgetCache {
+    std::fs::read_to_string(CACHE_FILE)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_cache(cache: &BudgetCache) {
+    let toml_str = toml::to_string_pretty(cache).unwrap_or_default();
+    let _ = std::fs::write(CACHE_FILE, toml_str);
+}
+
+fn wasm_sha256(wasm_bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(wasm_bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn get_contract_id_for_package(
+    package_name: &str,
+    wasm_bytes: &[u8],
+    network: &str,
+    source: &str,
+    wasm_path: &Path,
+    force_deploy: bool,
+    cache: &mut BudgetCache,
+) -> Result<String> {
+    let hash = wasm_sha256(wasm_bytes);
+
+    if !force_deploy {
+        if let Some(entry) = cache.package.get(package_name) {
+            if entry.wasm_sha256 == hash && entry.network == network {
+                eprintln!(
+                    "Cache hit for '{}' — reusing contract id {}",
+                    package_name, entry.contract_id
+                );
+                return Ok(entry.contract_id.clone());
+            }
+        }
+    }
+
+    let contract_id = deploy_contract_with_retry(wasm_path, source, network, package_name)?;
+
+    cache.package.insert(
+        package_name.to_string(),
+        CacheEntry {
+            wasm_sha256: hash,
+            contract_id: contract_id.clone(),
+            network: network.to_string(),
+        },
+    );
+    save_cache(cache);
+
+    Ok(contract_id)
 }
 
 /// Deploys a contract WASM to the network with automatic retry on
@@ -1505,11 +1663,8 @@ fn main() -> anyhow::Result<()> {
     // ── Preflight environment checks ──────────────────────────────────
     run_preflight_checks(args.quiet)?;
 
-    let toml_config = load_budget_toml("budget.toml")?;
-    let default_tolerance = resolve_tolerance(args.tolerance.as_deref(), &toml_config)
-        .context("failed to resolve tolerance")?;
-
-    let mode = Mode::from_args(&args);
+    let budget_toml_path = find_budget_toml();
+    let toml_config = load_budget_toml(&budget_toml_path)?;
 
     let network = args
         .network
@@ -1530,6 +1685,10 @@ fn main() -> anyhow::Result<()> {
         .exec()
         .context("failed to execute cargo metadata")?;
 
+    let filter = FilterSet::new(args.package, args.function);
+    let force_deploy = args.force_deploy;
+    let mut cache = load_cache();
+
     let mut reports = Vec::new();
     // `measurements` is the basis for both the legacy table output and the
     // snapshot/baseline modes. The BTreeMap ordering carries through to the
@@ -1545,11 +1704,16 @@ fn main() -> anyhow::Result<()> {
         let is_cdylib = package
             .targets
             .iter()
-            .any(|target| target.crate_types.iter().any(|ct| *ct == "cdylib"));
+            .any(|t| t.crate_types.iter().any(|c| *c == "cdylib"));
         if !is_cdylib {
             continue;
         }
 
+        if !filter.wants_package(&package.name) {
+            continue;
+        }
+
+        eprintln!("Building package '{}' for wasm32...", package.name);
         if !args.quiet {
             eprintln!("Building package '{}' for wasm32...", package.name);
         }
@@ -1646,8 +1810,15 @@ fn main() -> anyhow::Result<()> {
             Some(pb)
         };
 
-        let contract_id =
-            deploy_contract_with_retry(wasm_path.as_std_path(), &source, &network, &package.name)?;
+        let contract_id = get_contract_id_for_package(
+            &package.name,
+            &wasm_bytes,
+            &network,
+            &source,
+            wasm_path.as_std_path(),
+            force_deploy,
+            &mut cache,
+        )?;
 
         if let Some(spinner) = spinner {
             spinner.finish_and_clear();
@@ -1656,6 +1827,11 @@ fn main() -> anyhow::Result<()> {
         eprintln!("Contract deployed at: {}", contract_id);
 
         for function in exported_fns {
+            if !filter.wants_function(&function) {
+                continue;
+            }
+
+            eprintln!("Simulating function '{}'...", function);
             if !args.quiet {
                 eprintln!("Simulating function '{}'...", function);
             }
@@ -1819,57 +1995,30 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Per-function tolerance overrides from `budget.toml` (top-level plus
-    // per-function). Built once so Mode::Check (baseline regression) and the
-    // regular --check path below use the same input.
-    let tolerance_overrides: BTreeMap<String, Tolerance> = toml_config
-        .functions
-        .iter()
-        .filter_map(|(name, fc)| fc.tolerance.map(|t| (name.clone(), Tolerance::new(t))))
-        .collect();
+    let format = if args.json {
+        OutputFormat::Json
+    } else {
+        args.format
+    };
 
-    // Re-shape the local `MeasuredResources` map into the `compare::Measurement`
-    // shape so the baseline modes (`--record-baseline`, `--check-baseline`)
-    // can hand it to `build_baseline` / `check_against_baseline` without a
-    // second walk over the per-package data.
-    let measurement_map: BTreeMap<String, BTreeMap<String, Measurement>> = measurements
-        .iter()
-        .map(|(pkg, fns)| {
-            (
-                pkg.clone(),
-                fns.iter()
-                    .map(|(name, m)| (name.clone(), m.as_compare()))
-                    .collect(),
-            )
-        })
-        .collect();
-
-    match mode {
-        Mode::Record(path) => {
-            let baseline = build_baseline(&measurement_map);
-            baseline
-                .save(&path)
-                .with_context(|| format!("failed to save baseline to {}", path.display()))?;
-            eprintln!("Recorded baseline to {}", path.display());
-            return Ok(());
-        }
-        Mode::Check(path) => {
-            let baseline = Baseline::load(&path)
-                .with_context(|| format!("failed to load baseline {}", path.display()))?;
-            let report = check_against_baseline(
-                &baseline,
-                &measurement_map,
-                default_tolerance,
-                &tolerance_overrides,
-            );
-            if args.json {
-                let json = render_check_report_json(&report, default_tolerance);
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json).context("Failed to serialize JSON")?
-                );
-            } else {
-                print!("{}", render_report_text(&report));
+    if args.csv {
+        let mut wtr = csv::Writer::from_writer(std::io::stdout());
+        if args.check {
+            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+                .context("Failed to write CSV header")?;
+            for r in &reports {
+                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
+                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
+                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
+                wtr.write_record([
+                    r.package.as_str(),
+                    r.function.as_str(),
+                    r.metric,
+                    value_str.as_str(),
+                    limit_str.as_str(),
+                    pass_str.as_str(),
+                ])
+                .context("Failed to write CSV record")?;
             }
             if report.has_regressions() {
                 std::process::exit(1);
@@ -1919,83 +2068,74 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        csv_writer.flush().context("Failed to flush CSV writer")?;
-    } else if args.json {
-        let json_output =
-            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
-        println!("{}", json_output);
+        wtr.flush().context("Failed to flush CSV writer")?;
     } else {
-        // The plain text report path is preserved byte-for-byte when
-        // `--check` is not passed: only entries with a measured value are
-        // rendered in the table, and summary text is unchanged.
-        println!("\n=== WORKSPACE BUDGET REPORT ===");
-        let table_reports: Vec<TableCostReport> = reports
-            .iter()
-            .filter(|report| report.value.is_some())
-            .map(|report| {
-                let value = report.value.unwrap_or(0);
-                let formatted = format_value_with_share(
-                    u64::from(value),
-                    report.metric,
-                    report.share_pct,
-                    args.share_threshold,
-                );
-                TableCostReport {
-                    package: report.package.clone(),
-                    function: report.function.clone(),
-                    metric: report.metric,
-                    value: formatted,
-                }
-            })
-            .collect();
-        let table = Table::new(table_reports).to_string();
-        println!("{}", table);
-        println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
-        println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
-        println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
-        println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
-
-        // Fixed: was `if check` — `check` is not in scope here, this needs
-        // to read the CLI flag `args.check`.
-        if args.check {
-            println!("\n=== BUDGET CHECKS ===");
-            let mut passed: usize = 0;
-            let mut failed: usize = 0;
-            for report in &reports {
-                let Some(pass) = report.pass else {
-                    continue;
-                };
-                let status = if pass { "PASS" } else { "FAIL" };
-                let value_str = match report.value {
-                    Some(v) => format_value_with_share(
-                        u64::from(v),
-                        report.metric,
-                        report.share_pct,
-                        args.share_threshold,
-                    ),
-                    None => "<simulation failed>".to_string(),
-                };
-                let limit_str = report
-                    .limit
-                    .map(|limit_val| {
-                        // Limits wider than u32::MAX are not representable in
-                        // the table's units, but anything close to the
-                        // practical ceiling formats fine.
-                        let display_value = u32::try_from(limit_val).unwrap_or(u32::MAX);
-                        format_with_commas_and_units(u64::from(display_value), report.metric)
+        match format {
+            OutputFormat::Json => {
+                let json_output = serde_json::to_string_pretty(&reports)
+                    .context("Failed to serialize report to JSON")?;
+                println!("{}", json_output);
+            }
+            OutputFormat::Markdown => {
+                let md = build_markdown_report(&reports);
+                println!("{}", md);
+            }
+            OutputFormat::Table => {
+                println!("\n=== WORKSPACE BUDGET REPORT ===");
+                let table_reports: Vec<TableCostReport> = reports
+                    .iter()
+                    .filter(|r| r.value.is_some())
+                    .map(|r| {
+                        let value = r.value.unwrap_or(0);
+                        let formatted = format_with_commas_and_units(u64::from(value), r.metric);
+                        TableCostReport {
+                            package: r.package.clone(),
+                            function: r.function.clone(),
+                            metric: r.metric,
+                            value: formatted,
+                        }
                     })
-                    .unwrap_or_else(|| "-".to_string());
-                println!(
-                    "{}::{} [{}] value={} limit={} {}",
-                    report.package, report.function, report.metric, value_str, limit_str, status
-                );
-                if pass {
-                    passed += 1;
-                } else {
-                    failed += 1;
+                    .collect();
+                let table = Table::new(table_reports).to_string();
+                println!("{}", table);
+                println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
+                println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
+                println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
+                println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
+
+                if args.check {
+                    println!("\n=== BUDGET CHECKS ===");
+                    let mut passed: usize = 0;
+                    let mut failed: usize = 0;
+                    for r in &reports {
+                        let Some(pass) = r.pass else {
+                            continue;
+                        };
+                        let status = if pass { "PASS" } else { "FAIL" };
+                        let value_str = match r.value {
+                            Some(v) => format_with_commas_and_units(u64::from(v), r.metric),
+                            None => "<simulation failed>".to_string(),
+                        };
+                        let limit_str = r
+                            .limit
+                            .map(|n| {
+                                let v = u32::try_from(n).unwrap_or(u32::MAX);
+                                format_with_commas_and_units(u64::from(v), r.metric)
+                            })
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{}::{} [{}] value={} limit={} {}",
+                            r.package, r.function, r.metric, value_str, limit_str, status
+                        );
+                        if pass {
+                            passed += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    }
+                    println!("Summary: {} check(s) passed, {} failed", passed, failed);
                 }
             }
-            println!("Summary: {} check(s) passed, {} failed", passed, failed);
         }
     }
     // PR #195: `--check` exits non-zero when any limit was breached so CI can

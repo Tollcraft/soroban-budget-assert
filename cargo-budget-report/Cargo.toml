@@ -13,14 +13,16 @@ categories = ["development-tools::cargo-plugins", "development-tools::testing"]
 clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tabled = "0.14"
-stellar-xdr = { version = "22.1.0", features = ["std", "base64", "serde"] }
+tabled = "0.21"
+stellar-xdr = { version = "27.0.0", features = ["std", "base64", "serde"] }
 anyhow = "1.0.103"
-toml = "0.8"
-cargo_metadata = "0.18"
-wasmparser = "0.116.1"
-indicatif = "0.17.8"
+toml = "1.1"
+cargo_metadata = "0.23"
+wasmparser = "0.254.0"
+indicatif = "0.18.6"
 csv = "1.3"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"

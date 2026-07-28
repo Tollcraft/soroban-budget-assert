@@ -422,7 +422,7 @@ mod off_by_one_and_zero_length_tests {
             .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
 
-        let result = scaffold_init(false, false);
+        let result = scaffold_init(false, true);
         assert!(result.is_ok());
         assert!(
             std::path::Path::new("budget.toml").exists(),
@@ -447,7 +447,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(false, false);
+        let result = scaffold_init(false, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.as_ref().unwrap_err());
         assert!(
@@ -473,7 +473,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(true, false);
+        let result = scaffold_init(true, true);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string("budget.toml").unwrap();

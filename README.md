@@ -2,7 +2,7 @@
   <h1>🛡️ Soroban Budget Assert</h1>
   <p><strong>Empirical cost measurement and assertion tooling for Soroban smart contracts.</strong></p>
   
-  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions)
+  [![Build Status](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml/badge.svg)](https://github.com/Tollcraft/soroban-budget-assert/actions/workflows/budget.yml)
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   <p>
     <a href="https://tollcraft.gitbook.io/docs/budget-assert"><strong>Documentation</strong></a> ·
@@ -237,6 +237,23 @@ Summary: 1 check(s) passed, 2 failed
 CI surfaces the exact metric and limit on the failing run. Re-measure with
 `cargo budget-report` and either optimize the function or consciously raise
 the limit.
+
+### 💬 GitHub Actions Step Summary
+
+The report can be rendered as a GitHub-flavored Markdown table and published
+directly to the workflow run page and PR via `$GITHUB_STEP_SUMMARY`:
+
+```yaml
+# .github/workflows/budget.yml
+- name: Run Budget Report & Publish Step Summary
+  run: |
+    cargo run --bin cargo-budget-report -- budget-report --format md >> "$GITHUB_STEP_SUMMARY"
+```
+
+The `--format md` flag emits a Markdown table grouped by package, one row per
+function with CPU instructions, read bytes, and write bytes as columns. Piped
+to `$GITHUB_STEP_SUMMARY`, the table appears at the bottom of the workflow run
+page and, on pull requests, the "Summary" section of the PR.
 
 **Use Macros in Tests:**
 
