@@ -98,7 +98,6 @@ fn discovers_mock_workspace_and_reports_cleanly() {
 }
 
 #[test]
-fn json_output_reports_all_mock_contracts() {
 fn function_filter_reports_only_the_selected_function() {
     let workspace = setup_mock_workspace();
 
@@ -121,7 +120,10 @@ fn function_filter_reports_only_the_selected_function() {
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     let reports = reports.as_array().expect("report should be a JSON array");
 
-    assert!(!reports.is_empty(), "the selected function should be reported");
+    assert!(
+        !reports.is_empty(),
+        "the selected function should be reported"
+    );
     assert!(
         reports
             .iter()
@@ -153,7 +155,10 @@ fn function_filter_selects_a_function_from_the_other_contract() {
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     let reports = reports.as_array().expect("report should be a JSON array");
 
-    assert!(!reports.is_empty(), "the selected function should be reported");
+    assert!(
+        !reports.is_empty(),
+        "the selected function should be reported"
+    );
     assert!(
         reports
             .iter()
