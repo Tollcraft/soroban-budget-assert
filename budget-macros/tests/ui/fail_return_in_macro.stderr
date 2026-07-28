@@ -1,0 +1,5 @@
+error: `return` inside a macro invocation is not supported by the budget macros: the assertion cannot be injected into macro tokens, so it would be skipped silently. Move the `return` out of the macro invocation, or end the test with a tail expression instead. (If this `return` belongs to a closure passed to the macro, lift the closure into a `let` binding before the macro call.)
+  --> tests/ui/fail_return_in_macro.rs:17:9
+   |
+17 |         return Err(TestError)
+   |         ^^^^^^
