@@ -2,7 +2,40 @@
 
 ## Macros: `budget_macros`
 
-Both macros are attribute macros for test functions. They require a local variable named `env` (a `soroban_sdk::Env`) in the function body — the injected check reads `env.cost_estimate().budget()` after the original test statements run.
+The budget macros are attribute macros that inject budget-measurement assertions
+into test functions.  They require a local variable named `env` (a
+`soroban_sdk::Env`) — the injected check reads `env.cost_estimate().budget()`
+after the original test statements run.
+
+The check runs on every path that leaves the test, so all of these body shapes work:
+
+```rust
+#[test]
+#[budget_cpu_lt(850000)]
+fn unit_test() {
+    let env = Env::default();
+    // ... the check runs after the last statement ...
+}
+
+#[test]
+#[budget_cpu_lt(850000)]
+fn result_test() -> Result<(), Box<dyn std::error::Error>> {
+    let env = Env::default();
+    let wasm = std::fs::read("../target/wasm32-unknown-unknown/release/my_contract.wasm")?;
+    // ... the check runs after `Ok(())` is evaluated, and it is still the test's value ...
+    Ok(())
+}
+
+#[test]
+#[budget_cpu_lt(850000)]
+fn early_return_test() {
+    let env = Env::default();
+    if std::env::var("SKIP_SLOW_PATH").is_ok() {
+        return; // the check runs here too
+    }
+    // ...
+}
+```
 
 ### `#[budget_cpu_lt(N)]`
 
@@ -46,9 +79,33 @@ fn test_with_env_limit() {
 
 If the environment variable is unset or not a valid `u64`, the limit defaults to `u64::MAX` (effectively disabling the assertion).
 
+**Config-driven limit** — read the limit from a JSON configuration file at test time:
+
+```rust
+#[test]
+#[budget_cpu_lt(config = "cpu_instructions")]
+fn test_with_json_config() {
+    let env = Env::default();
+    // ... test logic ...
+}
+```
+
+The macro reads `budget.json` from the current working directory and looks up the value for the given key. The expected file format is:
+
+{% code title="budget.json" %}
+```json
+{
+  "cpu_instructions": 2500000,
+  "memory_bytes": 500000
+}
+```
+{% endcode %}
+
+If the file does not exist, the key is missing, or the value is not a valid `u64`, the macro prints a warning and falls back to `u64::MAX` (effectively disabling the assertion). This preserves backwards compatibility — existing tests without a `budget.json` file are unaffected.
+
 On failure the test panics with:
 ```
-CPU instruction cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+CPU instruction cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction
 ```
 
 ### `#[budget_mem_lt(N)]`
@@ -80,9 +137,20 @@ fn test_memory_with_env_limit() {
 }
 ```
 
+**Config-driven limit:**
+
+```rust
+#[test]
+#[budget_mem_lt(config = "memory_bytes")]
+fn test_memory_with_json_config() {
+    let env = Env::default();
+    // ... test logic ...
+}
+```
+
 Failure message format:
 ```
-Memory bytes cost {actual} exceeded limit {N} - local estimate, underestimates real network cost
+Memory bytes cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction
 ```
 
 ```rust
@@ -105,10 +173,68 @@ fn test_memory_budget() {
 }
 ```
 
+### `#[budget_scaling(…)]` — growth-model assertion
+
+Asserts that the CPU cost *grows* according to a declared model as input size
+increases.  This is a multi-point assertion: the macro measures the annotated
+function at several caller-provided sizes and validates the cost-growth curve.
+
+```rust
+use budget_macros::budget_scaling;
+use soroban_sdk::Env;
+
+#[budget_scaling(
+    sizes = [10, 100, 1000],
+    model = linear,
+    tolerance = 0.3,
+)]
+fn operation_scales_linearly(env: Env, size: u32) {
+    // body runs once per input size with `env` and `size` in scope
+}
+```
+
+**Attribute fields:**
+
+| Field       | Type              | Description |
+|-------------|-------------------|-------------|
+| `sizes`     | `[u32; N]` (N≥2) | Input sizes to measure. |
+| `model`     | `linear` / `quadratic` | Expected growth model. |
+| `tolerance` | `f64`             | Max allowed relative deviation (e.g. `0.3` = 30%). |
+
+**How it works:**
+
+1. For each `size` in `sizes` a fresh `Env` is created and its budget reset.
+2. The function body executes (it may read `env` and `size`).
+3. `cpu_instruction_cost()` is recorded.
+4. Consecutive (size, cost) pairs are compared: the observed cost ratio is
+   checked against the ratio the model predicts.
+
+**Growth models:**
+
+- **`linear`** — cost ∝ n.  Expected ratio = `size_{i+1} / size_i`.
+- **`quadratic`** — cost ∝ n².  Expected ratio = `(size_{i+1} / size_i)²`.
+
+If the absolute deviation `|observed/expected - 1|` exceeds `tolerance`, the
+test panics with a diagnostic that lists the offending size, expected and
+observed ratios, deviation, and all measurements.
+
+**Limitations:**
+
+- The body must not use `return`, `break`, or `continue` that would exit the
+  measurement loop.
+- A fresh `Env` is created per iteration — setup that must persist across sizes
+  should be extracted outside the macro.
+- Small base costs can mask the growth signal at tiny sizes; choose sizes where
+  the measured work dominates.
+- Only CPU cost is checked.
+
 ### Requirements and caveats
 
 {% hint style="warning" %}
 - The variable must be named `env`. The macro resolves the identifier by name.
+- A `?` that propagates an error leaves the test before the check runs. The test still fails on the returned error, so a regression cannot pass unnoticed — but the budget number is not measured on that path.
+- A `return` that comes from *another* macro's expansion (e.g. an `ensure!`/`bail!`-style macro) is invisible to the rewrite and skips the check. A `return` written directly inside macro invocation tokens is rejected with a compile error instead of being skipped silently; move it out of the macro call. This applies to every budget macro.
+- `return` inside a closure or `async` block in the test body is left alone — it exits that body, not the test.
 - Run the contract as WASM (`env.register_contract_wasm`) inside the test, not as raw Rust — raw Rust estimates ran ~81% under real network cost in our measurements and make the assertion meaningless.
 - Call `env.cost_estimate().budget().reset_unlimited()` before invoking the contract so measurement isn't cut short by the default test budget.
 - The macro checks the *local* estimate, which can sit above or below the real network cost depending on the build profile. Set `N` a few percent above the measured local number to catch regressions, and use `cargo budget-report` for the network ground truth (see the End-User Guide).
@@ -157,6 +283,26 @@ cargo budget-report [--network <network>] [--source <source>] [--json] [--check]
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
 External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32-unknown-unknown` Rust target installed.
+
+### Required release profile for comparable measurements
+
+`cargo budget-report` builds each contract with `cargo build --target wasm32-unknown-unknown --release`, so the workspace `[profile.release]` is part of the measured input. To compare against the figures published by this project, use the same profile:
+
+{% code title="Cargo.toml" %}
+```toml
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+```
+{% endcode %}
+
+Each setting can move the reported costs: size optimization, LTO, and a single codegen unit affect generated instructions; aborting panics removes unwinding code; strip/debug settings affect WASM bytes; release assertions avoid debug-only work; and overflow checks keep arithmetic checks in the measured release artifact. Results produced with another release profile describe another WASM build and are not comparable. The current tool does not warn when these settings are absent; that is a follow-up to consider rather than behavior implemented here.
 
 ### `--check`: enforcing regression limits against network-verified costs
 
@@ -246,14 +392,19 @@ For a function declared in `budget.toml` whose simulation fails, an entry still 
 
 ## Configuration: `budget.toml`
 
-Read from the directory the command runs in (the workspace root):
+The CLI walks upward from the current directory looking for `budget.toml`. When the file is present at the workspace root, running `cargo budget-report` from any subdirectory (e.g. inside a member crate) still finds it. If no `budget.toml` is found in any ancestor directory the CLI falls back to its defaults (network and source must be supplied via flags).
 
 {% code title="budget.toml" %}
 ```toml
 network = "testnet"
 source = "alice"
 
-# Per-function invoke arguments, passed to `stellar contract invoke -- <fn> <args>`
+# Default tolerance for regressions on `--check-baseline`. Functions may
+# override this with their own `tolerance`. Accepts the same forms as
+# `--tolerance`: either a fraction (0.10) or a percentage ("10%").
+tolerance = 0.10
+
+# Per-function invoke arguments, passed to `stellar contract invoke -- <fn> <args>`.
 [functions.do_expensive_work]
 args = ["--n", "10000"]
 
@@ -271,7 +422,7 @@ write_limit = 1000
 
 ## Output
 
-Each simulated function produces three rows (or three JSON objects) when its simulation succeeds: `CPU Instructions`, `Read Bytes`, and `Write Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
+Each simulated function produces four rows (or four JSON objects) when its simulation succeeds: `CPU Instructions`, `Read Bytes`, `Write Bytes`, and `WASM Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
@@ -294,20 +445,20 @@ When `--check --json` is used, configured functions gain `limit` and `pass` (see
 
 `cargo budget-report` reports **resource amounts from a simulation, not fees**. It reads three
 fields out of the `SorobanTransactionData` returned by `simulateTransaction` —
-`resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — and prints
-them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
-total.
-
-### In scope
+`resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — plus the
+compiled WASM binary size from the build step, and prints
+them unchanged. On Soroban Protocol 22+ it additionally reads `result.cost.memBytes` from the JSON-RPC `cost` block and surfaces it as a `Memory Bytes` row. Nothing in the output is denominated in stroops, and no figure it prints is a
+total.### In scope
 
 | Reported | Stellar resource it corresponds to |
 |---|---|
 | `CPU Instructions` | `resources.instructions` — metered CPU instruction count |
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
+| `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
+| `Memory Bytes` (Protocol 22+) | `result.cost.memBytes` — memory-bytes cost from the Protocol 22 JSON-RPC `cost` block; absent on older protocol responses |
 
-These three quantities are *inputs* to the **non-refundable resource fee**. They are not the
-whole of it.
+These four (or five on Protocol 22+) quantities are *inputs* to the **non-refundable resource fee**. They are not the whole of it.
 
 ### Not in scope
 
@@ -338,9 +489,6 @@ measures into a fee.
   and not a property of the contract at all. The `minResourceFee` field of a
   `simulateTransaction` response is the closest single number to "what the resources cost";
   reach for that, not for this report, when you need a figure in stroops.
-- **WASM binary size** — the size of the deployed contract binary is not reported. This is
-  coming: see issue #88.
-
 ### What the report is good for
 
 Comparing a function against itself over time. The three metrics are the ones that move when
@@ -361,7 +509,7 @@ answering "how much will my users pay".
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.0"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
 * **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
 * **Corresponding Stellar Protocol**: **Protocol 22**
 
@@ -370,5 +518,5 @@ answering "how much will my users pay".
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.0`, `stellar-xdr` `22.1.0`). |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
 | **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
