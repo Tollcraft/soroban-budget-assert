@@ -1,6 +1,29 @@
 network = "testnet"
 source = "alice"
 
+# -- Tier A limit derivation (issue: derive-tier-a-limits-from-tier-b) ---------
+# Per-metric margin multipliers fed to `cargo budget-report --derive-limits`.
+# Every field is required; an incomplete `[margin]` block (e.g. only
+# `cpu_margin`) is rejected at use-time to avoid a half-configured file
+# silently degrading to a hand-picked global value. Issue #45 calls this out
+# explicitly: a single global margin is wrong across operation types, so the
+# per-metric split is the minimum granularity until per-operation margin
+# computation lands.
+[margin]
+cpu_margin    = 1.50  # 50% headroom over Tier B CPU ceiling
+memory_margin = 1.25  # 25% headroom over Tier B memory ceiling
+read_margin   = 2.00  # 100% headroom over Tier B read-bytes ceiling
+write_margin  = 3.00  # 200% headroom over Tier B write-bytes ceiling
+
+# -- Scenarios --------------------------------------------------------------
+# Components whose Tier B values are summed into a single Tier A limit for
+# tests that exercise a multi-step workflow in one assertion. Keys must
+# match a `<package>::<scenario_name>` namespace otherwise the derived
+# env-var key will not line up with the test annotation.
+[scenarios.full_workflow]
+package = "amm-pool-contract"
+functions = ["deposit", "swap", "withdraw"]
+
 # The `do_expensive_work` function is retained as a synthetic CPU-bound baseline.
 # It exercises loops and instance storage without cross-contract calls, making it
 # the only function that can be invoked via `cargo budget-report` on testnet without
@@ -22,6 +45,16 @@ write_limit = 1000
 # host call, providing a minimal baseline for authorization overhead measurement.
 [functions.require_auth_only]
 args = ["--addr", "alice"]
+
+# The `allocate_vec` function is the fixture for the local-vs-network gap
+# measurement of memory-bytes (issue #122). It pushes `n` elements into a
+# host-resident Vec with no auth/storage side-effects so the simulation's
+# reported `result.cost.memBytes` is dominated by the allocation itself.
+# A 5 MB memory ceiling is generous for n = 10_000; tighten once a
+# network baseline is recorded with `cargo budget-report`.
+[functions.allocate_vec]
+args = ["--n", "10000"]
+mem_limit = 5000000
 
 # The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
 # local test-harness measurement and exercise multiple storage keys, authorization,
