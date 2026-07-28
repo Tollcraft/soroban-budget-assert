@@ -1,0 +1,7 @@
+error: unexpected end of input, expected integer literal
+ --> tests/ui/no_arg.rs:4:1
+  |
+4 | #[budget_cpu_lt]
+  | ^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_cpu_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

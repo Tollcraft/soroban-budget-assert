@@ -1,0 +1,7 @@
+{
+  "resources": {
+    "instructions": 1000,
+    "disk_read_bytes": 2048,
+    "write_bytes": 3072
+  }
+}

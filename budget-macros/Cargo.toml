@@ -1,12 +1,21 @@
 [package]
 name = "budget-macros"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "Proc-macro crate providing budget assertion attributes for Soroban contract tests."
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords = ["soroban", "stellar", "testing", "budget", "proc-macro"]
+categories = ["development-tools::testing", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
 
 [dependencies]
-syn = { version = "2.0", features = ["full", "extra-traits"] }
+syn = { version = "3.0", features = ["full", "extra-traits"] }
 quote = "1.0"
 proc-macro2 = "1.0"
+
+[dev-dependencies]
+trybuild = "1.0"
