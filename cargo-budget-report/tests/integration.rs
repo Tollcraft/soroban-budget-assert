@@ -135,10 +135,81 @@ fn discovers_mock_workspace_and_reports_cleanly() {
     );
     assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
     assert!(stdout.contains("mock-contract-b"), "got: {stdout}");
+    assert!(stdout.contains("mock-contract-renamed"), "got: {stdout}");
     assert!(stdout.contains("CPU Instructions"), "got: {stdout}");
     assert!(stdout.contains("1,000,000 inst."), "got: {stdout}");
     assert!(stdout.contains("2,048 B"), "got: {stdout}");
     assert!(stdout.contains("4,096 B"), "got: {stdout}");
+}
+
+#[test]
+fn function_filter_reports_only_the_selected_function() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--function",
+            "ping",
+            "--json",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reports: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    let reports = reports.as_array().expect("report should be a JSON array");
+
+    assert!(
+        !reports.is_empty(),
+        "the selected function should be reported"
+    );
+    assert!(
+        reports
+            .iter()
+            .all(|report| report["package"] == "mock-contract-a"),
+        "--function ping should exclude mock-contract-b: {reports:?}"
+    );
+}
+
+#[test]
+fn function_filter_selects_a_function_from_the_other_contract() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--function",
+            "pong",
+            "--json",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let reports: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    let reports = reports.as_array().expect("report should be a JSON array");
+
+    assert!(
+        !reports.is_empty(),
+        "the selected function should be reported"
+    );
+    assert!(
+        reports
+            .iter()
+            .all(|report| report["package"] == "mock-contract-b"),
+        "--function pong should exclude mock-contract-a: {reports:?}"
+    );
 }
 
 #[test]
@@ -163,6 +234,10 @@ fn json_output_reports_both_mock_contracts() {
         .collect();
     assert!(packages.contains("mock-contract-a"), "got: {reports:?}");
     assert!(packages.contains("mock-contract-b"), "got: {reports:?}");
+    assert!(
+        packages.contains("mock-contract-renamed"),
+        "got: {reports:?}"
+    );
 
     let cpu_entry = reports
         .iter()
@@ -207,6 +282,9 @@ fn check_flag_passes_when_limits_are_generous() {
     let output = assert.success().get_output().clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("=== BUDGET CHECKS ==="), "got: {stdout}");
+    // Only ping (3 metrics) + pong (3 metrics) are configured in budget.toml.
+    // The new greet function has no config, so it adds 0 checks.
+    // WASM Bytes are not checked because limit_for_metric returns None.
     assert!(
         stdout.contains("Summary: 6 check(s) passed, 0 failed"),
         "got: {stdout}"

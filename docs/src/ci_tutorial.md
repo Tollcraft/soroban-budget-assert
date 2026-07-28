@@ -6,6 +6,23 @@ If you have not installed the tool or written your first gated test, start with 
 
 - Run `cargo install --path cargo-budget-report` from this repo.
 - Created `budget.toml` at the workspace root.
+- Added this repository's `[profile.release]` to the workspace root `Cargo.toml` before recording or comparing budget figures:
+
+{% code title="Cargo.toml" %}
+```toml
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+```
+{% endcode %}
+
+  The profile is part of the measurement: optimization, LTO, codegen units, panic behavior, strip/debug settings, release assertions, and overflow checks all change the WASM that `cargo budget-report` builds and the local WASM tests load. Numbers from another release profile are not comparable to this project's published figures.
 - Run `cargo budget-report` at least once, locally.
 
 ## What the two tiers buy you

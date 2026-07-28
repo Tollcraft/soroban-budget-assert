@@ -132,8 +132,8 @@
                     "ext": "v0",
                     "cost_inputs": {
                       "ext": "v0",
-                      "n_instructions": 7522,
-                      "n_functions": 122,
+                      "n_instructions": 7265,
+                      "n_functions": 109,
                       "n_globals": 3,
                       "n_table_entries": 4,
                       "n_types": 33,
