@@ -22,7 +22,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
-          target: wasm32v1-none
+          targets: wasm32v1-none wasm32-unknown-unknown
 
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
@@ -31,6 +31,11 @@ jobs:
         run: |
           curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
           mv stellar ~/.cargo/bin/
+
+      - name: Configure Stellar Identity
+        run: stellar keys add alice --secret-key "${{ secrets.ALICE_SECRET_KEY }}"
+        env:
+          STELLAR_ACCOUNT: alice
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32v1-none
@@ -83,7 +88,7 @@ jobs:
     - name: Download Budget Report
       uses: actions/download-artifact@v4
       with:
-name: budget-report
+        name: budget-report
 
     - name: Record History Dataset
       run: |
