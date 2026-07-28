@@ -226,6 +226,26 @@ Configuration precedence: a CLI flag overrides the `budget.toml` value. If neith
 
 External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32-unknown-unknown` Rust target installed.
 
+### Required release profile for comparable measurements
+
+`cargo budget-report` builds each contract with `cargo build --target wasm32-unknown-unknown --release`, so the workspace `[profile.release]` is part of the measured input. To compare against the figures published by this project, use the same profile:
+
+{% code title="Cargo.toml" %}
+```toml
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+```
+{% endcode %}
+
+Each setting can move the reported costs: size optimization, LTO, and a single codegen unit affect generated instructions; aborting panics removes unwinding code; strip/debug settings affect WASM bytes; release assertions avoid debug-only work; and overflow checks keep arithmetic checks in the measured release artifact. Results produced with another release profile describe another WASM build and are not comparable. The current tool does not warn when these settings are absent; that is a follow-up to consider rather than behavior implemented here.
+
 ### `--check`: enforcing regression limits against network-verified costs
 
 The `--check` flag turns the report into a CI gate. Behavior:
@@ -314,14 +334,19 @@ For a function declared in `budget.toml` whose simulation fails, an entry still 
 
 ## Configuration: `budget.toml`
 
-Read from the directory the command runs in (the workspace root):
+The CLI walks upward from the current directory looking for `budget.toml`. When the file is present at the workspace root, running `cargo budget-report` from any subdirectory (e.g. inside a member crate) still finds it. If no `budget.toml` is found in any ancestor directory the CLI falls back to its defaults (network and source must be supplied via flags).
 
 {% code title="budget.toml" %}
 ```toml
 network = "testnet"
 source = "alice"
 
-# Per-function invoke arguments, passed to `stellar contract invoke -- <fn> <args>`
+# Default tolerance for regressions on `--check-baseline`. Functions may
+# override this with their own `tolerance`. Accepts the same forms as
+# `--tolerance`: either a fraction (0.10) or a percentage ("10%").
+tolerance = 0.10
+
+# Per-function invoke arguments, passed to `stellar contract invoke -- <fn> <args>`.
 [functions.do_expensive_work]
 args = ["--n", "10000"]
 
@@ -364,10 +389,8 @@ When `--check --json` is used, configured functions gain `limit` and `pass` (see
 fields out of the `SorobanTransactionData` returned by `simulateTransaction` —
 `resources.instructions`, `resources.disk_read_bytes`, and `resources.write_bytes` — plus the
 compiled WASM binary size from the build step, and prints
-them unchanged. Nothing in the output is denominated in stroops, and no figure it prints is a
-total.
-
-### In scope
+them unchanged. On Soroban Protocol 22+ it additionally reads `result.cost.memBytes` from the JSON-RPC `cost` block and surfaces it as a `Memory Bytes` row. Nothing in the output is denominated in stroops, and no figure it prints is a
+total.### In scope
 
 | Reported | Stellar resource it corresponds to |
 |---|---|
@@ -375,9 +398,9 @@ total.
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
 | `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
+| `Memory Bytes` (Protocol 22+) | `result.cost.memBytes` — memory-bytes cost from the Protocol 22 JSON-RPC `cost` block; absent on older protocol responses |
 
-These four quantities are *inputs* to the **non-refundable resource fee**. They are not the
-whole of it.
+These four (or five on Protocol 22+) quantities are *inputs* to the **non-refundable resource fee**. They are not the whole of it.
 
 ### Not in scope
 
