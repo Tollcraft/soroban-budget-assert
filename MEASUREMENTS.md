@@ -111,6 +111,42 @@ The local WASM estimate for the size-opt profile at soroban-sdk 22.0.11 is **2,6
 
 **Recommendation:** regenerate this table on every SDK bump. A margin computed against a stale SDK baseline is no better than a guess.
 
+## Authorization (require_auth) measurement
+
+This section records the local-vs-network cost gap for the `require_auth` host-function call, isolated from all other contract logic. The `require_auth_only` function in `amm-pool-contract` calls `addr.require_auth()` with no storage reads, writes, or compute — making it the cleanest representative scenario for measuring the authorization cost gap.
+
+### Methodology
+
+The local estimate is collected by the `measure_auth_gap` test in `amm-pool-contract/tests/measure_auth_gap.rs`:
+
+```
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test measure_auth_gap -- --nocapture
+```
+
+The network figure requires a `simulateTransaction` call against Soroban testnet with the same WASM, contract state, and toolchain. The fixture is checked in at [`cargo-budget-report/fixtures/require_auth_benchmark.json`](cargo-budget-report/fixtures/require_auth_benchmark.json).
+
+### Figures
+
+| Operation type | Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---|---:|---:|---:|---:|---:|---|---|---|---|
+| Authorization (require_auth) | 2,864,886 | 1,721,879 | — | — | — | `amm-pool-contract::require_auth_only` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-07-28 |
+
+The network figure and delta columns are pending — they require a `simulateTransaction` call against Soroban testnet with the same WASM and contract state. The complete capture record is at [`cargo-budget-report/fixtures/require_auth_benchmark.json`](cargo-budget-report/fixtures/require_auth_benchmark.json).
+
+### Comparison with Tier B estimate
+
+The Tier B estimate for `require_auth_only` is 90,000 CPU instructions (see `tier-a-limits.env`). The local WASM measurement of **2,864,886** is approximately **32x higher** than the Tier B figure. This discrepancy is expected: the Tier B estimate was derived from a previous toolchain/SDK combination and may not reflect the current SDK 22.0.11 + rustc 1.85.0 environment. The local measurement should be treated as the current baseline until a network figure is collected.
+
+### Reproduction
+
+To reproduce this measurement:
+
+1. Ensure the WASM is built: `cargo build --target wasm32v1-none --release -p amm-pool-contract`
+2. Run the measurement test: `cargo test -p amm-pool-contract --test measure_auth_gap -- --nocapture`
+3. Extract `AUTH_CPU` and `AUTH_MEM` from the test output.
+4. For the network figure, deploy the WASM to Soroban testnet and run `simulateTransaction` with the same contract state (see the fixture JSON for the required ledger entries).
+
 ## Unmeasured operation types
 
 The following operation types have open measurement issues and no published figures yet. When adding a measurement, follow the column format above and include the build profile and toolchain.
