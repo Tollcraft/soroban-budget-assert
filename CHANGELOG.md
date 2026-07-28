@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`[scenarios.<name>]` block in `budget.toml`.** Maps a single Tier A scenario (e.g. "full_workflow = deposit + swap + withdraw") to the component functions whose Tier B values are summed into one Tier A limit. The derived key prefixes with `SCENARIO__<name>` so it cannot collide with a per-function limit on the same package.
 - Workspace-root `tier-a-limits.env` and `tier-a-limits.provenance.md` artifacts for the AMM pool fixture (`amm-pool-contract/tests/budget_test.rs`). The nine hand-tuned limits in that test are replaced by `env_file = "../tier-a-limits.env", env = "..."` annotations, and the stale hand-written reconciliation comments (`// Re-measured: WASM local 2770850…` / `// WASM local 901816, actual testnet ~756678…`) are dropped in favour of the auto-generated provenance sidecar.
 - New `cargo-budget-report/fixtures/tier_b_report_sample.json` fixture used as the input to `cargo budget-report --derive-limits` in tests and ad-hoc CI smoke runs.
+- **New `module_25` — hash-optimized internal state tracking (`optimize-internal-state-tracking-structures`, issue #233).** Adds a [`module_25`] to `soroban-budget-assert-core` that tracks per-operation cost snapshots via a [`StateTracker`] trait with two pluggable backends: [`LinearStateTracker`] (pre-optimization `Vec<(String, CostSnapshot)>` baseline) and [`HashedStateTracker`] (post-optimization `HashMap<String, CostSnapshot>`). Both backends share an identical public API — `record` / `lookup` / `contains` / `len` / `is_empty` / `total_cpu` / `total_memory` / `ops` / `clear` — so call sites swap by changing one type. A `compare_backends` function runs a paired before/after benchmark (`record_speedup`, `lookup_speedup`) that quantifies the optimization on the same workload. 22 new unit tests cover correctness, parity between backends, and the optimization invariant (`hashed` beats `linear` at every scale).
 
 ### Changed
 
 - Tier A reconciliation comments in `amm-pool-contract/tests/budget_test.rs` are now auto-generated from `tier-a-limits.provenance.md`, not transcribed by hand. Re-derive the artifact instead of editing the test inline when a limit needs to change.
+- `src/lib.rs` re-exports `module_25` alongside the existing `module_1`.
 
 ### Notes
 
