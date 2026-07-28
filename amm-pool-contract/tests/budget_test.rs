@@ -3,7 +3,9 @@
 use std::sync::{Mutex, PoisonError};
 
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient};
-use budget_macros::{budget_cpu_lt, budget_lt, budget_mem_lt, budget_write_bytes_lt};
+use budget_macros::{
+    budget_cpu_lt, budget_lt, budget_mem_lt, budget_scaling, budget_write_bytes_lt,
+};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Serialises all JSON-config tests so they never read stale `budget.json`
@@ -544,4 +546,38 @@ fn test_budget_macro_early_return_still_asserts() {
     }
 
     client.swap(&user, &true, &100_i128, &90_i128);
+}
+
+// ---------------------------------------------------------------------------
+// Budget scaling assertion fixtures
+//
+// These tests exercise the `#[budget_scaling(…)]` attribute, which measures
+// CPU cost across multiple input sizes and checks that the observed growth
+// matches a declared model (linear / quadratic) within a tolerance.
+// ---------------------------------------------------------------------------
+
+/// A genuinely linear operation: summing i² for i in 0..size.
+/// Cost should grow roughly linearly with size.
+#[budget_scaling(sizes = [10, 100, 500], model = linear, tolerance = 0.5)]
+fn scaling_linear_passes(env: soroban_sdk::Env, size: u32) {
+    let mut total: u32 = 0;
+    for i in 0..size {
+        total = total.wrapping_add(i.wrapping_mul(i));
+    }
+}
+
+/// A deliberately quadratic (O(n²)) operation tested against the linear
+/// model with tight tolerance — this fixture is expected to panic.
+///
+/// The nested loop makes cost grow as n², so the ratio check against a
+/// linear model with a 20 % tolerance bound must fail.
+#[budget_scaling(sizes = [10, 100], model = linear, tolerance = 0.2)]
+#[should_panic(expected = "Scaling check failed")]
+fn scaling_quadratic_fails_linear_check(env: soroban_sdk::Env, size: u32) {
+    let mut total: u32 = 0;
+    for _ in 0..size {
+        for i in 0..size {
+            total = total.wrapping_add(i.wrapping_mul(i));
+        }
+    }
 }

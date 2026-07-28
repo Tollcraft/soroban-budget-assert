@@ -2,7 +2,10 @@
 
 ## Macros: `budget_macros`
 
-Both macros are attribute macros for test functions. They require a local variable named `env` (a `soroban_sdk::Env`) in the function body — the injected check reads `env.cost_estimate().budget()` after the original test statements run.
+The budget macros are attribute macros that inject budget-measurement assertions
+into test functions.  They require a local variable named `env` (a
+`soroban_sdk::Env`) — the injected check reads `env.cost_estimate().budget()`
+after the original test statements run.
 
 The check runs on every path that leaves the test, so all of these body shapes work:
 
@@ -169,6 +172,61 @@ fn test_memory_budget() {
     client.do_expensive_work(&10_000);
 }
 ```
+
+### `#[budget_scaling(…)]` — growth-model assertion
+
+Asserts that the CPU cost *grows* according to a declared model as input size
+increases.  This is a multi-point assertion: the macro measures the annotated
+function at several caller-provided sizes and validates the cost-growth curve.
+
+```rust
+use budget_macros::budget_scaling;
+use soroban_sdk::Env;
+
+#[budget_scaling(
+    sizes = [10, 100, 1000],
+    model = linear,
+    tolerance = 0.3,
+)]
+fn operation_scales_linearly(env: Env, size: u32) {
+    // body runs once per input size with `env` and `size` in scope
+}
+```
+
+**Attribute fields:**
+
+| Field       | Type              | Description |
+|-------------|-------------------|-------------|
+| `sizes`     | `[u32; N]` (N≥2) | Input sizes to measure. |
+| `model`     | `linear` / `quadratic` | Expected growth model. |
+| `tolerance` | `f64`             | Max allowed relative deviation (e.g. `0.3` = 30%). |
+
+**How it works:**
+
+1. For each `size` in `sizes` a fresh `Env` is created and its budget reset.
+2. The function body executes (it may read `env` and `size`).
+3. `cpu_instruction_cost()` is recorded.
+4. Consecutive (size, cost) pairs are compared: the observed cost ratio is
+   checked against the ratio the model predicts.
+
+**Growth models:**
+
+- **`linear`** — cost ∝ n.  Expected ratio = `size_{i+1} / size_i`.
+- **`quadratic`** — cost ∝ n².  Expected ratio = `(size_{i+1} / size_i)²`.
+
+If the absolute deviation `|observed/expected - 1|` exceeds `tolerance`, the
+test panics with a diagnostic that lists the offending size, expected and
+observed ratios, deviation, and all measurements.
+
+**Limitations:**
+
+- The body must not use `return`, `break`, or `continue` that would exit the
+  measurement loop.
+- A fresh `Env` is created per iteration — setup that must persist across sizes
+  should be extracted outside the macro.
+- Small base costs can mask the growth signal at tiny sizes; choose sizes where
+  the measured work dominates.
+- Only CPU cost is checked.
 
 ### Requirements and caveats
 
