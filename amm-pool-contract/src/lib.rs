@@ -283,4 +283,62 @@ impl ConstantProductPool {
                 .set(&(symbol_short!("wh"), i), &payload);
         }
     }
+
+    /// Reads `n` keys from instance storage in a loop, exercising the
+    /// ledger read-bytes budget. Writes each key once upfront so the reads
+    /// hit persisted data, then reads them all back to accumulate
+    /// `disk_read_bytes`.
+    ///
+    /// Each key stores a 256-byte `Bytes` value so the read footprint
+    /// grows quickly and is easy to reason about in assertions.
+    /// `n = 100` produces ~25 600 bytes of ledger reads from the read
+    /// phase alone.
+    /// Allocates `n` host-resident `Vec<u32>` elements with no storage or
+    /// authorization side-effects, isolating the memory-bytes cost of a
+    /// pure allocation loop.
+    ///
+    /// Returned as `u32` so the assertion has a deterministic cross-check
+    /// (`v.len()` versus `n`). The fixture exists for the
+    /// `local-vs-network memory-bytes gap` measurement series (issue
+    /// #122); by exercising only `Vec::new(&env).push_back` it minimises
+    /// the write/storage/auth cost surface so the simulation's reported
+    /// `result.cost.memBytes` is dominated by allocation.
+    pub fn allocate_vec(env: Env, n: u32) -> u32 {
+        let mut v: Vec<u32> = Vec::new(&env);
+        for i in 0..n {
+            v.push_back(i);
+        }
+        let len = v.len();
+        // Drop the Vec explicitly so a future change to in-host GC cost
+        // doesn't silently slip into the measurement.
+        drop(v);
+        len
+    }
+
+    pub fn do_read_heavy_work(env: Env, n: u32) -> u32 {
+        // Phase 1: Write n keys to instance storage so they can be read back.
+        for i in 0..n {
+            let mut payload = Bytes::new(&env);
+            for _ in 0..256_u32 {
+                payload.push_back(i as u8);
+            }
+            env.storage()
+                .instance()
+                .set(&(symbol_short!("rh"), i), &payload);
+        }
+
+        // Phase 2: Read all keys back to accumulate disk_read_bytes.
+        // The `sum` return value prevents the compiler from optimizing
+        // away the reads and gives us a simple correctness check.
+        let mut sum: u32 = 0;
+        for i in 0..n {
+            let val: Bytes = env
+                .storage()
+                .instance()
+                .get(&(symbol_short!("rh"), i))
+                .unwrap_or_else(|| Bytes::new(&env));
+            sum = sum.wrapping_add(val.len());
+        }
+        sum
+    }
 }

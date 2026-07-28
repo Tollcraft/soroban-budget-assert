@@ -4,13 +4,32 @@ on:
   push:
     tags:
       - "v*"
+  pull_request:
+    branches: ["main"]
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and Release
+  publish-dry-run:
+    name: Dry Run Publish Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Dry run budget-macros
+        run: cargo publish -p budget-macros --dry-run
+
+      - name: Dry run cargo-budget-report
+        run: cargo publish -p cargo-budget-report --dry-run
+
+  build:
+    name: Build
+    if: github.event_name == 'push'
     strategy:
       matrix:
         include:
@@ -52,7 +71,62 @@ jobs:
         shell: bash
         run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.name }}
 
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+  checksums:
+    name: Generate Checksums
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cargo-budget-report-*
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: sha256sum cargo-budget-report-* > SHA256SUMS
+
       - name: Release
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ matrix.name }}
+          files: |
+            cargo-budget-report-*
+            SHA256SUMS
+
+  publish:
+    name: Publish to crates.io
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag version matches crate versions
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          WORKSPACE_VERSION=$(awk '/^\[workspace\.package\]/ {found=1} found && /^version = / {print; exit}' Cargo.toml | sed 's/.*= "\(.*\)"/\1/')
+          if [ "$TAG_VERSION" != "$WORKSPACE_VERSION" ]; then
+            echo "ERROR: Tag v$TAG_VERSION does not match workspace version $WORKSPACE_VERSION"
+            exit 1
+          fi
+          echo "Workspace version $WORKSPACE_VERSION matches tag v$TAG_VERSION"
+
+      - name: Publish budget-macros
+        run: cargo publish -p budget-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish cargo-budget-report
+        run: cargo publish -p cargo-budget-report
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
