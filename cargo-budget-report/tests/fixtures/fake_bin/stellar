@@ -46,6 +46,35 @@ case "${1:-}" in
         ;;
     esac
     ;;
+  xdr)
+    # Support `stellar xdr decode --type SorobanTransactionData --output json`
+    # for validation integration tests.
+    if [ "${2:-}" = "decode" ]; then
+        # Drain stdin (the base64 XDR piped in)
+        cat >/dev/null
+        # Output the JSON that the real CLI would produce when decoding the
+        # fixture XDR. The fixture XDR "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA="
+        # decodes to instructions=1000000, read_bytes=2048, write_bytes=4096.
+        cat <<'XDRJSON'
+{
+  "ext": "V0",
+  "resources": {
+    "footprint": {
+      "read_only": [],
+      "read_write": []
+    },
+    "instructions": 1000000,
+    "read_bytes": 2048,
+    "write_bytes": 4096
+  },
+  "resource_fee": 0
+}
+XDRJSON
+    else
+        echo "mock stellar: unsupported 'xdr' subcommand: ${2:-}" >&2
+        exit 1
+    fi
+    ;;
   *)
     echo "mock stellar: unsupported command: ${1:-}" >&2
     exit 1
