@@ -1,4 +1,8 @@
 [toolchain]
+<<<<<<< HEAD
 channel = "1.91.0"
+=======
+channel = "1.85.0"
+>>>>>>> origin/main
 targets = ["wasm32v1-none"]
 components = ["rustfmt", "clippy"]

@@ -13,10 +13,17 @@ categories = ["development-tools::testing", "development-tools::procedural-macro
 proc-macro = true
 
 [dependencies]
+<<<<<<< HEAD
 syn = { version = "3.0", features = ["full", "extra-traits", "visit-mut"] }
+=======
+syn = { version = "3.0", features = ["full", "extra-traits"] }
+>>>>>>> origin/main
 quote = "1.0"
 proc-macro2 = "1.0"
 
 [dev-dependencies]
+<<<<<<< HEAD
 proptest = "1.6"
+=======
+>>>>>>> origin/main
 trybuild = "1.0"

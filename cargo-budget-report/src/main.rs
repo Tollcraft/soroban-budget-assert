@@ -446,10 +446,14 @@ fn fetch_network_limits(rpc_url: &str) -> anyhow::Result<NetworkLimits> {
         .context("failed to execute curl for getNetworkLimits")?;
 
     {
+<<<<<<< HEAD
         let stdin = curl
             .stdin
             .as_mut()
             .context("Failed to open stdin for getNetworkLimits")?;
+=======
+        let stdin = curl.stdin.as_mut().context("Failed to open stdin for getNetworkLimits")?;
+>>>>>>> origin/main
         stdin
             .write_all(payload.to_string().as_bytes())
             .context("Failed to write getNetworkLimits payload to stdin")?;
@@ -462,9 +466,15 @@ fn fetch_network_limits(rpc_url: &str) -> anyhow::Result<NetworkLimits> {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
         .context("Failed to parse getNetworkLimits response")?;
 
+<<<<<<< HEAD
     let result = json
         .get("result")
         .ok_or_else(|| anyhow::anyhow!("getNetworkLimits response missing 'result' field"))?;
+=======
+    let result = json.get("result").ok_or_else(|| {
+        anyhow::anyhow!("getNetworkLimits response missing 'result' field")
+    })?;
+>>>>>>> origin/main
 
     Ok(NetworkLimits {
         max_instructions: result
@@ -765,12 +775,16 @@ fn format_with_commas_and_units(value: u64, metric: &str) -> String {
 /// If `share_pct` is provided, it is appended as a percentage
 /// (e.g. `"901,816 inst. (12.3%)"`). When `threshold > 0.0` and the
 /// share exceeds it, a `" ⚠"` warning marker is appended.
+<<<<<<< HEAD
 fn format_value_with_share(
     value: u64,
     metric: &str,
     share_pct: Option<f64>,
     threshold: f64,
 ) -> String {
+=======
+fn format_value_with_share(value: u64, metric: &str, share_pct: Option<f64>, threshold: f64) -> String {
+>>>>>>> origin/main
     let value_str = value.to_string();
     let mut result = String::new();
     let mut digit_count = 0;
@@ -1068,7 +1082,12 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
+<<<<<<< HEAD
     let rpc_url = soroban_rpc_url(network).unwrap_or("https://soroban-testnet.stellar.org:443");
+=======
+    let rpc_url = soroban_rpc_url(network)
+        .unwrap_or("https://soroban-testnet.stellar.org:443");
+>>>>>>> origin/main
     let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
@@ -2148,8 +2167,41 @@ fn main() -> anyhow::Result<()> {
     };
 
     if args.csv {
+<<<<<<< HEAD
         let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
         if args.check {
+=======
+        let mut wtr = csv::Writer::from_writer(std::io::stdout());
+        if args.check {
+            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+                .context("Failed to write CSV header")?;
+            for r in &reports {
+                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
+                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
+                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
+                wtr.write_record([
+                    r.package.as_str(),
+                    r.function.as_str(),
+                    r.metric,
+                    value_str.as_str(),
+                    limit_str.as_str(),
+                    pass_str.as_str(),
+                ])
+                .context("Failed to write CSV record")?;
+            }
+            if report.has_regressions() {
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        Mode::Derive(_, _) => unreachable!("derive mode returns early before this point"),
+        Mode::Report => {} // Fall through to the legacy rendering below.
+    }
+
+    if args.csv {
+        let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
+        if args.check {
+>>>>>>> origin/main
             csv_writer
                 .write_record(["package", "function", "metric", "value", "limit", "pass"])
                 .context("Failed to write CSV header")?;
@@ -2186,7 +2238,11 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+<<<<<<< HEAD
         csv_writer.flush().context("Failed to flush CSV writer")?;
+=======
+        wtr.flush().context("Failed to flush CSV writer")?;
+>>>>>>> origin/main
     } else {
         match format {
             OutputFormat::Json => {
