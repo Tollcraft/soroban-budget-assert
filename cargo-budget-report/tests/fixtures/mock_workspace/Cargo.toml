@@ -4,4 +4,5 @@ members = [
     "mock_contract_a",
     "mock_contract_b",
     "mock_contract_renamed",
+    "mock_callee",
 ]

@@ -100,6 +100,28 @@ source = "alice"
 # Foreign top-level sections (e.g. [lints] for soroban-cost-linter) are
 # silently accepted so that both tools can share a single budget.toml.
 
+# -- Deployment ordering (cross-contract support) -------------------------
+# When contracts in the workspace call each other, their deployed addresses
+# must be known at simulation time. List packages in deployment order so that
+# earlier contracts are deployed before later ones.
+#
+#   deploy_order = ["token_contract", "amm_pool_contract"]
+#
+# Contracts not listed deploy in their natural workspace discovery order
+# after the ordered ones.
+# deploy_order = []
+
+# -- Cross-contract arguments -----------------------------------------------
+# Use the `{contract:<package_name>}` placeholder in args to reference a
+# sibling workspace member's deployed address. The placeholder is replaced
+# with the actual contract ID at simulation time.
+#
+#   [functions.do_cross_contract_work]
+#   args = ["--other", "{contract:helper_contract}", "--n", "10000"]
+#
+# The referenced package must be listed in `deploy_order` (see above) so that
+# it is deployed before the calling contract is simulated.
+
 [functions.do_expensive_work]
 args = ["--n", "10000"]
 cpu_limit = 5000000
@@ -177,6 +199,14 @@ struct BudgetToml {
     source: Option<String>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
+
+    /// Ordered list of package names for deployment. Contracts listed here
+    /// are deployed first, in the declared order. Contracts not listed deploy
+    /// in their natural workspace-discovery order after the ordered ones.
+    /// This is required when one contract's simulation depends on another
+    /// workspace member being already deployed.
+    #[serde(default)]
+    deploy_order: Option<Vec<String>>,
 }
 
 #[allow(dead_code)]
@@ -871,6 +901,7 @@ fn main() -> Result<()> {
         if !is_cdylib {
             continue;
         }
+    }
 
         eprintln!("Building package '{}' for wasm32...", package.name);
         let build_status = Command::new("cargo")
@@ -890,8 +921,6 @@ fn main() -> Result<()> {
         }
 
         // Locate the cdylib target to derive the correct WASM filename.
-        // A crate's [lib] name may differ from its package name, so we
-        // cannot rely on package.name.replace('-', "_").
         let cdylib_target = package
             .targets
             .iter()
@@ -936,6 +965,11 @@ fn main() -> Result<()> {
                 }
             }
         }
+    }
+
+    // ── Phase 2: Simulate all exported functions ─────────────────────
+    // Now all contracts are deployed and their IDs are available for
+    // resolving `{contract:<package_name>}` placeholders in args.
 
         if exported_fns.is_empty() {
             eprintln!("No exported functions found in {}", package.name);
