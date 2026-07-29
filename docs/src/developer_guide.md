@@ -74,6 +74,177 @@ The site's look and feel is configured by a space admin in the GitBook app (**sp
 
 Content and structure changes belong in this repo; theme changes belong in the GitBook UI.
 
+## Troubleshooting
+
+This section covers common issues with **Stellar Friendbot** — the testnet faucet that funds source accounts for contract deployment and simulation.
+
+### Overview
+
+Friendbot is a free service that airdrops test XLM into Stellar testnet accounts. This project depends on a funded testnet account because `cargo budget-report` deploys contracts and runs simulations against the live testnet RPC endpoint (`https://soroban-testnet.stellar.org:443`). Each deploy and simulation consumes a small amount of testnet XLM from the source account.
+
+You encounter Friendbot during initial setup when running:
+
+```bash
+stellar keys generate alice --network testnet --fund
+```
+
+And when re-funding an existing account after its balance has been depleted or reset:
+
+```bash
+stellar keys fund alice --network testnet
+```
+
+The `--fund` flag and the `fund` subcommand both call Friendbot under the hood.
+
+### Common Errors
+
+#### Friendbot unavailable
+
+| | |
+|---|---|
+| **Symptoms** | `stellar keys generate alice --network testnet --fund` returns an HTTP 404, 503, or connection refused error. |
+| **Cause** | Friendbot service is down or overloaded. This is shared infrastructure maintained by the Stellar Development Foundation. |
+| **Resolution** | Check [Stellar System Status](https://status.stellar.org/). Wait a few minutes and retry. Friendbot availability is outside the project's control. |
+| **Prevention** | None — this is an infrastructure-level issue. |
+
+#### Network timeout
+
+| | |
+|---|---|
+| **Symptoms** | Funding command hangs for 30+ seconds, then fails with a timeout error. `cargo budget-report` reports `failed to execute curl` or `Failed to parse RPC response`. |
+| **Cause** | Network connectivity issues between your machine and Stellar infrastructure, or Friendbot rate-limiting. |
+| **Resolution** | Retry the command. If the problem persists, check your network connection and confirm the RPC endpoint is reachable: `curl -s -o /dev/null -w "%{http_code}" https://soroban-testnet.stellar.org:443`. |
+| **Prevention** | Use a reliable network connection. The CLI retries deploys automatically with exponential backoff (up to 4 attempts). |
+
+#### Rate limiting
+
+| | |
+|---|---|
+| **Symptoms** | Friendbot returns HTTP 429 or a "rate limit exceeded" message. |
+| **Cause** | Too many funding requests from the same IP address in a short period. |
+| **Resolution** | Wait 60 seconds and retry. If you need multiple accounts, generate them with spacing between requests. |
+| **Prevention** | Fund accounts once and reuse them. One funded testnet identity is sufficient for this project's workflow. |
+
+#### Account already exists on ledger
+
+| | |
+|---|---|
+| **Symptoms** | Friendbot returns an error about the account already existing, or `stellar keys generate` succeeds but funding does not add new XLM. |
+| **Cause** | The Stellar public key already has a testnet account with a balance. Friendbot will not fund it a second time. |
+| **Resolution** | Check the account balance with `stellar keys show alice`. If the balance is sufficient (a few XLM is enough for deploy and simulation fees), proceed without additional funding. If the balance is too low, use `stellar keys fund alice --network testnet` instead. |
+| **Prevention** | Check the account balance before requesting funding. |
+
+#### Unfunded or reset testnet account
+
+| | |
+|---|---|
+| **Symptoms** | `cargo budget-report` fails with `Ensure your source account is funded` or `Failed to deploy <package> after 4 attempts. Ensure your source account is funded.` in the error chain. Deployment errors may mention `txBadSeq` or `txInsufficientBalance`. |
+| **Cause** | Friendbot-funded testnet accounts are reset periodically by network policy. Inactive accounts are wiped, and even active accounts may have their balances drained over time. The deploy step calls `stellar contract deploy` which implicitly relies on Friendbot on testnet; a depleted account causes this to fail. |
+| **Resolution** | Re-fund the account: `stellar keys fund alice --network testnet`. If the account has been fully wiped, generate a fresh one: `stellar keys generate alice --network testnet --fund` (this overwrites the existing local keypair, so export the secret key first if needed). |
+| **Prevention** | Re-fund the account after any period of project inactivity longer than a few days. If you are running `cargo budget-report` regularly, the existing account stays active. |
+
+#### Invalid public key or source account
+
+| | |
+|---|---|
+| **Symptoms** | Errors about "invalid public key", "invalid account ID", or `cargo budget-report` failing with `missing --source or budget.toml source field`. |
+| **Cause** | The `source` field in `budget.toml` does not match any local Stellar keypair, or the keypair name is misspelled. |
+| **Resolution** | List configured identities: `stellar keys ls`. Verify the configured source matches: `stellar keys show <name>`. Check `budget.toml` to ensure `source = "<name>"` uses the correct name (default is `"alice"`). |
+| **Prevention** | Run `cargo budget-report --init` to scaffold a template `budget.toml` with the default values. |
+
+#### Testnet vs Futurenet mismatch
+
+| | |
+|---|---|
+| **Symptoms** | Transactions fail on testnet because the identity was generated with `--network futurenet`, or vice versa. `cargo budget-report` may return `stellar contract deploy failed` with protocol errors in stderr. |
+| **Cause** | The source account was created on one network but `budget.toml` or the `--network` flag targets another. Accounts and Friendbot operate per-network. |
+| **Resolution** | Ensure the network flag used during `stellar keys generate --fund` matches the `network` setting in `budget.toml`. Use `stellar keys ls` to verify which network a key belongs to. Re-generate the identity for the correct network if needed. |
+| **Prevention** | Stay consistent: this project uses `testnet` by default. Do not pass `--network futurenet` unless you have explicitly configured for Futurenet. |
+
+#### RPC endpoint unreachable
+
+| | |
+|---|---|
+| **Symptoms** | `cargo budget-report` fails with `failed to execute curl`, `Failed to parse RPC response`, or `error` field in the simulateTransaction response. |
+| **Cause** | The Soroban RPC endpoint (`https://soroban-testnet.stellar.org:443`) is unreachable, or the network configuration does not point to a valid endpoint. When `cargo budget-report --network local` is used without a local RPC server running, the tool falls back to documented protocol limits instead of live data. |
+| **Resolution** | Verify the endpoint is reachable: `curl -s -o /dev/null -w "%{http_code}" https://soroban-testnet.stellar.org:443`. A healthy endpoint returns `200`. If the endpoint is down, wait and retry. For `--network local`, ensure you have a local Soroban RPC server running. |
+| **Prevention** | Use the default `testnet` network in `budget.toml` unless you have a specific reason to use another network. |
+
+#### Environment configuration missing
+
+| | |
+|---|---|
+| **Symptoms** | `cargo budget-report` exits with `missing --network or budget.toml network field` or `missing --source or budget.toml source field`. |
+| **Cause** | Neither `budget.toml` nor the corresponding CLI flag provides the required `network` or `source` value. |
+| **Resolution** | Create `budget.toml` at the workspace root with `network = "testnet"` and `source = "alice"`, or pass `--network testnet --source alice` on the command line. Use `cargo budget-report --init` to generate a template. |
+| **Prevention** | Run `cargo budget-report --init` as part of the initial project setup. Always commit `budget.toml` to version control. |
+
+### Diagnostic checklist
+
+Before opening an issue or asking for help, run through this checklist:
+
+1. **Is the Stellar CLI installed?** → `stellar --version`. If missing, install with `cargo install --locked stellar-cli`.
+2. **Is the source account configured?** → `stellar keys ls`. You should see your source identity (default: `alice`).
+3. **Is the account funded?** → `stellar keys show alice`. The output includes the account balance. A balance of 0 or an "account does not exist" error means the account needs funding.
+4. **Is `budget.toml` present with correct values?** → Check that `network = "testnet"` and `source = "alice"` (or your chosen values) are set at the workspace root.
+5. **Is the RPC endpoint reachable?** → `curl -s -o /dev/null -w "%{http_code}" https://soroban-testnet.stellar.org:443`. Should return `200`.
+6. **Has the account been idle for more than a few days?** → Friendbot-funded testnet accounts are periodically reset. Re-fund with `stellar keys fund alice --network testnet` before investigating further.
+7. **Does the test build succeed?** → `cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown`. A build failure produces the same red CI check as a budget regression but has nothing to do with Friendbot — the error message will clearly name the build issue.
+
+### Recovery steps
+
+**Re-fund the existing account** (fastest recovery for a depleted account):
+
+```bash
+stellar keys fund alice --network testnet
+```
+
+**Generate a fresh account** (use when the existing identity is corrupted, the secret key is lost, or you want a clean slate):
+
+```bash
+# Export the current secret key if you need to preserve it
+stellar keys show alice --secret
+
+# Generate a new identity and fund it (overwrites the local keypair)
+stellar keys generate alice --network testnet --fund
+```
+
+**Update `budget.toml` with a different source account** (use when switching to a different identity):
+
+```toml
+network = "testnet"
+source = "bob"  # changed from "alice"
+```
+
+**Reset the local environment** (use when cache or configuration is stale):
+
+```bash
+# Remove the cached deploy artifacts
+rm -f .budget-cache.toml
+
+# Rebuild and re-deploy
+cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+cargo budget-report
+```
+
+### Best practices
+
+- **Fund once, reuse.** One funded testnet identity is sufficient for local development and CI. Avoid creating new accounts for every session.
+- **Keep `budget.toml` in version control.** The `network` and `source` defaults live in `budget.toml`. Committing it ensures every contributor and CI run uses the same configuration.
+- **Verify the balance before debugging deeper issues.** Run `stellar keys show alice` before assuming a deploy failure is a code problem.
+- **Re-fund after inactivity.** If the project has not been used for more than a week, re-fund the account before troubleshooting any `cargo budget-report` failure.
+- **Check the preflight output.** `cargo budget-report` runs preflight checks that verify the Stellar CLI and WASM target are installed. Read the output before diving into Friendbot debugging.
+- **Follow setup steps in order.** The [Local setup](#local-setup) sequence matters: install the Stellar CLI → generate the identity → fund it → configure `budget.toml` → run `cargo budget-report`. Skipping a step produces errors that look like Friendbot problems but are actually setup gaps.
+
+### Additional resources
+
+- [Stellar Friendbot documentation](https://developers.stellar.org/docs/network/faucet) — official Friendbot usage guide
+- [Stellar System Status](https://status.stellar.org/) — check for ongoing Friendbot or RPC outages
+- [Stellar CLI reference](https://github.com/stellar/stellar-cli) — all `stellar keys` subcommands
+- [Stellar network information](https://developers.stellar.org/docs/network/) — testnet vs Futurenet vs pubnet differences
+- The [CI Tutorial](ci_tutorial.md) has a [Troubleshooting](ci_tutorial.md#troubleshooting) section with CI-specific failure modes
+- The [End-User Guide](user_guide.md) covers `budget.toml` configuration and first-time setup
+
 ## ⚙️ Supported Versions & Compatibility
 
 * **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
