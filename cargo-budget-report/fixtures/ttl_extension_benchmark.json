@@ -1,0 +1,33 @@
+{
+  "operation_type": "TTL extension",
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "function": "extend_instance_ttl",
+    "arguments": {
+      "threshold": 100,
+      "extend_to": 10000
+    },
+    "registration": "register_contract_wasm",
+    "notes": "Contract is initialized before the TTL extension call so instance storage entries exist. The threshold and extend_to values match test_budget_extend_ttl_isolated."
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.85.0",
+  "network": {
+    "method": "simulateTransaction",
+    "network": "Soroban testnet"
+  },
+  "measurements": {
+    "cpu_instructions": {
+      "local_estimate": null,
+      "network_figure": null,
+      "delta": null,
+      "delta_percent": null,
+      "note": "Run cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture to collect local_estimate. Run cargo run --bin cargo-budget-report -- --network testnet to collect network_figure."
+    }
+  },
+  "capture": {
+    "local_command": "cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture",
+    "network_command": "cargo run --bin cargo-budget-report -- --fixture cargo-budget-report/fixtures/ttl_extension_benchmark.json",
+    "recorded_at": null
+  }
+}

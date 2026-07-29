@@ -55,6 +55,11 @@ args = ["--addr", "alice"]
 [functions.allocate_vec]
 args = ["--n", "10000"]
 mem_limit = 5000000
+# The `do_event_heavy_work` function isolates event-emission cost by publishing
+# events in a loop with no storage or compute work mixed in. It can be invoked
+# via `cargo budget-report` on testnet without additional setup.
+[functions.do_event_heavy_work]
+args = ["--n", "5"]
 
 # The AMM pool functions (initialize, deposit, swap, withdraw) are designed for
 # local test-harness measurement and exercise multiple storage keys, authorization,

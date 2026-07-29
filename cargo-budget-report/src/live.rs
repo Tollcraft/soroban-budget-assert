@@ -1,5 +1,5 @@
 use crate::transport::Transport;
-use anyhow::{Context, Result};
+use crate::module_30::{Context, Error, Result};
 use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
@@ -34,7 +34,7 @@ impl Transport for LiveTransport {
             Ok(contract_id)
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            anyhow::bail!("stellar contract deploy failed: {}", stderr)
+            return Err(Error::Message(format!("stellar contract deploy failed: {}", stderr)))
         }
     }
 
@@ -58,7 +58,7 @@ impl Transport for LiveTransport {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            anyhow::bail!("stellar invoke failed: {}", stderr)
+            return Err(Error::Message(format!("stellar invoke failed: {}", stderr)))
         }
     }
 

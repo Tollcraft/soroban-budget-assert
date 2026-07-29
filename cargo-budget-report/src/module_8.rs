@@ -201,6 +201,141 @@ mod off_by_one_and_zero_length_tests {
         assert_eq!(limit_for_metric(&config, "Write Bytes"), None);
     }
 
+    // ── resolve_limit tests ─────────────────────────────────────────────
+
+    #[test]
+    fn resolve_limit_cpu_absolute_takes_precedence_over_pct() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: Some(5_000_000),
+            cpu_limit_pct: Some(90),
+            ..FunctionConfig::default()
+        };
+        // Absolute limit should be returned directly.
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(5_000_000));
+    }
+
+    #[test]
+    fn resolve_limit_cpu_pct_resolves_correctly() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            cpu_limit_pct: Some(50),
+            ..FunctionConfig::default()
+        };
+        // 50 % of 10_000_000 = 5_000_000
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(5_000_000));
+    }
+
+    #[test]
+    fn resolve_limit_cpu_pct_0_resolves_to_0() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            cpu_limit_pct: Some(0),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(0));
+    }
+
+    #[test]
+    fn resolve_limit_cpu_pct_100_resolves_to_max() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            cpu_limit_pct: Some(100),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(
+            resolve_limit(&config, "CPU Instructions"),
+            Some(PROTOCOL_MAX_CPU_INSTRUCTIONS)
+        );
+    }
+
+    #[test]
+    fn resolve_limit_read_pct_resolves_correctly() {
+        let config = FunctionConfig {
+            args: vec![],
+            read_limit: None,
+            read_limit_pct: Some(10),
+            ..FunctionConfig::default()
+        };
+        // 10 % of 1_048_576 = 104_857 (rounded down by integer division)
+        assert_eq!(resolve_limit(&config, "Read Bytes"), Some(104_857));
+    }
+
+    #[test]
+    fn resolve_limit_write_pct_resolves_correctly() {
+        let config = FunctionConfig {
+            args: vec![],
+            write_limit: None,
+            write_limit_pct: Some(5),
+            ..FunctionConfig::default()
+        };
+        // 5 % of 1_048_576 = 52_428 (rounded down by integer division)
+        assert_eq!(resolve_limit(&config, "Write Bytes"), Some(52_428));
+    }
+
+    #[test]
+    fn resolve_limit_unknown_metric_returns_none() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit_pct: Some(50),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(resolve_limit(&config, "WASM Bytes"), None);
+        assert_eq!(resolve_limit(&config, ""), None);
+    }
+
+    #[test]
+    fn resolve_limit_no_limit_configured_returns_none() {
+        let config = FunctionConfig::default();
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), None);
+        assert_eq!(resolve_limit(&config, "Read Bytes"), None);
+        assert_eq!(resolve_limit(&config, "Write Bytes"), None);
+    }
+
+    #[test]
+    fn resolve_limit_read_absolute_takes_precedence_over_pct() {
+        let config = FunctionConfig {
+            args: vec![],
+            read_limit: Some(5_000),
+            read_limit_pct: Some(90),
+            ..FunctionConfig::default()
+        };
+        // Absolute limit should be returned directly.
+        assert_eq!(resolve_limit(&config, "Read Bytes"), Some(5_000));
+    }
+
+    #[test]
+    fn resolve_limit_write_absolute_takes_precedence_over_pct() {
+        let config = FunctionConfig {
+            args: vec![],
+            write_limit: Some(1_000),
+            write_limit_pct: Some(90),
+            ..FunctionConfig::default()
+        };
+        // Absolute limit should be returned directly.
+        assert_eq!(resolve_limit(&config, "Write Bytes"), Some(1_000));
+    }
+
+    #[test]
+    fn resolve_limit_mixed_limits_cpu_abs_and_read_pct() {
+        // cpu_limit is absolute, but read_limit_pct should still resolve
+        // independently (not affected by cpu_limit being set).
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: Some(5_000_000),
+            read_limit: None,
+            read_limit_pct: Some(50),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(5_000_000));
+        // 50 % of 1_048_576 = 524_288
+        assert_eq!(resolve_limit(&config, "Read Bytes"), Some(524_288));
+        assert_eq!(resolve_limit(&config, "Write Bytes"), None);
+    }
+
     // ── format_with_commas_and_units off-by-one tests ───────────────────
 
     #[test]
@@ -871,5 +1006,8 @@ write_limit = 0
         assert!(config.cpu_limit.is_none());
         assert!(config.read_limit.is_none());
         assert!(config.write_limit.is_none());
+        assert!(config.cpu_limit_pct.is_none());
+        assert!(config.read_limit_pct.is_none());
+        assert!(config.write_limit_pct.is_none());
     }
 }

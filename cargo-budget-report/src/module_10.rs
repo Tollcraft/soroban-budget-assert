@@ -1,4 +1,5 @@
-//! Consolidated error handling for `cargo-budget-report`.
+//! Backward-compatibility shim that re-exports the canonical error types
+//! from [`crate::module_30`].
 //!
 //! Provides the canonical [`Error`] enum that captures every failure mode
 //! of the reporting pipeline, along with a convenience [`Result`] alias so
@@ -154,4 +155,7 @@ pub enum SimulationFailure {
     Rpc(String),
     /// The RPC response didn't contain a decodable `SorobanTransactionData`.
     MetricsExtraction(String),
+    /// A spawn or IO error on the `stellar`/`curl` subprocess itself
+    /// (not a failure returned *by* the subprocess).
+    Spawn(String),
 }
