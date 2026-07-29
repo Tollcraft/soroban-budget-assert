@@ -4,10 +4,54 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 
 ## Local setup
 
+### Linux / macOS
+
 1. Clone the repository.
 2. Install Rust with the WASM target: `rustup target add wasm32-unknown-unknown`.
 3. Install the Stellar CLI: `cargo install --locked stellar-cli` (on Debian/Ubuntu, first `sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev`).
 4. Create and fund a testnet identity: `stellar keys generate alice --network testnet --fund`.
+
+### Windows
+
+1. Clone the repository.
+2. Install [Rust](https://rustup.rs) — the `.exe` installer adds `rustup` and `cargo` to your `PATH`.
+3. Install [Git for Windows](https://git-scm.com/download/win) — includes Git Bash for the pre-commit hook.
+4. Install the [Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — required to compile `stellar-cli`.
+5. Open **PowerShell** and run:
+
+```powershell
+# Add the WASM target
+rustup target add wasm32-unknown-unknown
+
+# Install the Stellar CLI
+cargo install --locked stellar-cli
+
+# Create and fund a testnet identity
+stellar keys generate alice --network testnet --fund
+```
+
+6. Build the contract WASM and run tests:
+
+```powershell
+cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+cargo test --workspace
+```
+
+#### PATH troubleshooting
+
+If `stellar` or `cargo` is not found after installation:
+
+```powershell
+# Check if ~/.cargo/bin is on PATH
+$env:PATH -split ';' | Select-String '.cargo'
+
+# Add it permanently (restart terminal afterward)
+[Environment]::SetEnvironmentVariable(
+    "PATH",
+    "$env:PATH;$env:USERPROFILE\.cargo\bin",
+    [EnvironmentVariableTarget]::User
+)
+```
 
 ## Workspace structure
 
