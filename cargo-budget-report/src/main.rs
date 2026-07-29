@@ -13,6 +13,8 @@ use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
+mod cache;
+
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
 /// (rate-limiting, network hiccups, or the account not being fully
@@ -116,6 +118,14 @@ struct BudgetReportArgs {
     /// regardless of this flag.
     #[arg(long, default_value_t = false)]
     quiet: bool,
+
+    /// Disable the simulation result cache (`.budget-cache.toml`).
+    ///
+    /// When set, every function is simulated fresh from the network and the
+    /// cache file is neither read nor written. Useful in CI environments where
+    /// deterministic fresh results are required on every run.
+    #[arg(long, default_value_t = false)]
+    no_cache: bool,
 }
 
 /// Top-level configuration deserialized from `budget.toml`.
@@ -774,6 +784,16 @@ fn main() -> Result<()> {
         // Parse WASM exports
         let wasm_bytes = std::fs::read(&wasm_path).context("failed to read wasm file")?;
         let wasm_size: u32 = wasm_bytes.len().try_into().unwrap_or(u32::MAX);
+        let wasm_hash = if args.no_cache {
+            String::new()
+        } else {
+            cache::hash_wasm(&wasm_bytes)
+        };
+        let mut budget_cache = if args.no_cache {
+            cache::BudgetCache::default()
+        } else {
+            cache::BudgetCache::load()
+        };
         let mut exported_fns: HashSet<String> = HashSet::new();
 
         for payload in WasmParser::new(0).parse_all(&wasm_bytes) {
@@ -796,6 +816,53 @@ fn main() -> Result<()> {
                 eprintln!("No exported functions found in {}", package.name);
             }
             continue;
+        }
+
+        // Load cache and check for a full hit: if every exported function
+        // has a cache entry with a matching wasm_hash, the contract has not
+        // changed and we can skip deployment and all simulations entirely.
+        if !args.no_cache {
+            let all_cached = exported_fns.iter().all(|fn_name| {
+                let ck = cache::cache_key(&package.name, fn_name);
+                budget_cache.get(&ck, &wasm_hash).is_some()
+            });
+            if all_cached {
+                if !args.quiet {
+                    eprintln!(
+                        "Using cached results for {} ({} functions)",
+                        package.name,
+                        exported_fns.len()
+                    );
+                }
+                for function in &exported_fns {
+                    let ck = cache::cache_key(&package.name, function);
+                    if let Some(cached) = budget_cache.get(&ck, &wasm_hash) {
+                        let func_config = toml_config.functions.get(function.as_str());
+                        let metrics: [(&str, u32); 4] = [
+                            ("CPU Instructions", cached.instructions),
+                            ("Read Bytes", cached.read_bytes),
+                            ("Write Bytes", cached.write_bytes),
+                            ("WASM Bytes", cached.wasm_size),
+                        ];
+                        for (metric, value) in metrics {
+                            let limit = func_config.and_then(|cfg| limit_for_metric(cfg, metric));
+                            let (entry_limit, pass) = evaluate_check(value, limit);
+                            if pass == Some(false) {
+                                checks_failed = true;
+                            }
+                            reports.push(CostReport {
+                                package: package.name.to_string(),
+                                function: function.clone(),
+                                metric,
+                                value: Some(value),
+                                limit: entry_limit,
+                                pass,
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
         }
 
         let spinner = if args.quiet {
@@ -830,15 +897,57 @@ fn main() -> Result<()> {
             let func_config = toml_config.functions.get(&function);
             let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
 
+            // Check per-function cache entry before simulating.
+            if !args.no_cache {
+                let ck = cache::cache_key(&package.name, &function);
+                if let Some(cached) = budget_cache.get(&ck, &wasm_hash) {
+                    if !args.quiet {
+                        eprintln!("  (cached)");
+                    }
+                    for (metric, value) in [
+                        ("CPU Instructions", cached.instructions),
+                        ("Read Bytes", cached.read_bytes),
+                        ("Write Bytes", cached.write_bytes),
+                        ("WASM Bytes", cached.wasm_size),
+                    ] {
+                        let limit = func_config.and_then(|cfg| limit_for_metric(cfg, metric));
+                        let (entry_limit, pass) = evaluate_check(value, limit);
+                        if pass == Some(false) {
+                            checks_failed = true;
+                        }
+                        reports.push(CostReport {
+                            package: package.name.to_string(),
+                            function: function.clone(),
+                            metric,
+                            value: Some(value),
+                            limit: entry_limit,
+                            pass,
+                        });
+                    }
+                    continue;
+                }
+            }
+
             match simulate_function(&contract_id, &source, &network, &function, &func_args)? {
                 SimulationOutcome::Metrics {
                     instructions,
                     read_bytes,
                     write_bytes,
                 } => {
-                    // Build three CostReport entries for this function. In
-                    // --check mode, attach the configured limit and
-                    // pass/fail to each entry.
+                    // Update cache with fresh simulation results.
+                    if !args.no_cache {
+                        budget_cache.set(
+                            cache::cache_key(&package.name, &function),
+                            cache::CacheEntry {
+                                instructions,
+                                read_bytes,
+                                write_bytes,
+                                wasm_size,
+                                wasm_hash: wasm_hash.clone(),
+                                cached_at: cache::now_unix_str(),
+                            },
+                        );
+                    }
                     for (metric, value) in [
                         ("CPU Instructions", instructions),
                         ("Read Bytes", read_bytes),
@@ -882,10 +991,6 @@ fn main() -> Result<()> {
                         }
                     }
                     if let (true, Some(function_config)) = (args.check, func_config) {
-                        // A configured function that won't simulate cannot
-                        // satisfy any of its declared limits; record this as
-                        // a check failure even if no `*_limit` is set on
-                        // this row of budget.toml.
                         checks_failed = true;
                         emit_check_failure_entries(
                             &mut reports,
@@ -894,6 +999,17 @@ fn main() -> Result<()> {
                             function_config,
                         );
                     }
+                }
+            }
+        }
+
+        // Save cache after processing this package.
+        // Cache is persisted even when some simulations failed, so that
+        // successfully cached entries survive a partial failure.
+        if !args.no_cache {
+            if let Err(e) = budget_cache.save() {
+                if !args.quiet {
+                    eprintln!("Warning: failed to save budget cache: {}", e);
                 }
             }
         }

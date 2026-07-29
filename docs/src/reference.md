@@ -337,6 +337,145 @@ write_limit = 1000
 - `[functions.<name>].args` — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped.
 - `[functions.<name>].cpu_limit`, `.read_limit`, `.write_limit` — inclusive upper bounds for simulated CPU instructions, read bytes, and write bytes. Enforced only when `--check` is passed. A missing field means "not enforced" for that metric.
 
+## Simulation Cache: `.budget-cache.toml`
+
+`cargo budget-report` maintains a local TOML cache file (`.budget-cache.toml`) in the current working directory to avoid redundant network simulations when the contract code has not changed.
+
+### Purpose
+
+Simulating a contract function against Soroban testnet requires deploying the WASM to a network and calling `simulateTransaction` via RPC — each function invocation takes several seconds and consumes network resources. The cache stores the simulation results keyed by package name, function name, and a content hash of the compiled WASM binary. On subsequent runs, if the WASM hash for every exported function matches a cached entry, the entire deploy-and-simulate cycle is skipped and the cached metrics are used directly.
+
+This is especially useful during iterative development, where a contributor rebuilds the contract many times but only needs fresh simulation results after a source-code change.
+
+### CLI Integration
+
+The cache is enabled by default. It can be disabled with:
+
+```
+cargo budget-report --no-cache
+```
+
+When `--no-cache` is set, the cache file is neither read nor written, and every function is simulated fresh against the network.
+
+### Cache Invalidation
+
+An entry is considered **stale** (and is invalidated) when the WASM binary's content hash no longer matches the hash stored in the entry. This means:
+
+- Any source-code change that produces a different WASM binary invalidates the cache for the affected package.
+- A rebuild that produces byte-identical WASM (e.g. no code changes) reuses the cache.
+- The cache is not sensitive to deployment parameters (`--network`, `--source`, CLI arguments) — those are expected to change infrequently; if they do, delete the cache file manually.
+
+### File Structure
+
+```toml
+version = 1
+created_at = "1722254400"
+updated_at = "1722254400"
+
+[entry."amm-pool-contract::do_expensive_work"]
+instructions = 756678
+read_bytes = 2048
+write_bytes = 4096
+wasm_size = 12345
+wasm_hash = "a1b2c3d4e5f67890"
+cached_at = "1722254400"
+
+[entry."amm-pool-contract::require_auth_only"]
+instructions = 50000
+read_bytes = 128
+write_bytes = 64
+wasm_size = 12345
+wasm_hash = "a1b2c3d4e5f67890"
+cached_at = "1722254400"
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `version` | integer | yes | Schema version for forward compatibility. Always `1` in the current implementation. |
+| `created_at` | string | no | Unix timestamp (seconds since epoch) of initial cache file creation. Set once when the first entry is written. |
+| `updated_at` | string | no | Unix timestamp of the most recent cache modification. Updated every time an entry is added or updated. |
+| `[entry."<package>::<function>"]` | section | — | One section per cached simulation result. The section name is the composite key `"<package>::<function>"` (e.g. `"amm-pool-contract::do_expensive_work"`). |
+| `entry.<key>.instructions` | integer | yes | CPU instruction count from the last successful simulation (`resources.instructions` in the XDR). |
+| `entry.<key>.read_bytes` | integer | yes | Read byte count from the last successful simulation (`resources.disk_read_bytes` in the XDR). |
+| `entry.<key>.write_bytes` | integer | yes | Write byte count from the last successful simulation (`resources.write_bytes` in the XDR). |
+| `entry.<key>.wasm_size` | integer | yes | Compiled WASM binary size in bytes at the time of caching. |
+| `entry.<key>.wasm_hash` | string | yes | Hex-encoded 64-bit content hash of the WASM binary, computed with `std::hash::DefaultHasher`. Used to detect staleness — if the hash does not match the current WASM file, the entry is ignored. |
+| `entry.<key>.cached_at` | string | yes | Unix timestamp (seconds since epoch) when this entry was cached. |
+
+### Lifecycle
+
+| Event | What happens |
+|---|---|
+| **First run** | Cache file does not exist. `BudgetCache::load()` returns an empty cache. All functions are simulated fresh. After processing each package, the cache is written to `.budget-cache.toml`. |
+| **Subsequent run (no code change)** | The WASM hash matches cached entries. Every function hits the cache — deployment and simulation are skipped entirely. The `--check` logic still runs against the cached values. |
+| **Code change (one package)** | The WASM hash changes for that package. The cache entries for that package have a stale `wasm_hash` and are ignored. The package is re-deployed and re-simulated. Cached entries for other (unchanged) packages are reused. |
+| **`--no-cache`** | Cache is neither loaded nor written. Functions are always simulated fresh. |
+| **Stale cache** | WASM hash mismatch. The entry is treated as a cache miss and a fresh simulation replaces it. |
+| **Manual deletion** | Deleting `.budget-cache.toml` is safe — the next run rebuilds it from scratch. This is the recommended way to force a full refresh. |
+
+### Interaction with Budget Assertions
+
+The cache operates at the `cargo budget-report` CLI level and is transparent to the macro- and test-level budget assertions (`#[budget_cpu_lt]`, `#[budget_mem_lt]`, etc.). Those macros always measure local WASM test execution at `cargo test` time and are unaffected by the cache.
+
+Within `cargo budget-report`, the cache intercepts the simulation step:
+
+1. **Before simulation**: the cache is checked by package+function+WASM hash. If all functions for a package are cached, the deploy-and-simulate pipeline is skipped entirely and the cached metrics flow into the report and `--check` enforcement.
+2. **After successful simulation**: a new cache entry is written for each function, replacing any prior entry for the same key.
+
+### Common Scenarios
+
+#### First Run
+No cache exists. The tool deploys every package to the network, simulates every exported function, writes the results to `.budget-cache.toml`, and prints the report. This is the slowest run.
+
+#### Cache Regeneration
+To rebuild the cache from scratch without waiting for individual staleness detection:
+
+```bash
+rm .budget-cache.toml
+cargo budget-report --network testnet --source alice
+```
+
+Or use `--no-cache` for a one-off fresh run without deleting the file:
+
+```bash
+cargo budget-report --network testnet --source alice --no-cache
+```
+
+#### Stale Cache
+If the WASM build has changed, the hash stored in the cache no longer matches. The entry is silently ignored and re-simulated. No manual intervention is needed.
+
+#### Deleting the Cache
+Safe at any time. The next run recreates it automatically. Add `.budget-cache.toml` to your project's `.gitignore` if it is not already — the root `.gitignore` in this repository includes it.
+
+#### CI Environments
+CI workflows that require deterministic fresh results on every run (e.g. nightly budget regression checks) should use `--no-cache` to guarantee that the report reflects the exact current commit:
+
+```bash
+cargo budget-report --network testnet --source alice --check --no-cache
+```
+
+#### Contributor Workflow
+During local development, the cache speeds up repeated `cargo budget-report` invocations. When submitting a pull request that changes contract code, the CI pipeline should use `--no-cache` to ensure fresh measurements. Cache entries from local runs are not committed to version control (the file is in `.gitignore`).
+
+### Troubleshooting
+
+| Symptom | Likely Cause | Resolution |
+|---|---|---|
+| `"Warning: failed to parse .budget-cache.toml"` | Corrupt cache file (e.g. manual edit that broke TOML syntax). | Delete `.budget-cache.toml` and re-run. |
+| Report shows stale values after code change | WASM hash collision (extremely unlikely with 64-bit hash) or the WASM build actually did not change. | Delete `.budget-cache.toml` and re-run, or use `--no-cache`. |
+| Cache file grows large | Many packages and functions have been cached over time. | Entries are overwritten in place; the file size is bounded by the number of `package::function` pairs in the workspace. Delete the file to start fresh. |
+| `cached_at` timestamp is empty | System clock was set before UNIX epoch at the time of caching (rare). | Delete the cache and re-run — the timestamp will be regenerated. |
+
+### Best Practices
+
+- **Do not commit `.budget-cache.toml` to version control.** It is a local build artifact, regenerated on every run. The repository's `.gitignore` already excludes it.
+- **Use `--no-cache` in CI** to guarantee fresh measurements per commit.
+- **Delete the cache to force a full refresh.** This is simpler than tracking individual staleness windows.
+- **Do not edit the cache file manually.** The TOML structure is machine-generated; manual edits risk deserialization errors. If you need different values, delete the cache and let the tool regenerate it.
+- **Cache entries from a previous branch** are invalidated automatically when the WASM hash changes, so switching branches does not produce stale results.
+
 ## Output
 
 Each simulated function produces four rows (or four JSON objects) when its simulation succeeds: `CPU Instructions`, `Read Bytes`, `Write Bytes`, and `WASM Bytes`. For a mapping between these metric names, their XDR field names, and Stellar's own terminology, see the [Cost Terms Glossary](glossary.md).
