@@ -1,4 +1,5 @@
-//! Consolidated error handling for `cargo-budget-report`.
+//! Backward-compatibility shim that re-exports the canonical error types
+//! from [`crate::module_30`].
 //!
 //! Provides the canonical [`Error`] enum that captures every failure mode
 //! of the reporting pipeline, along with a convenience [`Result`] alias so
