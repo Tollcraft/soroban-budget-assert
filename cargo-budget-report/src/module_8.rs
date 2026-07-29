@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
+    const PROTOCOL_MAX_CPU_INSTRUCTIONS: u64 = 10_000_000;
     use crate::module_32::{isolate_temp_dir, reports_to_csv, restore_cwd};
     use crate::*;
 
@@ -111,11 +112,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_cpu_instructions_returns_cpu_limit() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(
@@ -127,11 +131,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_read_bytes_returns_read_limit() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Read Bytes"), Some(1_000));
@@ -140,11 +147,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_write_bytes_returns_write_limit() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Write Bytes"), Some(500));
@@ -153,11 +163,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_zero_length_string_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         // An empty or unknown metric string should return None.
@@ -167,11 +180,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_unknown_metric_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "WASM Bytes"), None);
@@ -181,11 +197,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_none_limits_return_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: None,
             read_limit: None,
             write_limit: None,
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), None);
@@ -206,7 +225,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_cpu_absolute_takes_precedence_over_pct() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             cpu_limit_pct: Some(90),
             ..FunctionConfig::default()
@@ -218,7 +237,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_cpu_pct_resolves_correctly() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: None,
             cpu_limit_pct: Some(50),
             ..FunctionConfig::default()
@@ -230,7 +249,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_cpu_pct_0_resolves_to_0() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: None,
             cpu_limit_pct: Some(0),
             ..FunctionConfig::default()
@@ -241,7 +260,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_cpu_pct_100_resolves_to_max() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: None,
             cpu_limit_pct: Some(100),
             ..FunctionConfig::default()
@@ -255,7 +274,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_read_pct_resolves_correctly() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             read_limit: None,
             read_limit_pct: Some(10),
             ..FunctionConfig::default()
@@ -267,7 +286,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_write_pct_resolves_correctly() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             write_limit: None,
             write_limit_pct: Some(5),
             ..FunctionConfig::default()
@@ -279,7 +298,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_unknown_metric_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit_pct: Some(50),
             ..FunctionConfig::default()
         };
@@ -298,7 +317,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_read_absolute_takes_precedence_over_pct() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             read_limit: Some(5_000),
             read_limit_pct: Some(90),
             ..FunctionConfig::default()
@@ -310,7 +329,7 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn resolve_limit_write_absolute_takes_precedence_over_pct() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             write_limit: Some(1_000),
             write_limit_pct: Some(90),
             ..FunctionConfig::default()
@@ -324,7 +343,7 @@ mod off_by_one_and_zero_length_tests {
         // cpu_limit is absolute, but read_limit_pct should still resolve
         // independently (not affected by cpu_limit being set).
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             read_limit_pct: Some(50),
@@ -447,11 +466,14 @@ mod off_by_one_and_zero_length_tests {
     fn emit_check_failure_entries_emits_three_entries() {
         let mut reports = Vec::new();
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
@@ -463,11 +485,14 @@ mod off_by_one_and_zero_length_tests {
     fn emit_check_failure_entries_all_have_value_none_and_pass_false() {
         let mut reports = Vec::new();
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
@@ -557,7 +582,7 @@ mod off_by_one_and_zero_length_tests {
             .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
 
-        let result = scaffold_init(false, true);
+        let result = scaffold_init(false);
         assert!(result.is_ok());
         assert!(
             std::path::Path::new("budget.toml").exists(),
@@ -582,7 +607,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(false, true);
+        let result = scaffold_init(false);
         assert!(result.is_err());
         let err = format!("{:#}", result.as_ref().unwrap_err());
         assert!(
@@ -608,7 +633,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(true, true);
+        let result = scaffold_init(true);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string("budget.toml").unwrap();
@@ -630,8 +655,8 @@ mod off_by_one_and_zero_length_tests {
 
         let config =
             load_budget_toml(tmp.path()).expect("empty file should parse as default BudgetToml");
-        assert!(config.network.is_none());
-        assert!(config.source.is_none());
+        assert_eq!(config.network.as_deref(), Some("testnet"));
+        assert_eq!(config.source.as_deref(), Some("alice"));
         assert!(config.functions.is_empty());
     }
 
@@ -642,8 +667,8 @@ mod off_by_one_and_zero_length_tests {
 
         let config = load_budget_toml(tmp.path())
             .expect("comments-only file should parse as default BudgetToml");
-        assert!(config.network.is_none());
-        assert!(config.source.is_none());
+        assert_eq!(config.network.as_deref(), Some("testnet"));
+        assert_eq!(config.source.as_deref(), Some("alice"));
         assert!(config.functions.is_empty());
     }
 
@@ -694,8 +719,8 @@ write_limit = 0
 
         let config = load_budget_toml(tmp.path())
             .expect("whitespace-only file should parse as default BudgetToml");
-        assert!(config.network.is_none());
-        assert!(config.source.is_none());
+        assert_eq!(config.network.as_deref(), Some("testnet"));
+        assert_eq!(config.source.as_deref(), Some("alice"));
     }
 
     #[test]
@@ -706,7 +731,7 @@ write_limit = 0
         let config =
             load_budget_toml(tmp.path()).expect("partial config should parse successfully");
         assert_eq!(config.network.as_deref(), Some("futurenet"));
-        assert!(config.source.is_none());
+        assert_eq!(config.source.as_deref(), Some("alice"));
         assert!(config.functions.is_empty());
     }
 
@@ -725,11 +750,14 @@ write_limit = 0
     #[test]
     fn limit_for_metric_leading_whitespace_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, " CPU Instructions"), None);
@@ -739,11 +767,14 @@ write_limit = 0
     #[test]
     fn limit_for_metric_trailing_whitespace_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions "), None);
@@ -753,11 +784,14 @@ write_limit = 0
     #[test]
     fn limit_for_metric_case_sensitive_check() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         // The function should do exact case-sensitive matching.
@@ -856,11 +890,14 @@ write_limit = 0
     fn emit_check_failure_entries_mixed_limits_preserves_metric_order() {
         let mut reports = Vec::new();
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);

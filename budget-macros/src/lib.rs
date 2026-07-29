@@ -386,9 +386,7 @@ impl Parse for GrowthModel {
             "quadratic" => Ok(GrowthModel::Quadratic),
             other => Err(syn::Error::new(
                 ident.span(),
-                format!(
-                    "unknown growth model `{other}`, expected `linear` or `quadratic`"
-                ),
+                format!("unknown growth model `{other}`, expected `linear` or `quadratic`"),
             )),
         }
     }

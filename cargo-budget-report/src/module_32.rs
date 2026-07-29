@@ -88,6 +88,7 @@ mod tests {
                 value: Some(1_000_000),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -96,6 +97,7 @@ mod tests {
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let csv = reports_to_csv(&reports, false);
@@ -117,6 +119,7 @@ mod tests {
                 value: Some(1_000_000),
                 limit: Some(5_000_000),
                 pass: Some(true),
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -125,6 +128,7 @@ mod tests {
                 value: Some(4_096),
                 limit: Some(1_000),
                 pass: Some(false),
+                ..Default::default()
             },
         ];
         let csv = reports_to_csv(&reports, true);
@@ -146,6 +150,7 @@ mod tests {
                 value: None,
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -154,6 +159,7 @@ mod tests {
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let csv = reports_to_csv(&reports, false);
@@ -173,6 +179,7 @@ mod tests {
             value: None,
             limit: Some(5_000_000),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         let expected = concat!(

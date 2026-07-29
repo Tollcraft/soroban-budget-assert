@@ -267,7 +267,7 @@ args = ["--n", "1"]
 
         let config = load_budget_toml(tmp.path()).expect("minimal function config should parse");
         let func = config.functions.get("ping").expect("ping should be present");
-        assert_eq!(func.args, vec!["--n".to_string(), "1".to_string()]);
+        assert_eq!(func.args.encode(), vec!["--n".to_string(), "1".to_string()]);
         assert!(func.cpu_limit.is_none());
         assert!(func.read_limit.is_none());
         assert!(func.write_limit.is_none());

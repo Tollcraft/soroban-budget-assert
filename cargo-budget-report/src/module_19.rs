@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod windows_compatibility_tests {
+    use crate::module_10::Error;
     use crate::*;
     use std::path::PathBuf;
 
@@ -93,13 +94,25 @@ mod windows_compatibility_tests {
             network: None,
             source: None,
             json: false,
+            format: Default::default(),
             check: false,
+            fail_fast: false,
             csv: false,
+            concurrency: Default::default(),
+            validate: false,
+            quiet: false,
             record_baseline: Some(r"snapshots\baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
-            quiet: false,
+            derive_limits: None,
+            provenance_out: None,
             profile: None,
+            from: None,
+            margin_cpu: None,
+            margin_memory: None,
+            margin_read: None,
+            margin_write: None,
+            totals: false,
         };
         assert_eq!(
             Mode::from_args(&args),
@@ -115,13 +128,25 @@ mod windows_compatibility_tests {
             network: None,
             source: None,
             json: false,
+            format: Default::default(),
             check: false,
+            fail_fast: false,
             csv: false,
+            concurrency: Default::default(),
+            validate: false,
+            quiet: false,
             record_baseline: None,
             check_baseline: Some(r"snapshots\check.toml".to_string()),
             tolerance: None,
-            quiet: false,
+            derive_limits: None,
+            provenance_out: None,
             profile: None,
+            from: None,
+            margin_cpu: None,
+            margin_memory: None,
+            margin_read: None,
+            margin_write: None,
+            totals: false,
         };
         assert_eq!(
             Mode::from_args(&args),
@@ -140,6 +165,8 @@ mod windows_compatibility_tests {
             value: None,
             limit: None,
             pass: None,
+            resource_limit: None,
+            share_pct: None,
         };
         let json = serde_json::to_string(&report).expect("serialization should succeed");
         // `value`, `limit`, and `pass` should be skipped when None.
@@ -160,6 +187,8 @@ mod windows_compatibility_tests {
             value: Some(2048),
             limit: Some(5000),
             pass: Some(true),
+            resource_limit: None,
+            share_pct: None,
         };
         let json = serde_json::to_string(&report).expect("serialization should succeed");
         assert!(json.contains("\"value\":2048"));
@@ -176,6 +205,8 @@ mod windows_compatibility_tests {
             value: Some(4096),
             limit: None,
             pass: Some(false),
+            resource_limit: None,
+            share_pct: None,
         };
         let json = serde_json::to_string(&report).expect("serialization should succeed");
         assert!(json.contains("\"value\":4096"));
@@ -190,10 +221,7 @@ mod windows_compatibility_tests {
         // TOML requires double-quotes for strings; single quotes are
         // treated as literal single quotes.
         let result = toml::from_str::<BudgetToml>("network = 'testnet'\n");
-        assert!(
-            result.is_err(),
-            "single-quoted strings are not valid TOML"
-        );
+        assert!(result.is_err(), "single-quoted strings are not valid TOML");
     }
 
     #[test]
@@ -206,7 +234,10 @@ args = ["--n", "10",]
 "#,
         )
         .expect("trailing comma in array should parse");
-        assert_eq!(config.functions["fn"].args, vec!["--n", "10"]);
+        assert_eq!(
+            config.functions["fn"].args.encode(),
+            vec!["--n".to_string(), "10".to_string()]
+        );
     }
 
     #[test]
@@ -251,10 +282,7 @@ args = ["--x"]
 
     #[test]
     fn formatter_exact_boundaries_in_bytes() {
-        assert_eq!(
-            format_with_commas_and_units(1_000, "Read Bytes"),
-            "1,000 B"
-        );
+        assert_eq!(format_with_commas_and_units(1_000, "Read Bytes"), "1,000 B");
         assert_eq!(
             format_with_commas_and_units(10_000, "Write Bytes"),
             "10,000 B"
@@ -268,7 +296,10 @@ args = ["--x"]
     #[test]
     fn formatter_metric_name_contains_bytes_gets_b_suffix() {
         // Any metric containing "Bytes" gets the "B" suffix.
-        assert_eq!(format_with_commas_and_units(42, "CPU Instructions Bytes"), "42 B");
+        assert_eq!(
+            format_with_commas_and_units(42, "CPU Instructions Bytes"),
+            "42 B"
+        );
     }
 
     #[test]
@@ -312,10 +343,14 @@ args = ["--x"]
     #[test]
     fn limit_for_metric_substring_at_end_does_not_match() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(1),
             read_limit: Some(2),
             write_limit: Some(3),
+            mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         // "Instructions" alone is not a known metric key.
@@ -325,10 +360,14 @@ args = ["--x"]
     #[test]
     fn limit_for_metric_only_bytes_prefix() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(1),
             read_limit: Some(2),
             write_limit: Some(3),
+            mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         // "Read" alone does not match "Read Bytes".
@@ -340,16 +379,17 @@ args = ["--x"]
     #[test]
     fn limit_for_metric_exact_cpu_instructions() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(1234567),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
-        assert_eq!(
-            limit_for_metric(&config, "CPU Instructions"),
-            Some(1234567)
-        );
+        assert_eq!(limit_for_metric(&config, "CPU Instructions"), Some(1234567));
     }
 
     // ── emit_check_failure_entries regression boundary ────────────────
@@ -359,20 +399,26 @@ args = ["--x"]
         // Only read_limit is set; CPU and write are None.
         let mut reports = Vec::new();
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: None,
             read_limit: Some(2_000),
             write_limit: None,
+            mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].metric, "CPU Instructions");
         assert_eq!(reports[0].limit, None);
-        assert_eq!(reports[1].metric, "Read Bytes");
-        assert_eq!(reports[1].limit, Some(2_000));
-        assert_eq!(reports[2].metric, "Write Bytes");
-        assert_eq!(reports[2].limit, None);
+        assert_eq!(reports[1].metric, "Memory Bytes");
+        assert_eq!(reports[1].limit, None);
+        assert_eq!(reports[2].metric, "Read Bytes");
+        assert_eq!(reports[2].limit, Some(2_000));
+        assert_eq!(reports[3].metric, "Write Bytes");
+        assert_eq!(reports[3].limit, None);
     }
 
     // ── BUDGET_TOML_TEMPLATE content regression checks ─────────────────
@@ -412,8 +458,8 @@ args = ["--x"]
     #[test]
     fn budget_toml_template_can_be_deserialized() {
         // The template itself must be valid TOML that BudgetToml can parse.
-        let config: BudgetToml = toml::from_str(BUDGET_TOML_TEMPLATE)
-            .expect("BUDGET_TOML_TEMPLATE must be valid TOML");
+        let config: BudgetToml =
+            toml::from_str(BUDGET_TOML_TEMPLATE).expect("BUDGET_TOML_TEMPLATE must be valid TOML");
         assert_eq!(config.network.as_deref(), Some("testnet"));
         assert_eq!(config.source.as_deref(), Some("alice"));
         assert!(config.functions.contains_key("do_expensive_work"));
@@ -451,7 +497,7 @@ args = ["--x"]
 
         let config = load_budget_toml(tmp.path()).expect("CRLF function config should parse");
         let func = &config.functions["do_work"];
-        assert_eq!(func.args, vec!["--n", "10"]);
+        assert_eq!(func.args.encode(), vec!["--n", "10"]);
         assert_eq!(func.cpu_limit, Some(1_000_000));
     }
 
@@ -459,16 +505,14 @@ args = ["--x"]
 
     #[test]
     fn resolve_tolerance_zero_tolerance() {
-        let t = crate::compare::parse_tolerance("0.0")
-            .expect("zero tolerance should parse");
+        let t = crate::compare::parse_tolerance("0.0").expect("zero tolerance should parse");
         // Zero tolerance means any increase is a regression.
         assert!((t.value - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn resolve_tolerance_one_hundred_percent() {
-        let t = crate::compare::parse_tolerance("1.0")
-            .expect("1.0 tolerance should parse");
+        let t = crate::compare::parse_tolerance("1.0").expect("1.0 tolerance should parse");
         assert!((t.value - 1.0).abs() < f64::EPSILON);
     }
 
@@ -479,7 +523,8 @@ args = ["--x"]
             .to_string();
         assert!(
             err.contains("non-negative"),
-            "negative tolerance should be rejected, got: {}", err
+            "negative tolerance should be rejected, got: {}",
+            err
         );
     }
 
@@ -565,5 +610,173 @@ args = ["--x"]
         let size: usize = 0;
         let capped: u32 = size.try_into().unwrap_or(u32::MAX);
         assert_eq!(capped, 0);
+    }
+
+    // ── Typed argument TOML deserialization integration ──────────────
+
+    #[test]
+    fn budget_toml_typed_args_address_and_i128() {
+        let toml_str = r#"
+[functions.transfer]
+args = [
+    { address = "GABCDEF123456789" },
+    { i128 = "1000000000" },
+]
+"#;
+        let config: BudgetToml =
+            toml::from_str(toml_str).expect("typed args should parse in BudgetToml");
+        let func = &config.functions["transfer"];
+        let encoded = func.args.encode();
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded[0], "GABCDEF123456789");
+        assert_eq!(encoded[1], "1000000000");
+    }
+
+    #[test]
+    fn budget_toml_typed_args_multiple_types() {
+        let toml_str = r#"
+[functions.complex]
+args = [
+    { address = "GX" },
+    { i128 = "1000000000" },
+    { u32 = 42 },
+    { bool = true },
+    { symbol = "native" },
+    { string = "hello" },
+    { bytes = "deadbeef" },
+]
+"#;
+        let config: BudgetToml =
+            toml::from_str(toml_str).expect("typed args with multiple types should parse");
+        let func = &config.functions["complex"];
+        let encoded = func.args.encode();
+        assert_eq!(encoded.len(), 7);
+        assert_eq!(encoded[0], "GX");
+        assert_eq!(encoded[1], "1000000000");
+        assert_eq!(encoded[2], "42");
+        assert_eq!(encoded[3], "true");
+        assert_eq!(encoded[4], "native");
+        assert_eq!(encoded[5], "hello");
+        assert_eq!(encoded[6], "deadbeef");
+    }
+
+    #[test]
+    fn budget_toml_typed_args_empty_array() {
+        let toml_str = r#"
+[functions.init]
+args = []
+"#;
+        let config: BudgetToml = toml::from_str(toml_str).expect("empty args should parse");
+        let func = &config.functions["init"];
+        let encoded = func.args.encode();
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn budget_toml_typed_args_vec() {
+        let toml_str = r#"
+[functions.batch]
+args = [
+    { address = "GA" },
+    { vec = [ { u64 = 1 }, { u64 = 2 }, { u64 = 3 } ] },
+]
+"#;
+        let config: BudgetToml = toml::from_str(toml_str).expect("vec typed args should parse");
+        let func = &config.functions["batch"];
+        let encoded = func.args.encode();
+        assert_eq!(encoded.len(), 2);
+        assert_eq!(encoded[0], "GA");
+        // Vec encodes as JSON array string
+        assert!(encoded[1].contains("1"));
+        assert!(encoded[1].contains("2"));
+        assert!(encoded[1].contains("3"));
+    }
+
+    #[test]
+    fn budget_toml_legacy_args_still_works_with_typed_system() {
+        // Verify backward compatibility: legacy string array still works
+        let toml_str = r#"
+[functions.legacy]
+args = ["--n", "10", "--msg", "hello"]
+"#;
+        let config: BudgetToml = toml::from_str(toml_str).expect("legacy args should parse");
+        let func = &config.functions["legacy"];
+        let encoded = func.args.encode();
+        assert_eq!(encoded, vec!["--n", "10", "--msg", "hello"]);
+    }
+
+    #[test]
+    fn budget_toml_typed_args_unknown_type_fails() {
+        // Unknown types should fail deserialization
+        let toml_str = r#"
+[functions.bad]
+args = [
+    { unknown_type = "value" },
+]
+"#;
+        let result: Result<BudgetToml, _> = toml::from_str(toml_str);
+        assert!(result.is_err(), "unknown arg type should fail");
+    }
+
+    #[test]
+    fn budget_toml_mixed_legacy_and_typed_in_same_array_rejected() {
+        // Mixing string and table in the same array should fail
+        let toml_str = r#"
+[functions.mixed]
+args = [
+    "--flag",
+    { address = "GA" },
+]
+"#;
+        let result: Result<BudgetToml, _> = toml::from_str(toml_str);
+        assert!(
+            result.is_err(),
+            "mixing legacy strings and typed tables should fail: {:?}",
+            result
+        );
+    }
+
+    // ── build_invoke_args with typed arguments ───────────────────────
+
+    #[test]
+    fn build_invoke_args_with_typed_address_arg() {
+        let args = build_invoke_args(
+            "C",
+            "alice",
+            "testnet",
+            "transfer",
+            &["GABCDEF123456789".into(), "1000000000".into()],
+        );
+        assert!(args.contains(&"GABCDEF123456789".to_string()));
+        assert!(args.contains(&"1000000000".to_string()));
+        // fn name should be in the args
+        assert!(args.contains(&"transfer".to_string()));
+    }
+
+    // ── ArgSpec::encode consistency ──────────────────────────────────
+
+    #[test]
+    fn argspec_legacy_encode_matches_input() {
+        let spec = crate::args::ArgSpec::Legacy(vec!["--n".into(), "42".into()]);
+        assert_eq!(spec.encode(), vec!["--n", "42"]);
+    }
+
+    #[test]
+    fn argspec_typed_encode_empty() {
+        let spec = crate::args::ArgSpec::Typed(vec![]);
+        assert!(spec.encode().is_empty());
+    }
+
+    #[test]
+    fn argspec_default_is_empty_legacy() {
+        let spec = crate::args::ArgSpec::default();
+        assert!(spec.is_empty());
+        assert!(matches!(spec, crate::args::ArgSpec::Legacy(_)));
+    }
+
+    #[test]
+    fn argspec_from_vec_string() {
+        let spec: crate::args::ArgSpec = vec!["--x".to_string(), "1".to_string()].into();
+        assert_eq!(spec.encode(), vec!["--x", "1"]);
     }
 }

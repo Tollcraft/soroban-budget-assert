@@ -9,7 +9,7 @@
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
     use crate::*;
-    use stellar_xdr::curr::{Limits, SorobanTransactionData, WriteXdr};
+    use stellar_xdr::{Limits, SorobanTransactionData, WriteXdr};
 
     // ── evaluate_check off-by-one tests ─────────────────────────────────
 
@@ -89,11 +89,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_empty_string_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(1),
             read_limit: Some(1),
             write_limit: Some(1),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, ""), None);
@@ -102,11 +105,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_partial_prefix_returns_none() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(9),
             read_limit: Some(8),
             write_limit: Some(7),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         // Substring / prefix matches must not succeed — matching is exact.
@@ -119,11 +125,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_zero_valued_limits_are_returned() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(0),
             read_limit: Some(0),
             write_limit: Some(0),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), Some(0));
@@ -134,11 +143,14 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_u64_max_limits_are_returned() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(u64::MAX),
             read_limit: Some(u64::MAX),
             write_limit: Some(u64::MAX),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         assert_eq!(
@@ -225,11 +237,14 @@ mod off_by_one_and_zero_length_tests {
     fn emit_check_failure_entries_zero_length_names() {
         let mut reports = Vec::new();
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(0),
             read_limit: Some(0),
             write_limit: Some(0),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "", "", &config);
@@ -268,11 +283,14 @@ mod off_by_one_and_zero_length_tests {
     fn emit_check_failure_entries_preserves_metric_order() {
         let mut reports = Vec::new();
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(1),
             read_limit: Some(2),
             write_limit: Some(3),
             mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
@@ -312,7 +330,7 @@ mod off_by_one_and_zero_length_tests {
         // Creates file when missing (quiet).
         {
             let (_tmp, prev) = isolate_temp_dir();
-            let result = scaffold_init(false, true);
+            let result = scaffold_init(false);
             assert!(result.is_ok());
             assert!(
                 std::path::Path::new("budget.toml").exists(),
@@ -327,7 +345,7 @@ mod off_by_one_and_zero_length_tests {
         {
             let (_tmp, prev) = isolate_temp_dir();
             std::fs::write("budget.toml", "existing").unwrap();
-            let result = scaffold_init(false, true);
+            let result = scaffold_init(false);
             assert!(result.is_err());
             let err = format!("{:#}", result.as_ref().unwrap_err());
             assert!(
@@ -343,7 +361,7 @@ mod off_by_one_and_zero_length_tests {
         {
             let (_tmp, prev) = isolate_temp_dir();
             std::fs::write("budget.toml", "stale").unwrap();
-            let result = scaffold_init(true, true);
+            let result = scaffold_init(true);
             assert!(result.is_ok());
             let content = std::fs::read_to_string("budget.toml").unwrap();
             assert!(content.contains("Budget report configuration"));
@@ -355,7 +373,7 @@ mod off_by_one_and_zero_length_tests {
         {
             let (_tmp, prev) = isolate_temp_dir();
             std::fs::write("budget.toml", "stale").unwrap();
-            let result = scaffold_init(true, false);
+            let result = scaffold_init(true);
             assert!(result.is_ok());
             let content = std::fs::read_to_string("budget.toml").unwrap();
             assert!(content.contains("Budget report configuration"));
@@ -421,8 +439,8 @@ write_limit = 0
         std::fs::write(tmp.path(), "#\n").unwrap();
 
         let config = load_budget_toml(tmp.path()).expect("hash-only comment should be default");
-        assert!(config.network.is_none());
-        assert!(config.source.is_none());
+        assert_eq!(config.network.as_deref(), Some("testnet"));
+        assert_eq!(config.source.as_deref(), Some("alice"));
         assert!(config.functions.is_empty());
     }
 
@@ -437,7 +455,7 @@ args = [""]
 
         let config = load_budget_toml(tmp.path()).expect("empty string arg should parse");
         let func = &config.functions["weird"];
-        assert_eq!(func.args, vec!["".to_string()]);
+        assert_eq!(func.args.encode(), vec!["".to_string()]);
     }
 
     // ── build_invoke_args zero-length / boundary tests ─────────────────
@@ -547,16 +565,16 @@ args = [""]
     // ── extract_metrics zero-value / boundary tests ────────────────────
 
     fn make_tx_data(instructions: u32, read_bytes: u32, write_bytes: u32) -> String {
-        use stellar_xdr::curr::{ExtensionPoint, LedgerFootprint, VecM};
+        use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
         let tx_data = SorobanTransactionData {
-            ext: ExtensionPoint::V0,
-            resources: stellar_xdr::curr::SorobanResources {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
                 footprint: LedgerFootprint {
                     read_only: VecM::default(),
                     read_write: VecM::default(),
                 },
                 instructions,
-                read_bytes,
+                disk_read_bytes: read_bytes,
                 write_bytes,
             },
             resource_fee: 0,
@@ -734,7 +752,7 @@ args = [""]
     #[test]
     fn function_config_default_has_zero_length_args() {
         let config = FunctionConfig::default();
-        assert_eq!(config.args.len(), 0);
+        assert!(config.args.is_empty());
         assert!(config.cpu_limit.is_none());
         assert!(config.read_limit.is_none());
         assert!(config.write_limit.is_none());

@@ -11,6 +11,7 @@
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
     use crate::*;
+    use crate::args::ArgSpec;
 
     // ── evaluate_check additional boundary tests ───────────────────────
 
@@ -47,10 +48,15 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_metric_exactly_bytes() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
+            tolerance: None,
         };
         // "Bytes" (exact match, no prefix) does not match any known metric.
         assert_eq!(limit_for_metric(&config, "Bytes"), None);
@@ -66,10 +72,15 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn limit_for_metric_newline_terminated_metric() {
         let config = FunctionConfig {
-            args: vec![],
+            args: Default::default(),
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
+            cpu_limit_pct: None,
+            read_limit_pct: None,
+            write_limit_pct: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions\n"), None);
     }
@@ -341,7 +352,7 @@ cpu_limit = 5000000
         std::fs::write(tmp.path(), content).unwrap();
         let config = load_budget_toml(tmp.path()).expect("should parse args correctly");
         let func = config.functions.get("do_work").unwrap();
-        assert_eq!(func.args, vec!["--n", "10000", "--flag"]);
+        assert_eq!(func.args.encode(), vec!["--n".to_string(), "10000".to_string(), "--flag".to_string()]);
         assert_eq!(func.cpu_limit, Some(5_000_000));
         assert!(func.read_limit.is_none());
         assert!(func.write_limit.is_none());
@@ -397,6 +408,8 @@ cpu_limit = 5000000
             value: None,
             limit: None,
             pass: Some(false),
+            resource_limit: None,
+            share_pct: None,
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("p,f,CPU Instructions,,,false"));
@@ -411,6 +424,8 @@ cpu_limit = 5000000
             value: Some(100),
             limit: Some(200),
             pass: None,
+            resource_limit: None,
+            share_pct: None,
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("p,f,CPU Instructions,100,200,"));
@@ -425,6 +440,8 @@ cpu_limit = 5000000
             value: Some(100),
             limit: None,
             pass: None,
+            resource_limit: None,
+            share_pct: None,
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",f,CPU Instructions,100"));
@@ -439,6 +456,8 @@ cpu_limit = 5000000
             value: Some(100),
             limit: None,
             pass: None,
+            resource_limit: None,
+            share_pct: None,
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains("p,,CPU Instructions,100"));
@@ -453,6 +472,8 @@ cpu_limit = 5000000
             value: Some(u32::MAX),
             limit: None,
             pass: None,
+            resource_limit: None,
+            share_pct: None,
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(&u32::MAX.to_string()));

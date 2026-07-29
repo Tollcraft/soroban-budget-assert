@@ -1,18 +1,24 @@
 use anyhow::{Context, Result};
-use cargo_metadata::MetadataCommand;
+use cargo_metadata::{CrateType, MetadataCommand};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
+use std::str::FromStr;
 
+mod args;
+use crate::args::ArgSpec;
 
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
+use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
@@ -77,7 +83,34 @@ source = "alice"
 # optionally enforce limits against.
 #
 #   [functions.<function_name>]
-#   args = ["--arg1", "value1"]   # CLI arguments forwarded to the function
+#
+#   # --- Arguments -------------------------------------------------------
+#   # Two formats are supported.
+#   #
+#   # Legacy flat string format (recommended for simple flag-based args):
+#   #   args = ["--flag", "value"]
+#   #
+#   # Typed format (recommended for real contract simulation with typed
+#   # function parameters):
+#   #   args = [
+#   #     { address = "alice" },       # Stellar address or named identity
+#   #     { i128     = "1000" },       # 128-bit signed integer (string for precision)
+#   #     { symbol   = "USDC" },       # Soroban symbol
+#   #     { bool     = true },         # boolean
+#   #     { string   = "hello" },      # string value
+#   #     { u32      = 42 },           # unsigned 32-bit integer
+#   #     { i32      = -7 },           # signed 32-bit integer
+#   #     { u64      = 1000000 },      # unsigned 64-bit integer
+#   #     { i64      = -1000000 },     # signed 64-bit integer
+#   #     { u128     = "340282366920938463463374607431768211455" }, # u128 as string
+#   #     { bytes    = "0102ff" },     # raw bytes as hex string
+#   #     { vec      = [{ u32 = 1 }, { u32 = 2 }] },  # vector of typed values
+#   #     { map      = { name = { symbol = "alice" }, balance = { i128 = "100" } } },
+#   #   ]
+#   #
+#   # The two formats must not be mixed in the same array (TOML restriction).
+#   # Empty arrays default to the legacy format.
+#
 #   cpu_limit  = 5000000          # optional, inclusive CPU instruction limit
 #   mem_limit  = 5000000          # optional, inclusive memory-bytes limit
 #   read_limit = 5000             # optional, inclusive read-bytes limit
@@ -89,9 +122,9 @@ source = "alice"
 #   #   Read Bytes       →  1 048 576  B
 #   #   Write Bytes      →  1 048 576  B
 #   # Examples:
-#   cpu_limit_pct  = 50   #  50 % of max CPU = 5 000 000 inst.
-#   read_limit_pct = 10   #  10 % of max read =   104 857 B
-#   write_limit_pct = 5   #   5 % of max write =   52 428 B
+#   #   cpu_limit_pct  = 50   #  50 % of max CPU = 5 000 000 inst.
+#   #   read_limit_pct = 10   #  10 % of max read =   104 857 B
+#   #   write_limit_pct = 5   #   5 % of max write =   52 428 B
 #
 # A missing `*_limit` (or `*_limit_pct`) means that metric is reported but not enforced.
 # See `cargo budget-report --check` for limit enforcement.
@@ -107,8 +140,40 @@ read_limit = 5000
 write_limit = 1000
 "#;
 
-/// Top-level CLI entry point for `cargo budget-report`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum OutputFormat {
+    #[default]
+    Table,
+    Json,
+    Md,
+}
 
+impl FromStr for OutputFormat {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "table" => Ok(Self::Table),
+            "json" => Ok(Self::Json),
+            "md" => Ok(Self::Md),
+            _ => Err(format!(
+                "unsupported output format `{value}`; expected `table`, `json`, or `md`"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Table => write!(f, "table"),
+            Self::Json => write!(f, "json"),
+            Self::Md => write!(f, "md"),
+        }
+    }
+}
+
+/// Top-level CLI entry point for `cargo budget-report`.
+///
 /// Wraps the binary in a `cargo <subcommand>` compatible enum so it can be
 /// invoked as `cargo budget-report [OPTIONS]`.
 #[derive(Parser, Debug)]
@@ -165,6 +230,55 @@ struct BudgetReportArgs {
     /// Public RPC endpoints may rate-limit; keep this conservative.
     #[arg(long, default_value_t = DEFAULT_CONCURRENCY)]
     concurrency: usize,
+
+    #[arg(long)]
+    validate: bool,
+
+    #[arg(long, default_value_t = false)]
+    quiet: bool,
+
+    #[arg(long)]
+    record_baseline: Option<String>,
+
+    #[arg(long)]
+    check_baseline: Option<String>,
+
+    #[arg(long)]
+    tolerance: Option<String>,
+
+    #[arg(long)]
+    derive_limits: Option<String>,
+
+    #[arg(long)]
+    provenance_out: Option<String>,
+
+    #[arg(long)]
+    profile: Option<String>,
+
+    #[arg(long)]
+    from: Option<String>,
+
+    #[arg(long)]
+    margin_cpu: Option<String>,
+
+    #[arg(long)]
+    margin_memory: Option<String>,
+
+    #[arg(long)]
+    margin_read: Option<String>,
+
+    #[arg(long)]
+    margin_write: Option<String>,
+
+    #[arg(long, default_value_t = false)]
+    totals: bool,
+}
+
+fn default_network() -> Option<String> {
+    Some("testnet".to_string())
+}
+fn default_source() -> Option<String> {
+    Some("alice".to_string())
 }
 
 #[derive(serde::Deserialize, Default, Debug)]
@@ -175,6 +289,8 @@ struct BudgetToml {
     /// Stellar source account keypair name. Defaults to `"alice"` when not specified.
     #[serde(default = "default_source")]
     source: Option<String>,
+    #[serde(default)]
+    tolerance: Option<f64>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
 }
@@ -205,8 +321,10 @@ impl TransactionData {
 
 #[derive(serde::Deserialize, Default, Debug)]
 struct FunctionConfig {
+    /// Function arguments. Supports both legacy flat string args and
+    /// the new typed format (see [`ArgSpec`]).
     #[serde(default)]
-    args: Vec<String>,
+    args: ArgSpec,
     /// Inclusive upper bound on the measured CPU `Instructions` metric. `None`
     /// means this metric is reported but not enforced by `--check`.
     #[serde(default)]
@@ -217,9 +335,17 @@ struct FunctionConfig {
     read_limit: Option<u64>,
     #[serde(default)]
     write_limit: Option<u64>,
+    #[serde(default)]
+    cpu_limit_pct: Option<u64>,
+    #[serde(default)]
+    read_limit_pct: Option<u64>,
+    #[serde(default)]
+    write_limit_pct: Option<u64>,
+    #[serde(default)]
+    tolerance: Option<f64>,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 struct CostReport {
     package: String,
     function: String,
@@ -315,6 +441,21 @@ fn build_markdown_report(reports: &[CostReport]) -> String {
     output
 }
 
+fn resolve_limit(config: &FunctionConfig, metric: &str) -> Option<u64> {
+    match metric {
+        "CPU Instructions" => config
+            .cpu_limit
+            .or_else(|| config.cpu_limit_pct.map(|pct| pct * 10_000_000 / 100)),
+        "Read Bytes" => config
+            .read_limit
+            .or_else(|| config.read_limit_pct.map(|pct| pct * 1_048_576 / 100)),
+        "Write Bytes" => config
+            .write_limit
+            .or_else(|| config.write_limit_pct.map(|pct| pct * 1_048_576 / 100)),
+        _ => None,
+    }
+}
+
 /// Returns the configured limit (if any) for the given metric name.
 ///
 /// This returns the *raw* configured value — either an absolute limit
@@ -401,46 +542,37 @@ fn emit_check_failure_entries(
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let s = value.to_string();
     let mut result = String::new();
-    // `digit_count` tracks how many decimal digits have been accumulated since
-    // the last comma (or since the start).  When it reaches 3 we are at a
-    // thousands-group boundary and must insert a separator before the next
-    // (more-significant) digit.
     let mut digit_count = 0;
-    // Iterate least-significant digit first so the comma decision is simply
-    // "have we collected 3 digits yet?" — no look-ahead or total-digit-count
-    // needed.  This is the first of two reversals.
-    for ch in value_str.chars().rev() {
+    for ch in s.chars().rev() {
         if digit_count == 3 {
-            // Modular boundary: insert the comma *before* pushing the next
-            // digit, then reset the counter for the new group.
             result.push(',');
-            count = 0;
+            digit_count = 0;
         }
-        result.push(c);
-        count += 1;
+        result.push(ch);
+        digit_count += 1;
     }
-    // Second reversal: the accumulated string is in reverse order (least
-    // significant first, commas in mirrored positions).  Re-reversing
-    // restores natural left-to-right reading order.
     let formatted = result.chars().rev().collect::<String>();
 
-    // Choose the unit suffix based on whether the metric name contains "Bytes".
-    // "CPU Instructions" → "inst.", "Read Bytes" / "Write Bytes" → "B".
     if metric.contains("Bytes") {
         format!("{} B", formatted)
     } else {
         format!("{} inst.", formatted)
-    };
-
-    if let Some(pct) = share_pct {
-        let mut s = format!("{} ({:.1}%)", base, pct);
-        if threshold > 0.0 && pct > threshold {
-            s.push_str(" ⚠");
-        }
-        s
-    } else {
-        base
     }
+}
+
+fn soroban_rpc_url(network: &str) -> &str {
+    match network {
+        "testnet" => "https://soroban-testnet.stellar.org:443",
+        "futurenet" => "https://rpc-futurenet.stellar.org:443",
+        "local" => "http://localhost:8000",
+        _ => "https://soroban-testnet.stellar.org:443",
+    }
+}
+
+fn extract_memory_bytes_cost(rpc_resp: &serde_json::Value) -> Option<u32> {
+    rpc_resp["result"]["cost"]["mem_bytes"]
+        .as_u64()
+        .map(|v| v as u32)
 }
 
 fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> {
@@ -457,7 +589,7 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
 
     Ok((
         tx_data.resources.instructions,
-        tx_data.resources.read_bytes,
+        tx_data.resources.disk_read_bytes,
         tx_data.resources.write_bytes,
     ))
 }
@@ -485,6 +617,8 @@ enum SimulationOutcome {
         instructions: u32,
         read_bytes: u32,
         write_bytes: u32,
+        memory_bytes: Option<u32>,
+        transaction_data_xdr: String,
     },
     Failed(SimulationFailure),
 }
@@ -530,7 +664,7 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 
 /// POSTs a `simulateTransaction` JSON-RPC request for `b64_xdr` and returns
 /// the parsed response body.
-fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
+fn simulate_transaction_rpc(b64_xdr: &str, rpc_url: &str) -> Result<serde_json::Value> {
     let rpc_payload = build_rpc_payload(b64_xdr);
 
     let mut curl = Command::new("curl")
@@ -594,8 +728,7 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
-    let rpc_url = soroban_rpc_url(network)
-        .unwrap_or("https://soroban-testnet.stellar.org:443");
+    let rpc_url = soroban_rpc_url(network);
     let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
@@ -713,6 +846,28 @@ fn run_preflight_checks() -> Result<()> {
     Ok(())
 }
 
+struct NetworkLimits {
+    max_instructions: u64,
+    max_read_bytes: u64,
+    max_write_bytes: u64,
+}
+
+type Module10Result<T> = Result<T>;
+
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+struct CacheEntry {
+    wasm_sha256: String,
+    contract_id: String,
+    network: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct BudgetCache {
+    package: HashMap<String, CacheEntry>,
+}
+
+const CACHE_FILE: &str = ".budget-cache.toml";
+
 /// Loads the contract ID cache from `.budget-cache.toml`.
 fn load_cache() -> BudgetCache {
     std::fs::read_to_string(CACHE_FILE)
@@ -727,7 +882,7 @@ fn save_cache(cache: &BudgetCache) {
 }
 
 fn wasm_sha256(wasm_bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
+    let mut hasher = Sha256::default();
     hasher.update(wasm_bytes);
     hex::encode(hasher.finalize())
 }
@@ -861,13 +1016,16 @@ fn main() -> Result<()> {
     let mut reports = Vec::new();
     let mut has_errors = false;
     let mut checks_failed = false;
-    let mut validation_failed = false;
+    let mut _validation_failed = false;
+
+    let force_deploy = false;
+    let mut cache = load_cache();
 
     for package in metadata.packages {
         let is_cdylib = package
             .targets
             .iter()
-            .any(|t| t.crate_types.iter().any(|c| *c == "cdylib"));
+            .any(|t| t.crate_types.iter().any(|c| *c == CrateType::CDyLib));
         if !is_cdylib {
             continue;
         }
@@ -895,7 +1053,7 @@ fn main() -> Result<()> {
         let cdylib_target = package
             .targets
             .iter()
-            .find(|t| t.crate_types.iter().any(|ct| *ct == "cdylib"));
+            .find(|t| t.crate_types.iter().any(|ct| *ct == CrateType::CDyLib));
         let wasm_name = match cdylib_target {
             Some(target) => target.name.clone(),
             None => {
@@ -989,7 +1147,7 @@ fn main() -> Result<()> {
                 let args = toml_config
                     .functions
                     .get(f)
-                    .map(|c| c.args.clone())
+                    .map(|c| c.args.encode())
                     .unwrap_or_default();
                 (f.clone(), args)
             })
@@ -1063,6 +1221,12 @@ fn main() -> Result<()> {
             .into_inner()
             .unwrap();
         ordered_results.sort_by_key(|(i, _)| *i);
+
+        let network_limits = NetworkLimits {
+            max_instructions: 10_000_000,
+            max_read_bytes: 1_048_576,
+            max_write_bytes: 1_048_576,
+        };
 
         for (i, outcome) in ordered_results {
             let function = &function_args[i].0;
@@ -1164,7 +1328,7 @@ fn main() -> Result<()> {
                                 }
                             }
                             validate::ValidationResult::Mismatch { diagnostics } => {
-                                validation_failed = true;
+                                _validation_failed = true;
                                 eprintln!(
                                     "  ✗ VALIDATION FAILED for '{}' in package '{}':",
                                     function, package.name
@@ -1292,8 +1456,8 @@ fn main() -> Result<()> {
 
         if args.check {
             println!("\n=== BUDGET CHECKS ===");
-            let mut passed: usize = 0;
-            let mut failed: usize = 0;
+            let mut _passed: usize = 0;
+            let mut _failed: usize = 0;
             for r in &reports {
                 let Some(pass) = r.pass else {
                     continue;
@@ -1318,9 +1482,9 @@ fn main() -> Result<()> {
                     r.package, r.function, r.metric, value_str, limit_str, status
                 );
                 if pass {
-                    passed += 1;
+                    _passed += 1;
                 } else {
-                    failed += 1;
+                    _failed += 1;
                 }
             }
         }
@@ -1336,10 +1500,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+pub mod compare;
+pub(crate) mod derive;
+pub(crate) mod json_output;
+pub(crate) mod markdown;
+mod module_10;
+mod module_12;
 mod module_2;
 mod module_3;
 mod module_4;
-mod module_12;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1376,9 +1545,9 @@ mod module_32;
 #[cfg(test)]
 mod module_8;
 
+mod module_18;
 #[cfg(test)]
 mod module_27;
-mod module_18;
 
 #[cfg(test)]
 mod module_19;
@@ -1387,13 +1556,29 @@ mod module_19;
 #[cfg(test)]
 static TEST_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn resolve_tolerance(
+    cli_value: Option<&str>,
+    config: &BudgetToml,
+) -> std::result::Result<compare::Tolerance, String> {
+    if let Some(val) = cli_value {
+        let parsed: f64 = val.parse().map_err(|_| {
+            format!("tolerance must be a number (e.g. '5%' or '0.05'), got '{val}'")
+        })?;
+        Ok(compare::Tolerance::new(parsed))
+    } else if let Some(val) = config.tolerance {
+        Ok(compare::Tolerance::new(val))
+    } else {
+        Ok(compare::Tolerance::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use stellar_xdr::curr::WriteXdr;
+    use stellar_xdr::WriteXdr;
 
     fn unique_test_path() -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -1474,16 +1659,16 @@ mod tests {
     const FIXTURE_RESOURCE_FEE: i64 = 0;
 
     fn make_fixture_tx_data() -> SorobanTransactionData {
-        use stellar_xdr::curr::{ExtensionPoint, LedgerFootprint, VecM};
+        use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
         SorobanTransactionData {
-            ext: ExtensionPoint::V0,
-            resources: stellar_xdr::curr::SorobanResources {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
                 footprint: LedgerFootprint {
                     read_only: VecM::default(),
                     read_write: VecM::default(),
                 },
                 instructions: FIXTURE_INSTRUCTIONS,
-                read_bytes: FIXTURE_READ_BYTES,
+                disk_read_bytes: FIXTURE_READ_BYTES,
                 write_bytes: FIXTURE_WRITE_BYTES,
             },
             resource_fee: FIXTURE_RESOURCE_FEE,
@@ -1706,8 +1891,11 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            format: Default::default(),
             check: false,
+            fail_fast: false,
             csv: false,
+            concurrency: Default::default(),
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
@@ -1734,8 +1922,11 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            format: Default::default(),
             check: false,
+            fail_fast: false,
             csv: false,
+            concurrency: Default::default(),
             record_baseline: Some("budget-baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
@@ -1762,8 +1953,11 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            format: Default::default(),
             check: false,
+            fail_fast: false,
             csv: false,
+            concurrency: Default::default(),
             record_baseline: None,
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
@@ -1793,8 +1987,11 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            format: Default::default(),
             check: false,
+            fail_fast: false,
             csv: false,
+            concurrency: Default::default(),
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
@@ -1815,6 +2012,20 @@ mod tests {
             other => panic!("expected Derive mode, got {other:?}"),
         }
     }
+
+    const SHARED_BUDGET_TOML: &str = r#"
+network = "testnet"
+source = "alice"
+
+[functions.do_expensive_work]
+args = ["--n", "10000"]
+
+[functions.require_auth_only]
+args = []
+
+[lints]
+some_key = "value"
+"#;
 
     #[test]
     fn shared_budget_toml_parses_with_foreign_sections() {
@@ -2119,6 +2330,7 @@ cpu_limit_pct = 50
                 value: Some(1_000_000),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2127,6 +2339,7 @@ cpu_limit_pct = 50
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let csv = module_32::reports_to_csv(&reports, false);
@@ -2148,6 +2361,7 @@ cpu_limit_pct = 50
                 value: Some(1_000_000),
                 limit: Some(5_000_000),
                 pass: Some(true),
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2156,6 +2370,7 @@ cpu_limit_pct = 50
                 value: Some(4_096),
                 limit: Some(1_000),
                 pass: Some(false),
+                ..Default::default()
             },
         ];
         let csv = module_32::reports_to_csv(&reports, true);
@@ -2177,6 +2392,7 @@ cpu_limit_pct = 50
                 value: None,
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2185,6 +2401,7 @@ cpu_limit_pct = 50
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let csv = module_32::reports_to_csv(&reports, false);
@@ -2204,6 +2421,7 @@ cpu_limit_pct = 50
             value: None,
             limit: Some(5_000_000),
             pass: Some(false),
+            ..Default::default()
         }];
         let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
@@ -2238,6 +2456,7 @@ cpu_limit_pct = 50
                 value: Some(1_000_000),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2246,6 +2465,7 @@ cpu_limit_pct = 50
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let json = reports_to_json(&reports);
@@ -2278,6 +2498,7 @@ cpu_limit_pct = 50
                 value: Some(1_000_000),
                 limit: Some(5_000_000),
                 pass: Some(true),
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2286,6 +2507,7 @@ cpu_limit_pct = 50
                 value: Some(4_096),
                 limit: Some(1_000),
                 pass: Some(false),
+                ..Default::default()
             },
         ];
         let json = reports_to_json(&reports);
@@ -2318,6 +2540,7 @@ cpu_limit_pct = 50
                 value: None,
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "my-contract".to_string(),
@@ -2326,6 +2549,7 @@ cpu_limit_pct = 50
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let json = reports_to_json(&reports);
@@ -2352,6 +2576,7 @@ cpu_limit_pct = 50
             value: None,
             limit: Some(5_000_000),
             pass: Some(false),
+            ..Default::default()
         }];
         let json = reports_to_json(&reports);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -2383,6 +2608,7 @@ cpu_limit_pct = 50
                 value: Some(1_000_000),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "pkg".to_string(),
@@ -2391,6 +2617,7 @@ cpu_limit_pct = 50
                 value: Some(2_048),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "pkg".to_string(),
@@ -2399,6 +2626,7 @@ cpu_limit_pct = 50
                 value: Some(4_096),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
             CostReport {
                 package: "pkg".to_string(),
@@ -2407,6 +2635,7 @@ cpu_limit_pct = 50
                 value: Some(12_345),
                 limit: None,
                 pass: None,
+                ..Default::default()
             },
         ];
         let json = reports_to_json(&reports);

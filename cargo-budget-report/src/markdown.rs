@@ -30,7 +30,9 @@ impl MarkdownReportRow {
 /// The returned string does not include a trailing newline, allowing callers
 /// to decide how the table should be separated from other CLI output.
 pub fn format_markdown_table(rows: &[MarkdownReportRow]) -> String {
-    let mut table = String::from("| Contract/Test Name | CPU Cost | Memory Cost | Status |\n| --- | ---: | ---: | --- |");
+    let mut table = String::from(
+        "| Contract/Test Name | CPU Cost | Memory Cost | Status |\n| --- | ---: | ---: | --- |",
+    );
 
     for row in rows {
         let status = if row.passed { "Pass" } else { "Fail" };
@@ -50,7 +52,10 @@ pub fn format_markdown_table(rows: &[MarkdownReportRow]) -> String {
 }
 
 fn escape_markdown_cell(value: &str) -> String {
-    value.replace('|', "\\|").replace('\n', " ").replace('\r', " ")
+    value
+        .replace('|', "\\|")
+        .replace('\n', " ")
+        .replace('\r', " ")
 }
 
 #[cfg(test)]
@@ -84,7 +89,12 @@ mod tests {
 
     #[test]
     fn escapes_markdown_cells() {
-        let rows = [MarkdownReportRow::new("contract|with\nseparator", 10, 20, true)];
+        let rows = [MarkdownReportRow::new(
+            "contract|with\nseparator",
+            10,
+            20,
+            true,
+        )];
 
         assert_eq!(
             format_markdown_table(&rows),

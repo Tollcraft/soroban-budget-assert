@@ -108,9 +108,9 @@ impl From<wasmparser::BinaryReaderError> for Error {
     }
 }
 
-/// Allow `?` to convert from `stellar_xdr::curr::Error` into ours.
-impl From<stellar_xdr::curr::Error> for Error {
-    fn from(e: stellar_xdr::curr::Error) -> Self {
+/// Allow `?` to convert from `stellar_xdr::Error` into ours.
+impl From<stellar_xdr::Error> for Error {
+    fn from(e: stellar_xdr::Error) -> Self {
         Error::Xdr(e.to_string())
     }
 }

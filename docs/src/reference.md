@@ -417,8 +417,87 @@ write_limit = 1000
 {% endcode %}
 
 - `network`, `source` — defaults for the corresponding CLI flags.
-- `[functions.<name>].args` — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped.
+- `[functions.<name>].args` — arguments injected when simulating that exported function. Two formats are supported:
+  - **Legacy flat string format** (backward compatible): `args = ["--flag", "value"]` — these are passed verbatim to `stellar contract invoke`.
+  - **Typed argument format** (for real contract simulation): each argument is a TOML inline table with a single key specifying the type. This enables simulation of functions that expect typed Soroban values rather than CLI flags.
+
+  Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped.
 - `[functions.<name>].cpu_limit`, `.read_limit`, `.write_limit` — inclusive upper bounds for simulated CPU instructions, read bytes, and write bytes. Enforced only when `--check` is passed. A missing field means "not enforced" for that metric.
+
+### Supported Argument Types
+
+The typed argument format uses TOML inline tables with a single key-value pair:
+
+```toml
+[functions.transfer]
+args = [
+    { address = "G...ABC" },
+    { address = "G...XYZ" },
+    { i128 = "1000000000" },
+]
+```
+
+Each key is a Rust-side type name (matching the ScSpec type from the contract's WASM spec), and the value is the string representation of that type.
+
+| Key | Soroban Type | Value Format |
+| :--- | :--- | :--- |
+| `address` | `Address` | Stellar address string (G... or C...) |
+| `bool` | `bool` | `"true"` or `"false"` |
+| `i32` | `i32` | Integer string, e.g. `"42"` |
+| `i64` | `i64` | Integer string, e.g. `"1000000"` |
+| `i128` | `i128` | Integer string, e.g. `"100000000000000"` |
+| `u32` | `u32` | Unsigned integer string, e.g. `"42"` |
+| `u64` | `u64` | Unsigned integer string, e.g. `"1000000"` |
+| `u128` | `u128` | Unsigned integer string, e.g. `"100000000000000"` |
+| `string` | `String` | Arbitrary string, e.g. `"hello"` |
+| `symbol` | `Symbol` | Soroban symbol string, e.g. `"my_fn"` |
+| `bytes` | `Bytes` | Hex-encoded bytes, e.g. `"deadbeef"` |
+| `void` | `()` | Empty string `""` |
+| `vec` | `Vec<T>` | Comma-separated list of sub-arguments; see below |
+
+**Vec arguments** are encoded as a TOML array of typed argument inline tables:
+
+```toml
+[functions.batch_transfer]
+args = [
+    { address = "G...ABC" },
+    { vec = [ { u64 = 1 }, { u64 = 2 }, { u64 = 3 } ] },
+]
+```
+
+Each element in the vec array is itself a typed argument inline table. Integer types can use TOML integer literals (e.g. `{ u32 = 42 }`) or strings (e.g. `{ u32 = "42" }`). Bool values use TOML boolean literals (`true`/`false`). All other types use string values.
+
+**Backward compatibility:** The legacy `args = ["--flag", "value"]` format continues to work unchanged. The typed format is only invoked when the argument is a TOML inline table (a `{ ... }` value) rather than a plain string.
+
+### Examples for common patterns
+
+**Function with no arguments:**
+```toml
+[functions.initialize]
+```
+
+**Function with a single address argument:**
+```toml
+[functions.transfer]
+args = [
+    { address = "G..." },
+    { address = "G..." },
+    { i128 = "10000000" },
+]
+```
+
+**Function with a symbol argument:**
+```toml
+[functions.balance_of]
+args = [
+    { address = "G..." },
+    { symbol = "native" },
+]
+```
+
+### Typed argument encoding
+
+When using the typed format, each `{ type = "value" }` entry is automatically encoded into the corresponding Soroban `ScVal` by the tool before invoking the simulation. This means the arguments are sent to the network as proper typed values rather than CLI string flags, matching the contract's actual `ScSpec` function interface.
 
 ## Output
 
