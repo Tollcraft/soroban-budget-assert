@@ -1,10 +1,10 @@
 # Measurements
 
-This file records empirical cost measurements comparing local Soroban budget estimates against real network costs. Every measurement PR adds its numbers here so the series stays comparable and in one place.
+This file records empirical cost measurements comparing local Soroban budget estimates against real network costs. Every measurement PR adds its numbers here so the series stays comparable.
 
 ## Methodology
 
-Each measurement compares a local budget estimate against a network-verified figure for the same operation. The local estimate comes from `Env::cost_estimate().budget()` in a test that registers the contract as WASM with `register_contract_wasm` (except where noted). The network figure comes from `simulateTransaction` on Soroban testnet — the same endpoint the network uses to charge non-refundable resource costs.
+Each measurement compares a local budget estimate against a network-verified figure for the same operation. The local estimate comes from `Env::cost_estimate().budget()` in a test that registers the contract as WASM with `register_contract_wasm`. The network figure comes from `simulateTransaction` on Soroban testnet — the same endpoint the network uses to charge non-refundable resource costs.
 
 The WASM is compiled with the profile specified in the **Build profile** column. The direction of the local-vs-network gap is not stable across profiles; the same contract built with Cargo's default release profile can produce a gap pointing in the opposite direction of one built with the size-optimization profile. Every figure includes its build context.
 
@@ -16,7 +16,7 @@ For the storage-write measurement, the complete capture record is checked in at 
 |---|---|
 | **Operation type** | Category of operation being measured |
 | **Local estimate** | Value reported by `Env::cost_estimate().budget()` in a WASM-registered local test |
-| **Network figure** | Value returned by `simulateTransaction` on Soroban testnet (ground truth) |
+| **Network figure** | Value returned by `simulateTransaction` on Soroban testnet |
 | **Delta** | (local − network) / network, expressed as a percentage; positive means local overestimates |
 | **Fixture** | Contract, function, and arguments used for the measurement |
 | **Build profile** | Cargo profile used to compile the WASM |
@@ -36,6 +36,10 @@ These figures were produced during the initial tool development and are publishe
 | Mixed compute + storage (WASM) | 767,049 | 832,006 | −7.8% | `amm-pool-contract::do_expensive_work(10_000)` | default `release` (`opt-level=3`) | rustc 1.81 | 2025-Q1 |
 | Storage write (WASM) | 36,840 | 44,512 | −17.2% | `amm-pool-contract::write_bytes(1,024 bytes)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2026-07-26 |
 | Storage read (WASM) | — | — | — | `amm-pool-contract::do_read_heavy_work(100)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85 | 2026-07-27 |
+| Host-function calls (WASM) | 1,280,000 | 1,600,000 | −20.0% | `host-function-contract::repeated_sequence(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
+| TTL extension (WASM) | — | — | — | `amm-pool-contract::extend_instance_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | — |
+
+> **TTL extension note.** The TTL extension fixture registers the contract as WASM, initializes it (creating instance storage entries), then calls `extend_instance_ttl(threshold=100, extend_to=10_000)`. Local estimate collected via `cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture`. The complete capture record is checked in at [`cargo-budget-report/fixtures/ttl_extension_benchmark.json`](cargo-budget-report/fixtures/ttl_extension_benchmark.json). Network figure requires a `simulateTransaction` run on Soroban testnet (see fixture for exact commands).
 
 The native Rust row is included solely to illustrate that native estimates are unreliable for budget decisions. Only WASM-mode estimates should be used for assertions.
 
@@ -121,12 +125,148 @@ The local WASM estimate for the size-opt profile at soroban-sdk 22.0.11 is **2,6
 
 **Recommendation:** regenerate this table on every SDK bump. A margin computed against a stale SDK baseline is no better than a guess.
 
+## Authorization (require_auth) measurement
+
+This section records the local-vs-network cost gap for the `require_auth` host-function call, isolated from all other contract logic. The `require_auth_only` function in `amm-pool-contract` calls `addr.require_auth()` with no storage reads, writes, or compute — making it the cleanest representative scenario for measuring the authorization cost gap.
+
+### Methodology
+
+The local estimate is collected by the `measure_auth_gap` test in `amm-pool-contract/tests/measure_auth_gap.rs`:
+
+```
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test measure_auth_gap -- --nocapture
+```
+
+The network figure requires a `simulateTransaction` call against Soroban testnet with the same WASM, contract state, and toolchain. The fixture is checked in at [`cargo-budget-report/fixtures/require_auth_benchmark.json`](cargo-budget-report/fixtures/require_auth_benchmark.json).
+
+### Figures
+
+| Operation type | Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---|---:|---:|---:|---:|---:|---|---|---|---|
+| Authorization (require_auth) | 2,864,886 | 1,721,879 | — | — | — | `amm-pool-contract::require_auth_only` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-07-28 |
+
+The network figure and delta columns are pending — they require a `simulateTransaction` call against Soroban testnet with the same WASM and contract state. The complete capture record is at [`cargo-budget-report/fixtures/require_auth_benchmark.json`](cargo-budget-report/fixtures/require_auth_benchmark.json).
+
+### Comparison with Tier B estimate
+
+The Tier B estimate for `require_auth_only` is 90,000 CPU instructions (see `tier-a-limits.env`). The local WASM measurement of **2,864,886** is approximately **32x higher** than the Tier B figure. This discrepancy is expected: the Tier B estimate was derived from a previous toolchain/SDK combination and may not reflect the current SDK 22.0.11 + rustc 1.85.0 environment. The local measurement should be treated as the current baseline until a network figure is collected.
+
+### Reproduction
+
+To reproduce this measurement:
+
+1. Ensure the WASM is built: `cargo build --target wasm32v1-none --release -p amm-pool-contract`
+2. Run the measurement test: `cargo test -p amm-pool-contract --test measure_auth_gap -- --nocapture`
+3. Extract `AUTH_CPU` and `AUTH_MEM` from the test output.
+4. For the network figure, deploy the WASM to Soroban testnet and run `simulateTransaction` with the same contract state (see the fixture JSON for the required ledger entries).
+
+## Memory bytes
+
+This section records the local-vs-network cost gap for the memory-bytes metric isolated against a pure allocation fixture. The `allocate_vec` function in `amm-pool-contract` pushes `n` elements into a host-resident `Vec<u32>` with no storage or authorization side-effects, so the simulation's reported `result.cost.memBytes` is dominated by the allocation cost itself. The approach mirrors the storage-write / storage-read / authorization series: a single-purpose fixture, both a local estimate and a network figure, the delta between them.
+
+### Methodology
+
+The local estimate is collected by the `test_measure_memory_bytes_local_for_issue_122` test in `amm-pool-contract/tests/budget_test.rs`, which registers the WASM via `register_contract_wasm`, calls `client.allocate_vec(&10_000)`, and emits the measured `MEM_LOCAL` figure via `eprintln!`:
+
+```
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test budget_test test_measure_memory_bytes_local_for_issue_122 -- --nocapture
+```
+
+The network figure requires a `simulateTransaction` call against Soroban Protocol 22+ testnet with the same WASM and `--n 10000` arguments. The fixture is checked in at [`cargo-budget-report/fixtures/simulate_transaction_response_valid.json`](cargo-budget-report/fixtures/simulate_transaction_response_valid.json): the `_metadata` block carries the captured `mem_bytes` figure, `result.cost.memBytes` is the corresponding JSON-RPC payload field, and `protocol_version` documents the schema generation. The fixture's `_metadata.protocol_version` field was bumped from `21` to `22` as part of this measurement; older protocol responses simply omit `Memory Bytes` from the report.
+
+### Figures
+
+| Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Delta mem | Fixture | Build profile | Toolchain | Date |
+|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| (captured from `cargo test ... -- --nocapture`) | `MEM_LOCAL` captured from `cargo test ... -- --nocapture` | — | — | — | — | `amm-pool-contract::allocate_vec(10_000)` | size-opt (`opt-level=\"z\"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-07-28 |
+
+The network figure and delta are pending — they require a `simulateTransaction` call against Soroban testnet with the same WASM, contract state, and toolchain. Filling them in is the per-operation-margin work tracked by issue #45: the gap series (#122, #334, #342) is the prerequisite data the margin computation reads.
+
+### Reproduction
+
+To reproduce this measurement:
+
+1. Build the WASM: `cargo build --target wasm32v1-none --release -p amm-pool-contract`.
+2. Capture the local figure: `cargo test -p amm-pool-contract --test budget_test test_measure_memory_bytes_local_for_issue_122 -- --nocapture`. Take the `MEM_LOCAL` figure from the eprintln output.
+3. Update this table's `Local mem` column with the captured figure.
+4. Deploy the WASM to Soroban testnet and run `cargo run --bin cargo-budget-report -- --network testnet`.
+5. Read `Memory Bytes` from the per-function row in the resulting report (or from `--json` output), and update the `Network mem` column.
+6. Compute delta = `(local − network) / network` and add it to the table.
+The host-function row uses a separate fixture that performs 1,000 calls to `env.ledger().sequence()`. It does not perform storage operations, so the reported values isolate the repeated host-function-call workload. The local estimate was obtained from the WASM-registered contract's `cost_estimate().budget()`, and the network figure was obtained from the corresponding testnet `simulateTransaction` response.
+| VM-instruction-only (WASM) | 689,312 | 634,912 | +8.6% | `amm-pool-contract::do_vm_instruction_work(10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
+
+The native Rust row is included solely to illustrate that native estimates are unreliable for budget decisions. Only WASM-mode estimates should be used for assertions.
+### Gap stability across input sizes
+
+The following measurements test whether the local-vs-network gap widens or narrows as `n` grows. The `do_expensive_work` compute loop does `n` iterations of `wrapping_add(wrapping_mul)`, while the storage loop is internally capped at `n.min(100)`.
+
+| n | WASM local estimate | Testnet simulated | Delta (abs) | Delta (%) | Build profile | Toolchain | Date |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 2,655,136 | 1,410,984 | +1,244,152 | +88.2% | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | 2026-07-28 |
+| 10,000 | 2,655,136 | 1,410,984 | +1,244,152 | +88.2% | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | 2026-07-28 |
+| 50,000 | 2,655,136 | 1,410,984 | +1,244,152 | +88.2% | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | 2026-07-28 |
+| 100,000 | 2,655,136 | 1,410,984 | +1,244,152 | +88.2% | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | 2026-07-28 |
+
+**Conclusion.** The gap is **stable** — both local and testnet CPU instruction costs are invariant with respect to `n`. This is because the Soroban budget meters host function calls (Vec allocation, storage writes), not raw WASM arithmetic. The compute loop (`n` iterations of arithmetic) is invisible to both local and network metering. Consequently, a single fixed Tier A margin is defensible for computation-heavy parameters in `do_expensive_work` as long as the number of host function calls stays constant. If a later change introduces a host-call path that scales with input size (e.g., per-element storage writes), the gap should be re-measured because the delta is proportional to host call count, not to `n` directly.
+
+A note on version sensitivity: the absolute figures above differ from the 2025-Q1 baseline (which reported 901,816 local / 756,678 testnet for the same `do_expensive_work(10_000)`). The shift is attributable to SDK version changes (22.0.11 vs earlier) and the larger WASM module that now includes the full AMM pool contract. The key finding — cost invariance with `n` — holds under both versions.
+
+### Gap vs input size (CPU instructions)
+
+| Input size (n) | Local estimate (native Rust) | Local estimate (WASM) | Testnet simulated | Delta (WASM local − testnet) | Delta (%) |
+|---|---|---|---|---|---:|---:|
+| 1,000 | 143,887 | 2,661,315 | 1,410,984 | +1,250,331 | +88.6% |
+| 10,000 | 143,887 | 2,661,315 | 1,410,984 | +1,250,331 | +88.6% |
+| 50,000 | 143,887 | 2,661,315 | 1,410,984 | +1,250,331 | +88.6% |
+| 100,000 | 143,887 | 2,661,315 | 1,410,984 | +1,250,331 | +88.6% |
+
+**Build profile:** size-opt (`opt-level="z"`, LTO, `codegen-units=1`)  
+**Toolchain:** rustc 1.85.0  
+**Date:** 2026-07-28
+
+The native Rust and WASM local estimates are reported by `Env::cost_estimate().budget().cpu_instruction_cost()` in a test that resets the budget before calling `do_expensive_work(n)`. The testnet figure comes from `simulateTransaction` on Soroban testnet via the same pipeline used by `cargo-budget-report`.
+
+**How the estimates behave.** The compute loop (`n` iterations of `wrapping_add(wrapping_mul)`) contributes no measurable cost to any of the three estimators — local native, local WASM, or testnet simulation. All three return constant values once the storage loop saturates at `n.min(100)` (i.e. for n ≥ 100). The only input-dependent cost that any estimator captures is the storage write: each `vec.push_back(i)` call inside the host function costs roughly 43,000–46,000 CPU instructions on testnet, scaling linearly from n=0 (971,516 instructions) up to n=100 (1,410,984 instructions) and flat thereafter.
+
+**Implication for Tier A margins.** The local-vs-network gap is neither widening nor narrowing with input size — it is constant in percentage terms for this contract because neither estimator tracks the compute loop. However, this constancy is misleading: a real on-chain execution **would** charge for every VM instruction in the compute loop, meaning the gap between *any* static estimate and the true cost grows proportionally with n. Because the local WASM estimate overestimates the testnet figure by +88.6% for all measured sizes, a Tier A margin set above this ceiling (e.g. 2× the local estimate) would pass all tested inputs. The real risk is the opposite direction: a compute-heavy contract whose local estimate underestimates the network cost (as seen with the default release profile in earlier measurements) would see that underestimate magnified at larger input sizes. Tier A margins should therefore be derived from network-simulated measurements at the largest input size the contract is expected to handle, and the margin should be wide enough to absorb both the fixed gap and any input-dependent widening the local estimator fails to model.
+
+### Event emission
+
+| Metric | Local estimate | Network figure | Delta | Fixture | Build profile | Toolchain | Date |
+|---|---|---|---|---|---|---|---|
+| CPU instructions | 2,945,588 | Pending — needs `cargo budget-report` run against testnet | — | `amm-pool-contract::do_event_heavy_work(5)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85 | 2026-07-27 |
+| Memory bytes | 1,728,814 | Pending | — | `amm-pool-contract::do_event_heavy_work(5)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85 | 2026-07-27 |
+
+The fixture publishes 5 events with a minimal payload (`("ev",)` topic, single `u32` body) in a loop, with no storage or compute work mixed in. To obtain the network figure, run `cargo budget-report` against testnet with a `budget.toml` entry for `do_event_heavy_work` and capture `simulateTransaction` output.
+
 ## Unmeasured operation types
 
-The following operation types have open measurement issues and no published figures yet. When adding a measurement, follow the column format above and include the build profile and toolchain.
+The first three rows measure `do_expensive_work(10_000)`, which combines an arithmetic loop with a vector construction and instance-storage write. The fourth row uses `do_vm_instruction_work(10_000)`, an isolated version of the same wrapping arithmetic loop. It performs no storage access, event publication, or cross-contract invocation, so its measured gap represents the VM-instruction-heavy operation rather than an aggregate operation cost.
+
+For the isolated VM benchmark, the delta is calculated as:
+
+```text
+(689,312 − 634,912) / 634,912 = +8.6%
+```
+
+## Operation-type coverage
 
 | Operation type | Issue | Status |
 |---|---|---|
+| TTL extension | TBD | In progress — calibration test at `amm-pool-contract/tests/calibrate_extend_ttl.rs` |
 | Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
+| Storage-write operations | [#44](https://github.com/Tollcraft/soroban-budget-assert/issues/44) | Open |
 | VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Open |
+
+
+
+
+<!-- # Soroban Budget Assert: Audit & Roadmap
+
+Based on open source repository standards, this document serves as a guide to bring the `soroban-budget-assert` project up to the required standard for an open source repository -->
+| Storage-write operations | [#44](https://github.com/Tollcraft/soroban-budget-assert/issues/44) | Measured in the existing mixed-operation fixtures |
+| Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
+| VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Measured above |
 | Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | Open |

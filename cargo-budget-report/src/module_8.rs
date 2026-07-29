@@ -8,6 +8,7 @@
 
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
+    use crate::module_32::{isolate_temp_dir, reports_to_csv, restore_cwd};
     use crate::*;
     use budget_core::{emit_check_failure_entries, evaluate_check, limit_for_metric, BudgetToml, CostReport, FunctionConfig};
 
@@ -115,6 +116,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(
@@ -130,6 +132,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Read Bytes"), Some(1_000));
@@ -142,6 +145,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "Write Bytes"), Some(500));
@@ -154,6 +158,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         // An empty or unknown metric string should return None.
@@ -167,6 +172,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "WASM Bytes"), None);
@@ -180,6 +186,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: None,
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), None);
@@ -193,6 +200,141 @@ mod off_by_one_and_zero_length_tests {
         assert_eq!(limit_for_metric(&config, "CPU Instructions"), None);
         assert_eq!(limit_for_metric(&config, "Read Bytes"), None);
         assert_eq!(limit_for_metric(&config, "Write Bytes"), None);
+    }
+
+    // ── resolve_limit tests ─────────────────────────────────────────────
+
+    #[test]
+    fn resolve_limit_cpu_absolute_takes_precedence_over_pct() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: Some(5_000_000),
+            cpu_limit_pct: Some(90),
+            ..FunctionConfig::default()
+        };
+        // Absolute limit should be returned directly.
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(5_000_000));
+    }
+
+    #[test]
+    fn resolve_limit_cpu_pct_resolves_correctly() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            cpu_limit_pct: Some(50),
+            ..FunctionConfig::default()
+        };
+        // 50 % of 10_000_000 = 5_000_000
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(5_000_000));
+    }
+
+    #[test]
+    fn resolve_limit_cpu_pct_0_resolves_to_0() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            cpu_limit_pct: Some(0),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(0));
+    }
+
+    #[test]
+    fn resolve_limit_cpu_pct_100_resolves_to_max() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            cpu_limit_pct: Some(100),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(
+            resolve_limit(&config, "CPU Instructions"),
+            Some(PROTOCOL_MAX_CPU_INSTRUCTIONS)
+        );
+    }
+
+    #[test]
+    fn resolve_limit_read_pct_resolves_correctly() {
+        let config = FunctionConfig {
+            args: vec![],
+            read_limit: None,
+            read_limit_pct: Some(10),
+            ..FunctionConfig::default()
+        };
+        // 10 % of 1_048_576 = 104_857 (rounded down by integer division)
+        assert_eq!(resolve_limit(&config, "Read Bytes"), Some(104_857));
+    }
+
+    #[test]
+    fn resolve_limit_write_pct_resolves_correctly() {
+        let config = FunctionConfig {
+            args: vec![],
+            write_limit: None,
+            write_limit_pct: Some(5),
+            ..FunctionConfig::default()
+        };
+        // 5 % of 1_048_576 = 52_428 (rounded down by integer division)
+        assert_eq!(resolve_limit(&config, "Write Bytes"), Some(52_428));
+    }
+
+    #[test]
+    fn resolve_limit_unknown_metric_returns_none() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit_pct: Some(50),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(resolve_limit(&config, "WASM Bytes"), None);
+        assert_eq!(resolve_limit(&config, ""), None);
+    }
+
+    #[test]
+    fn resolve_limit_no_limit_configured_returns_none() {
+        let config = FunctionConfig::default();
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), None);
+        assert_eq!(resolve_limit(&config, "Read Bytes"), None);
+        assert_eq!(resolve_limit(&config, "Write Bytes"), None);
+    }
+
+    #[test]
+    fn resolve_limit_read_absolute_takes_precedence_over_pct() {
+        let config = FunctionConfig {
+            args: vec![],
+            read_limit: Some(5_000),
+            read_limit_pct: Some(90),
+            ..FunctionConfig::default()
+        };
+        // Absolute limit should be returned directly.
+        assert_eq!(resolve_limit(&config, "Read Bytes"), Some(5_000));
+    }
+
+    #[test]
+    fn resolve_limit_write_absolute_takes_precedence_over_pct() {
+        let config = FunctionConfig {
+            args: vec![],
+            write_limit: Some(1_000),
+            write_limit_pct: Some(90),
+            ..FunctionConfig::default()
+        };
+        // Absolute limit should be returned directly.
+        assert_eq!(resolve_limit(&config, "Write Bytes"), Some(1_000));
+    }
+
+    #[test]
+    fn resolve_limit_mixed_limits_cpu_abs_and_read_pct() {
+        // cpu_limit is absolute, but read_limit_pct should still resolve
+        // independently (not affected by cpu_limit being set).
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: Some(5_000_000),
+            read_limit: None,
+            read_limit_pct: Some(50),
+            ..FunctionConfig::default()
+        };
+        assert_eq!(resolve_limit(&config, "CPU Instructions"), Some(5_000_000));
+        // 50 % of 1_048_576 = 524_288
+        assert_eq!(resolve_limit(&config, "Read Bytes"), Some(524_288));
+        assert_eq!(resolve_limit(&config, "Write Bytes"), None);
     }
 
     // ── format_with_commas_and_units off-by-one tests ───────────────────
@@ -310,10 +452,12 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
-        assert_eq!(reports.len(), 3);
+        // 4 failure stubs (CPU, Memory, Read, Write).
+        assert_eq!(reports.len(), 4);
     }
 
     #[test]
@@ -324,6 +468,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
@@ -340,7 +485,8 @@ mod off_by_one_and_zero_length_tests {
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "", &config);
-        assert_eq!(reports.len(), 3);
+        // 4 failure stubs (CPU, Memory, Read, Write); zero function name.
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].function, "");
     }
 
@@ -349,51 +495,12 @@ mod off_by_one_and_zero_length_tests {
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "", "do_work", &config);
-        assert_eq!(reports.len(), 3);
+        // 4 failure stubs (CPU, Memory, Read, Write); zero package name.
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].package, "");
     }
 
     // ── CSV output zero-value and edge case tests ──────────────────────
-
-    /// Helper that serializes reports via the same CSV logic used in `main`.
-    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut wtr = csv::Writer::from_writer(vec![]);
-        if check {
-            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
-                .unwrap();
-            for r in reports {
-                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
-                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
-                wtr.write_record([
-                    r.package.as_str(),
-                    r.function.as_str(),
-                    r.metric,
-                    value_str.as_str(),
-                    limit_str.as_str(),
-                    pass_str.as_str(),
-                ])
-                .unwrap();
-            }
-        } else {
-            wtr.write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for r in reports {
-                if r.value.is_some() {
-                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                    wtr.write_record([
-                        r.package.as_str(),
-                        r.function.as_str(),
-                        r.metric,
-                        value_str.as_str(),
-                    ])
-                    .unwrap();
-                }
-            }
-        }
-        wtr.flush().unwrap();
-        String::from_utf8(wtr.into_inner().unwrap()).unwrap()
-    }
 
     #[test]
     fn csv_output_with_zero_value_indicates_zero_resource_usage() {
@@ -404,6 +511,7 @@ mod off_by_one_and_zero_length_tests {
             value: Some(0),
             limit: None,
             pass: None,
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",0\n") || csv.contains(",0\r\n"));
@@ -418,6 +526,7 @@ mod off_by_one_and_zero_length_tests {
             value: Some(0),
             limit: Some(0),
             pass: Some(true),
+            ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains(",0,0,true"));
@@ -437,24 +546,10 @@ mod off_by_one_and_zero_length_tests {
 
     // ── scaffold_init edge case tests ──────────────────────────────────
     //
-    // These tests create a temporary working directory and change the
-    // process CWD into it so that `scaffold_init`'s hard-coded
+    // These tests use `isolate_temp_dir` / `restore_cwd` from the shared
+    // `module_32` helpers so that `scaffold_init`'s hard-coded
     // `Path::new("budget.toml")` does not clobber the real project file.
     // A shared lock prevents races with other CWD-mutating tests.
-
-    /// Change into a newly-created temp directory and return the old CWD
-    /// so the caller can restore it with [`restore_cwd`].
-    fn isolate_temp_dir() -> (tempfile::TempDir, std::path::PathBuf) {
-        let tmp = tempfile::tempdir().expect("failed to create temp dir");
-        let prev = std::env::current_dir().expect("failed to read current working directory");
-        std::env::set_current_dir(tmp.path()).expect("failed to change into temp dir");
-        (tmp, prev)
-    }
-
-    /// Restore the original CWD. The temp dir can then be dropped cleanly.
-    fn restore_cwd(prev: &std::path::Path) {
-        std::env::set_current_dir(prev).expect("failed to restore original working directory");
-    }
 
     #[test]
     fn scaffold_init_creates_file_when_not_exists() {
@@ -463,7 +558,7 @@ mod off_by_one_and_zero_length_tests {
             .unwrap_or_else(|e| e.into_inner());
         let (_tmp, prev) = isolate_temp_dir();
 
-        let result = scaffold_init(false, false);
+        let result = scaffold_init(false, true);
         assert!(result.is_ok());
         assert!(
             std::path::Path::new("budget.toml").exists(),
@@ -488,7 +583,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(false, false);
+        let result = scaffold_init(false, true);
         assert!(result.is_err());
         let err = format!("{:#}", result.as_ref().unwrap_err());
         assert!(
@@ -514,7 +609,7 @@ mod off_by_one_and_zero_length_tests {
         let (_tmp, prev) = isolate_temp_dir();
         std::fs::write("budget.toml", "existing data").unwrap();
 
-        let result = scaffold_init(true, false);
+        let result = scaffold_init(true, true);
         assert!(result.is_ok());
 
         let content = std::fs::read_to_string("budget.toml").unwrap();
@@ -635,6 +730,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, " CPU Instructions"), None);
@@ -648,6 +744,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            mem_limit: None,
             tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions "), None);
@@ -661,6 +758,7 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         // The function should do exact case-sensitive matching.
@@ -763,17 +861,20 @@ write_limit = 0
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: Some(500),
+            mem_limit: None,
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
-        assert_eq!(reports.len(), 3);
-        // Must be emitted in order: CPU, Read, Write.
+        // 4 failure stubs; iteration order is [CPU, Memory, Read, Write].
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].metric, "CPU Instructions");
         assert_eq!(reports[0].limit, Some(5_000_000));
-        assert_eq!(reports[1].metric, "Read Bytes");
+        assert_eq!(reports[1].metric, "Memory Bytes");
         assert_eq!(reports[1].limit, None);
-        assert_eq!(reports[2].metric, "Write Bytes");
-        assert_eq!(reports[2].limit, Some(500));
+        assert_eq!(reports[2].metric, "Read Bytes");
+        assert_eq!(reports[2].limit, None);
+        assert_eq!(reports[3].metric, "Write Bytes");
+        assert_eq!(reports[3].limit, Some(500));
         // All should have pass = false.
         for r in &reports {
             assert_eq!(r.pass, Some(false));
@@ -785,7 +886,9 @@ write_limit = 0
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
-        assert_eq!(reports.len(), 3);
+        // 4 failure stubs (CPU, Memory, Read, Write); all limits are None
+        // because the default `FunctionConfig` has every limit unset.
+        assert_eq!(reports.len(), 4);
         for r in &reports {
             assert_eq!(r.limit, None);
             assert_eq!(r.pass, Some(false));
@@ -904,5 +1007,8 @@ write_limit = 0
         assert!(config.cpu_limit.is_none());
         assert!(config.read_limit.is_none());
         assert!(config.write_limit.is_none());
+        assert!(config.cpu_limit_pct.is_none());
+        assert!(config.read_limit_pct.is_none());
+        assert!(config.write_limit_pct.is_none());
     }
 }
