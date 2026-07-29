@@ -379,8 +379,7 @@ mod bitwise_tests {
 
     #[test]
     fn resource_mask_from_bits_truncate_preserves_known() {
-        let raw: u64 = ResourceKind::CpuInstructions as u64
-            | ResourceKind::WriteBytes as u64;
+        let raw: u64 = ResourceKind::CpuInstructions as u64 | ResourceKind::WriteBytes as u64;
         let mask = ResourceMask::from_bits_truncate(raw);
         assert!(mask.contains(ResourceKind::CpuInstructions));
         assert!(mask.contains(ResourceKind::WriteBytes));
