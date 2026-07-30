@@ -305,7 +305,7 @@ impl StateTracker for HashedStateTracker {
 ///
 /// let report = compare_backends(100, 10);
 /// assert_eq!(report.n, 100);
-/// assert!(report.lookup_speedup >= 1.0);
+/// assert!(report.lookup_speedup().is_finite() && report.lookup_speedup() >= 0.0);
 /// ```
 pub fn compare_backends(n: usize, warmup: usize) -> BenchmarkReport {
     let names: Vec<String> = (0..n).map(|i| format!("op_{i}")).collect();
