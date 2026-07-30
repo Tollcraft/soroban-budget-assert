@@ -27,31 +27,15 @@ jobs:
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
-      - name: Install Stellar CLI
-        run: |
-          curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-          mv stellar ~/.cargo/bin/
-
-      - name: Configure Stellar Identity
-        env:
-          STELLAR_ACCOUNT: alice
-          ALICE_SECRET_KEY: ${{ secrets.ALICE_SECRET_KEY }}
-        run: |
-          # fail early with a clear error if the secret is missing
-          if [ -z "$ALICE_SECRET_KEY" ]; then
-            echo "ERROR: ALICE_SECRET_KEY is not set. Add it to repository secrets." >&2
-            exit 1
-          fi
-
-          # ensure we run the exact stellar binary that was installed earlier
-          STELLAR_BIN="$HOME/.cargo/bin/stellar"
-          if [ ! -x "$STELLAR_BIN" ]; then
-            echo "ERROR: stellar binary not found at $STELLAR_BIN" >&2
-            exit 1
-          fi
-
-          # add the key using the environment variable (safe quoting)
-          "$STELLAR_BIN" keys add alice --secret-key "$ALICE_SECRET_KEY"
+      # No Stellar CLI or testnet identity is installed here on purpose.
+      # The Tier B step below is mocked, so nothing in this job reaches the
+      # network, and `secrets` are withheld from pull_request runs on forks —
+      # where every contribution to this repo comes from. Gating the job on a
+      # secret it never uses made it fail on every contributor PR.
+      #
+      # To restore real Tier B reporting, add `if: github.event_name == 'push'`
+      # to the reinstated CLI/identity steps and un-comment the budget-report
+      # invocations below, so fork PRs still run Tier A only.
 
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32v1-none
