@@ -9,3 +9,4 @@ node_modules/
 site/dist
 *.pdf
 current_report.json
+.soroban/
