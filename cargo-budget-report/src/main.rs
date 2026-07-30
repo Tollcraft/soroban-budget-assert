@@ -26,9 +26,20 @@ const MAX_DEPLOY_ATTEMPTS: u32 = 4;
 /// subsequent attempt (2 s → 4 s → 8 s).
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 
+ feat/rpc-timeout
+/// Maximum time (in seconds) to wait for an RPC call via curl before
+/// giving up. A bounded timeout keeps a slow or hung endpoint from
+/// stalling CI runs indefinitely.
+const RPC_TIMEOUT_SECS: &str = "30";
+
+/// Sentinel string emitted in the `function` column of the human-readable
+/// table for per-package subtotal rows under `--totals`. WASM function
+/// exports cannot contain the U+2500 box-drawing characters, so this
+/// cannot collide with a real export name.
+const TOTALS_SUBTOTAL_FUNCTION: &str = "── SUBTOTAL ──";
 /// Default maximum number of functions to simulate concurrently.
 /// Public RPC endpoints rate-limit, so keep this conservative.
-const DEFAULT_CONCURRENCY: usize = 4;
+const DEFAULT_CONCURRENCY: usize = 4; main
 
 /// Simple counting semaphore for bounding concurrent work.
 struct Semaphore {
@@ -233,6 +244,151 @@ impl TransactionData {
     }
 }
 
+ feat/rpc-timeout
+/// Network resource limits as reported by the Soroban JSON-RPC
+/// `getNetworkLimits` method.
+///
+/// These values define the per-transaction ceiling that Soroban
+/// enforces on the current protocol. They change with protocol
+/// upgrades, so they are fetched from the network at report time
+/// rather than hardcoded (see the fallback block below for the
+/// documented hardcoded defaults).
+#[derive(Debug, Clone)]
+struct NetworkLimits {
+    max_instructions: u64,
+    max_read_bytes: u64,
+    max_write_bytes: u64,
+}
+
+/// Maps a Soroban network name or alias to its JSON-RPC endpoint URL.
+///
+/// Known networks return their canonical Soroban RPC URL. For any
+/// other name (including custom networks), this function returns
+/// `None`, leaving the caller to fall back gracefully.
+fn soroban_rpc_url(network: &str) -> Option<&'static str> {
+    match network {
+        "testnet" => Some("https://soroban-testnet.stellar.org:443"),
+        "futurenet" => Some("https://soroban-futurenet.stellar.org:443"),
+        "pubnet" => Some("https://soroban-public.stellar.org:443"),
+        "local" => Some("http://localhost:8000"),
+        _ => None,
+    }
+}
+
+/// Fetches the current network resource limits via the Soroban
+/// JSON-RPC `getNetworkLimits` method.
+///
+/// Returns an error if the RPC call fails or the response cannot be
+/// parsed, so callers can fall back to documented hardcoded defaults.
+fn fetch_network_limits(rpc_url: &str) -> anyhow::Result<NetworkLimits> {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getNetworkLimits",
+        "params": {}
+    });
+
+    let mut curl = Command::new("curl")
+        .args([
+            "-s",
+            "--max-time",
+            RPC_TIMEOUT_SECS,
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            "@-",
+            rpc_url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("failed to execute curl for getNetworkLimits")?;
+
+    {
+        let stdin = curl
+            .stdin
+            .as_mut()
+            .context("Failed to open stdin for getNetworkLimits")?;
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .context("Failed to write getNetworkLimits payload to stdin")?;
+    }
+
+    let output = curl
+        .wait_with_output()
+        .context("Failed to read getNetworkLimits output")?;
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse getNetworkLimits response")?;
+
+    let result = json
+        .get("result")
+        .ok_or_else(|| anyhow::anyhow!("getNetworkLimits response missing 'result' field"))?;
+
+    Ok(NetworkLimits {
+        max_instructions: result
+            .get("maxInstructions")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxInstructions")?,
+        max_read_bytes: result
+            .get("maxReadBytes")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxReadBytes")?,
+        max_write_bytes: result
+            .get("maxWriteBytes")
+            .and_then(|v| v.as_u64())
+            .context("getNetworkLimits missing maxWriteBytes")?,
+    })
+}
+
+/// Hardcoded network resource limits as a fallback when the live
+/// RPC call cannot be reached (e.g. `--network local` or offline
+/// environments).
+///
+/// These values correspond to **Soroban Protocol version 21**
+/// (the current protocol on testnet as of late 2024). They MUST be
+/// reviewed and updated when the protocol is upgraded.
+const FALLBACK_NETWORK_LIMITS: NetworkLimits = NetworkLimits {
+    max_instructions: 10_000_000,
+    max_read_bytes: 100_000,
+    max_write_bytes: 100_000,
+};
+
+/// Fetches network resource limits, falling back to documented
+/// protocol-versioned hardcoded defaults when the RPC is unreachable.
+///
+/// The fallback is clearly tied to Soroban Protocol v21 so that
+/// consumers know when it may be stale.
+fn get_network_limits(network: &str) -> NetworkLimits {
+    let rpc_url = soroban_rpc_url(network);
+    match rpc_url {
+        Some(url) => fetch_network_limits(url).unwrap_or_else(|e| {
+            eprintln!(
+                "Warning: could not fetch network limits from {}: {} — \
+                 using documented fallback limits (Soroban Protocol v21)",
+                url, e
+            );
+            FALLBACK_NETWORK_LIMITS.clone()
+        }),
+        None => {
+            eprintln!(
+                "Warning: unknown network `{}` for Soroban RPC — \
+                 using documented fallback limits (Soroban Protocol v21)",
+                network
+            );
+            FALLBACK_NETWORK_LIMITS.clone()
+        }
+    }
+}
+
+/// Per-function configuration read from a `[functions.<name>]` section of
+/// `budget.toml`.
+///
+/// Controls which CLI arguments are forwarded to the contract invocation
+/// and which resource limits are enforced in `--check` mode.
+ main
 #[derive(serde::Deserialize, Default, Debug)]
 struct FunctionConfig {
     #[serde(default)]
@@ -429,7 +585,25 @@ fn emit_check_failure_entries(
 }
 
 fn format_with_commas_and_units(value: u64, metric: &str) -> String {
+ feat/rpc-timeout
+    format_value_with_share(value, metric, None, 0.0)
+}
+
+/// Formats a `u64` value with commas and unit suffix (`inst.` or `B`).
+///
+/// If `share_pct` is provided, it is appended as a percentage
+/// (e.g. `"901,816 inst. (12.3%)"`). When `threshold > 0.0` and the
+/// share exceeds it, a `" ⚠"` warning marker is appended.
+fn format_value_with_share(
+    value: u64,
+    metric: &str,
+    share_pct: Option<f64>,
+    threshold: f64,
+) -> String {
+    let value_str = value.to_string();
+
     let s = value.to_string();
+ main
     let mut result = String::new();
     // `digit_count` tracks how many decimal digits have been accumulated since
     // the last comma (or since the start).  When it reaches 3 we are at a
@@ -566,6 +740,8 @@ fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
     let mut curl = Command::new("curl")
         .args([
             "-s",
+            "--max-time",
+            RPC_TIMEOUT_SECS,
             "-X",
             "POST",
             "-H",
@@ -624,8 +800,7 @@ fn simulate_function(
     let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
         .trim()
         .to_string();
-    let rpc_url = soroban_rpc_url(network)
-        .unwrap_or("https://soroban-testnet.stellar.org:443");
+    let rpc_url = soroban_rpc_url(network).unwrap_or("https://soroban-testnet.stellar.org:443");
     let rpc_resp = simulate_transaction_rpc(&b64_xdr, rpc_url)?;
 
     if let Some(error) = rpc_resp.get("error") {
@@ -1277,8 +1452,23 @@ fn main() -> Result<()> {
                 ])
                 .context("Failed to write CSV record")?;
             }
+ feat/rpc-timeout
+            if report.has_regressions() {
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+    }
+
+    if args.csv {
+        let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
+        if args.check {
+            csv_writer
+                .write_record(["package", "function", "metric", "value", "limit", "pass"])
+
         } else {
             wtr.write_record(["package", "function", "metric", "value"])
+ main
                 .context("Failed to write CSV header")?;
             for r in &reports {
                 if r.value.is_some() {

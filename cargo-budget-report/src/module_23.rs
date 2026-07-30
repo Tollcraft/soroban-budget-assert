@@ -90,8 +90,8 @@ mod empty_config_and_defaults_tests {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         std::fs::write(tmp.path(), "   \n\t\n  \n").unwrap();
 
-        let config =
-            load_budget_toml(tmp.path()).expect("whitespace-only file should return default BudgetToml");
+        let config = load_budget_toml(tmp.path())
+            .expect("whitespace-only file should return default BudgetToml");
         assert_eq!(config.network, Some("testnet".to_string()));
         assert_eq!(config.source, Some("alice".to_string()));
     }
@@ -101,8 +101,8 @@ mod empty_config_and_defaults_tests {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         std::fs::write(tmp.path(), "# This is a comment\n# Another comment\n").unwrap();
 
-        let config =
-            load_budget_toml(tmp.path()).expect("comments-only file should return default BudgetToml");
+        let config = load_budget_toml(tmp.path())
+            .expect("comments-only file should return default BudgetToml");
         assert_eq!(config.network, Some("testnet".to_string()));
         assert_eq!(config.source, Some("alice".to_string()));
     }
@@ -112,8 +112,8 @@ mod empty_config_and_defaults_tests {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         std::fs::write(tmp.path(), "#\n").unwrap();
 
-        let config =
-            load_budget_toml(tmp.path()).expect("hash-only comment should return default BudgetToml");
+        let config = load_budget_toml(tmp.path())
+            .expect("hash-only comment should return default BudgetToml");
         assert_eq!(config.network, Some("testnet".to_string()));
         assert_eq!(config.source, Some("alice".to_string()));
     }
@@ -123,8 +123,8 @@ mod empty_config_and_defaults_tests {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         std::fs::write(tmp.path(), "\n").unwrap();
 
-        let config =
-            load_budget_toml(tmp.path()).expect("newline-only file should return default BudgetToml");
+        let config = load_budget_toml(tmp.path())
+            .expect("newline-only file should return default BudgetToml");
         assert_eq!(config.network, Some("testnet".to_string()));
         assert_eq!(config.source, Some("alice".to_string()));
     }
@@ -168,11 +168,7 @@ mod empty_config_and_defaults_tests {
     #[test]
     fn load_budget_toml_explicit_network_and_source_override_defaults() {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-        std::fs::write(
-            tmp.path(),
-            "network = \"local\"\nsource = \"dev\"\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path(), "network = \"local\"\nsource = \"dev\"\n").unwrap();
 
         let config =
             load_budget_toml(tmp.path()).expect("explicit config should parse successfully");
@@ -187,8 +183,7 @@ mod empty_config_and_defaults_tests {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         std::fs::write(tmp.path(), "network = \"\"\n").unwrap();
 
-        let config =
-            load_budget_toml(tmp.path()).expect("empty network string should parse");
+        let config = load_budget_toml(tmp.path()).expect("empty network string should parse");
         assert_eq!(
             config.network,
             Some(String::new()),
@@ -202,8 +197,7 @@ mod empty_config_and_defaults_tests {
         let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         std::fs::write(tmp.path(), "source = \"\"\n").unwrap();
 
-        let config =
-            load_budget_toml(tmp.path()).expect("empty source string should parse");
+        let config = load_budget_toml(tmp.path()).expect("empty source string should parse");
         assert_eq!(config.network, Some("testnet".to_string()));
         assert_eq!(
             config.source,
@@ -226,7 +220,10 @@ mod empty_config_and_defaults_tests {
     #[test]
     fn load_budget_toml_read_error_on_nonexistent_directory() {
         let result = load_budget_toml("/nonexistent_directory/budget.toml");
-        assert!(result.is_err(), "non-existent directory should produce an error");
+        assert!(
+            result.is_err(),
+            "non-existent directory should produce an error"
+        );
     }
 
     // ── resolve_tolerance configuration interaction tests ──────────────
@@ -266,7 +263,10 @@ args = ["--n", "1"]
         std::fs::write(tmp.path(), content).unwrap();
 
         let config = load_budget_toml(tmp.path()).expect("minimal function config should parse");
-        let func = config.functions.get("ping").expect("ping should be present");
+        let func = config
+            .functions
+            .get("ping")
+            .expect("ping should be present");
         assert_eq!(func.args, vec!["--n".to_string(), "1".to_string()]);
         assert!(func.cpu_limit.is_none());
         assert!(func.read_limit.is_none());
