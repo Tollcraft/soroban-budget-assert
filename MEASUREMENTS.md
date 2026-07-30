@@ -102,7 +102,7 @@ The network figure column requires a separate `cargo-budget-report` run on Sorob
 4. Collect local estimate: `cargo test -p amm-pool-contract calibrate_gap -- --nocapture`.
 5. For the network figure, deploy the WASM to testnet and run `cargo run --bin cargo-budget-report -- --network testnet` (see [Network simulation in mechanics.md](docs/src/mechanics.md#tier-b-network-simulation-cargo-budget-report)).
 6. Compute delta = (local − network) / network and add a row to the table above.
-
+<!-- fix -->
 A reusable script at `amm-pool-contract/calibrate_gap.ps1` automates steps 1–4 for a predefined list of SDK versions.
 
 ### Cross-version comparison (local only)
