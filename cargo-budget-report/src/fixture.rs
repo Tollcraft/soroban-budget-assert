@@ -1,4 +1,4 @@
-use crate::module_30::{Context, Error, Result};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -26,11 +26,11 @@ impl FixtureFile {
             format!("Failed to parse fixture file: {}", path.as_ref().display())
         })?;
         if fixture.fixture_version != FIXTURE_VERSION {
-            return Err(Error::Message(format!(
+            anyhow::bail!(
                 "Fixture version mismatch: expected {} got {}",
                 FIXTURE_VERSION,
                 fixture.fixture_version
-            )));
+            );
         }
         Ok(fixture)
     }

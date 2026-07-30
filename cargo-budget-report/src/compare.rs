@@ -17,7 +17,7 @@
 //! the explicit metric ordering inside each section, this produces a stable
 //! diff in PRs.
 
-use crate::module_30::{self, Context, Error, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -99,13 +99,13 @@ pub fn parse_tolerance(s: &str) -> Result<Tolerance> {
     };
     let parsed: f64 = raw
         .parse()
-        .map_err(|e| Error::Message(format!("tolerance must be a number (e.g. '5%' or '0.05'), got '{s}': {}", e)))?;
+        .with_context(|| format!("tolerance must be a number (e.g. '5%' or '0.05'), got '{s}'"))?;
     let value = if is_percent { parsed / 100.0 } else { parsed };
     if !value.is_finite() {
-        return Err(Error::Message(format!("tolerance must be a finite number, got '{s}'")));
+        anyhow::bail!("tolerance must be a finite number, got '{s}'");
     }
     if value < 0.0 {
-        return Err(Error::Message(format!("tolerance must be non-negative, got '{value}'")));
+        anyhow::bail!("tolerance must be non-negative, got '{value}'");
     }
     Ok(Tolerance::new(value))
 }
@@ -179,7 +179,7 @@ impl Baseline {
         let mut entries: BTreeMap<String, BaselineEntry> = BTreeMap::new();
         for (key, val) in root_table {
             if !val.is_table() {
-                return Err(Error::Message(format!("expected a table for key '{key}', got {}", value_kind(val))));
+                anyhow::bail!("expected a table for key '{key}', got {}", value_kind(val));
             }
             let inner = val.as_table().expect("checked above").clone();
             let entry = BaselineEntry::parse(&inner)
@@ -245,12 +245,12 @@ impl BaselineEntry {
             match value {
                 toml::Value::Integer(n) if *n >= 0 => Ok(*n as u64),
                 toml::Value::Integer(_) => {
-                    Err(Error::Message(format!("field '{key}' must be non-negative")))
+                    anyhow::bail!("field '{key}' must be non-negative")
                 }
-                other => Err(Error::Message(format!(
+                other => anyhow::bail!(
                     "field '{key}' must be a non-negative integer, got {}",
                     value_kind(other)
-                ))),
+                ),
             }
         };
         Ok(Self {

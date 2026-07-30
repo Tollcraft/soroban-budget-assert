@@ -703,25 +703,10 @@ mod tests {
 
     #[test]
     fn scenario_limit_sums_components_with_margin() {
-        // The four per-component rows per metric are required because
-        // `Derivation::from_report` iterates the metric set (cpu, memory,
-        // read, write — issue #288) for every scenario component. The CPU
-        // values drive the assertion; the remaining metrics are zero so the
-        // unwrap path doesn't trip on missing Tier B rows for the new
-        // Memory Bytes metric surfaced by issue #122.
         let measurements = vec![
             tier_b("amm-pool-contract", "deposit", "CPU Instructions", 30_000),
             tier_b("amm-pool-contract", "swap", "CPU Instructions", 50_000),
             tier_b("amm-pool-contract", "withdraw", "CPU Instructions", 40_000),
-            tier_b("amm-pool-contract", "deposit", "Memory Bytes", 0),
-            tier_b("amm-pool-contract", "swap", "Memory Bytes", 0),
-            tier_b("amm-pool-contract", "withdraw", "Memory Bytes", 0),
-            tier_b("amm-pool-contract", "deposit", "Read Bytes", 0),
-            tier_b("amm-pool-contract", "swap", "Read Bytes", 0),
-            tier_b("amm-pool-contract", "withdraw", "Read Bytes", 0),
-            tier_b("amm-pool-contract", "deposit", "Write Bytes", 0),
-            tier_b("amm-pool-contract", "swap", "Write Bytes", 0),
-            tier_b("amm-pool-contract", "withdraw", "Write Bytes", 0),
         ];
         let mut scenarios = BTreeMap::new();
         scenarios.insert(
@@ -737,16 +722,12 @@ mod tests {
             scenarios,
         };
         let derivation = Derivation::from_report(&measurements, &config).unwrap();
-        // Limit findings to the CPU scenario row; the same scenario now has
-        // a per-metric entry under each metric key (issue #288 split + the
-        // Memory Bytes surface added by issue #122), so the lookup must be
-        // metric-scoped to stay focused on this test's CPU-focused math.
         let scenario = derivation
             .limits
             .iter()
-            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW") && l.key.contains("__CPU"))
-            .expect("CPU scenario row present");
-        // (30k + 50k + 40k) × 1.25 = 150_000 (cpu_margin in the test helper).
+            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW"))
+            .expect("scenario row present");
+        // (30k + 50k + 40k) × 1.25 = 150_000.
         assert_eq!(scenario.tier_a_limit, 150_000);
         assert_eq!(scenario.tier_b_value, 120_000);
     }
