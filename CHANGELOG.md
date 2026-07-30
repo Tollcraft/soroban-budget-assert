@@ -49,6 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Budget assertion tests for `require_auth` host calls: isolated `require_auth_only` contract function with CPU/memory budget assertions, plus per-operation deposit/swap/withdraw granular budget checks.
 - Budget assertion tests for `extend_ttl` operations: isolated `extend_instance_ttl` contract function with CPU/memory budget assertions and deliberate-regression fixtures, demonstrating how to budget-test ledger-rent operations.
 
+### Changed
+
+- **JSON output schema**: `CostReport` entries now include a `status` field (`"success"` or `"failed"`) and an optional `failure_reason` field. Previously, simulation failures were silently omitted from the report; now they appear with `status: "failed"` and a human-readable reason. In `--check` mode, failure entries additionally carry `pass: Some(false)` and the configured limit per metric. Existing consumers that check `typeof row.value === 'number'` remain compatible because failed entries carry `value: null` (omitted from serialization).
+
+- **Table output**: Failed simulations now appear in a `--- FAILED SIMULATIONS ---` section below the main budget table. The summary line now reports both the number of successfully simulated functions and the number of failed ones.
+
+- **CSV output**: The `--csv` output now includes `status` and `failure_reason` columns. Without `--check`, the header is `status,package,function,metric,value,failure_reason`; with `--check`, it adds `limit,pass`.
+
+- **`SimulationFailure` enum**: Added `label()` and `detail()` methods for producing consistent, human-readable failure descriptions across all three failure paths (invoke failure, RPC error, metrics extraction failure).
+
 ### Fixed
 
 - Dynamic env-var budget limits (`env = "VAR"`) now panic with a clear message when the variable is set but contains an unparseable value (e.g. `1_000_000` or `"800000 "`), instead of silently falling back to `u64::MAX` and disabling the assertion.

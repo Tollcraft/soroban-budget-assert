@@ -471,7 +471,13 @@ mod off_by_one_and_zero_length_tests {
             mem_limit: None,
             tolerance: None,
         };
-        emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
+        emit_check_failure_entries(
+            &mut reports,
+            "my-pkg",
+            "do_work",
+            "simulation failed",
+            Some(&config),
+        );
         for r in &reports {
             assert_eq!(r.package, "my-pkg");
             assert_eq!(r.function, "do_work");
@@ -505,43 +511,50 @@ mod off_by_one_and_zero_length_tests {
     #[test]
     fn csv_output_with_zero_value_indicates_zero_resource_usage() {
         let reports = vec![CostReport {
+            status: "success",
             package: "my-contract".to_string(),
             function: "do_work".to_string(),
             metric: "CPU Instructions",
             value: Some(0),
+            failure_reason: None,
             limit: None,
             pass: None,
             ..Default::default()
         }];
         let csv = reports_to_csv(&reports, false);
-        assert!(csv.contains(",0\n") || csv.contains(",0\r\n"));
+        assert!(csv.contains(",0,"));
     }
 
     #[test]
     fn csv_output_with_check_zero_value_passes_zero_limit() {
         let reports = vec![CostReport {
+            status: "success",
             package: "my-contract".to_string(),
             function: "do_work".to_string(),
             metric: "CPU Instructions",
             value: Some(0),
+            failure_reason: None,
             limit: Some(0),
             pass: Some(true),
             ..Default::default()
         }];
         let csv = reports_to_csv(&reports, true);
-        assert!(csv.contains(",0,0,true"));
+        assert!(csv.contains("0,,0,true"));
     }
 
     #[test]
     fn csv_output_zero_reports_produces_header_only() {
         let csv = reports_to_csv(&[], false);
-        assert_eq!(csv, "package,function,metric,value\n");
+        assert_eq!(csv, "status,package,function,metric,value,failure_reason\n");
     }
 
     #[test]
     fn csv_output_check_zero_reports_produces_header_only() {
         let csv = reports_to_csv(&[], true);
-        assert_eq!(csv, "package,function,metric,value,limit,pass\n");
+        assert_eq!(
+            csv,
+            "status,package,function,metric,value,failure_reason,limit,pass\n"
+        );
     }
 
     // ── scaffold_init edge case tests ──────────────────────────────────

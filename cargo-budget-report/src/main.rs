@@ -408,14 +408,19 @@ struct FunctionConfig {
 
 #[derive(Serialize)]
 struct CostReport {
+    /// `"success"` if the simulation produced a measurement, `"failed"`
+    /// otherwise.
+    status: &'static str,
     package: String,
     function: String,
     metric: &'static str,
-    /// The measured value, or `None` if the simulation failed to produce one
-    /// (only emitted in `--check` mode for functions declared in
-    /// `budget.toml`).
+    /// The measured value, or `None` if the simulation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<u32>,
+    /// Human-readable failure reason, present only when `status` is
+    /// `"failed"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_reason: Option<String>,
     /// Configured upper bound for the metric, if any. Emitted in `--check`
     /// mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -545,25 +550,18 @@ fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>)
     }
 }
 
-/// Emit one stub `CostReport` per metric (`CPU Instructions`, `Read Bytes`,
-/// `Write Bytes`) so that the `--check` JSON output and check summary make
-/// the failure visible per metric.
+/// Emit one `CostReport` per metric (`CPU Instructions`, `Read Bytes`,
+/// `Write Bytes`) for a simulation failure in `--check` mode.
 ///
-/// * Metrics with a configured `*_limit` get `value: None, limit: Some(n),
-///   pass: Some(false)` — the consumer can read the breached limit.
-/// * Metrics without a configured limit get `value: None, limit: None,
-///   pass: Some(false)` — still a hook for `--check --json` consumers, but
-///   the table filter (`value.is_some()`) keeps it out of the plain-text
-///   report and the summary lines remain unchanged.
-///
-/// The caller has already set the `checks_failed` flag for the function as a
-/// whole, so emitting one entry per metric — even metrics without a limit —
-/// does not change the exit-code semantics.
+/// Each entry is tagged `status: "failed"`, carries the `failure_reason`,
+/// and has `pass: Some(false)` so the check summary counts it. Metrics
+/// with a configured `*_limit` also carry the limit value.
 fn emit_check_failure_entries(
     reports: &mut Vec<CostReport>,
     package_name: &str,
     function: &str,
-    func_config: &FunctionConfig,
+    failure_reason: &str,
+    func_config: Option<&FunctionConfig>,
 ) {
     for metric in [
         "CPU Instructions",
@@ -573,10 +571,12 @@ fn emit_check_failure_entries(
     ] {
         let limit = limit_for_metric(func_config, metric);
         reports.push(CostReport {
+            status: "failed",
             package: package_name.to_string(),
             function: function.to_string(),
             metric,
             value: None,
+            failure_reason: Some(failure_reason.to_string()),
             limit,
             pass: Some(false),
             resource_limit: None,
@@ -1348,10 +1348,12 @@ fn main() -> Result<()> {
                             _ => (None, None),
                         };
                         reports.push(CostReport {
+                            status: "success",
                             package: package.name.to_string(),
                             function: function.clone(),
                             metric,
                             value: Some(value),
+                            failure_reason: None,
                             limit: entry_limit,
                             pass,
                             resource_limit,
@@ -1489,10 +1491,13 @@ fn main() -> Result<()> {
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
+
+    // ── Table output ───────────────────────────────────────────────────
     } else {
-        // The plain text report path is preserved byte-for-byte when
-        // `--check` is not passed: only entries with a measured value are
-        // rendered in the table, and summary text is unchanged.
+        // The plain text report path: only entries with a measured value
+        // are rendered in the table. Failure entries are listed below the
+        // table as explicit failure notes. The summary text reports both
+        // success and failure counts.
         println!("\n=== WORKSPACE BUDGET REPORT ===");
         let table_reports: Vec<TableCostReport> = reports
             .iter()
@@ -1510,7 +1515,28 @@ fn main() -> Result<()> {
             .collect();
         let table = Table::new(table_reports).to_string();
         println!("{}", table);
-        println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
+
+        // Print failure notes below the table
+        let failure_entries: Vec<&CostReport> = reports
+            .iter()
+            .filter(|report| report.status == "failed")
+            .collect();
+        if !failure_entries.is_empty() {
+            println!("\n--- FAILED SIMULATIONS ---");
+            for entry in &failure_entries {
+                let reason = entry.failure_reason.as_deref().unwrap_or("unknown error");
+                println!(
+                    "  {}::{} — simulation failed: {}",
+                    entry.package, entry.function, reason
+                );
+            }
+        }
+
+        println!(
+            "\nSummary: {} function(s) simulated successfully, {} failed",
+            simulated_count, failed_count
+        );
+        println!("The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
         println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
         println!("* Note: These are simulated numbers on testnet and may vary slightly depending on ledger state.");
         println!("* See the \"Measurement scope\" section of the Tool Reference for what to use instead when you need those figures.");
@@ -1538,6 +1564,15 @@ fn main() -> Result<()> {
                         format_with_commas_and_units(u64::from(v), r.metric)
                     })
                     .unwrap_or_else(|| "-".to_string());
+                let reason_suffix = if report.status == "failed" {
+                    if let Some(reason) = &report.failure_reason {
+                        format!(" reason=\"{}\"", reason)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
                 println!(
                     "{}::{} [{}] value={} limit={} {}",
                     r.package, r.function, r.metric, value_str, limit_str, status
@@ -2335,59 +2370,87 @@ cpu_limit_pct = 50
     }
 
     #[test]
-    fn csv_output_without_check_has_four_columns() {
+    fn csv_output_without_check_has_six_columns_including_status_and_failure_reason() {
         let reports = vec![
             CostReport {
+                status: "success",
                 package: "my-contract".to_string(),
                 function: "do_work".to_string(),
                 metric: "CPU Instructions",
                 value: Some(1_000_000),
+                failure_reason: None,
                 limit: None,
                 pass: None,
             },
             CostReport {
+                status: "success",
                 package: "my-contract".to_string(),
                 function: "do_work".to_string(),
                 metric: "Read Bytes",
                 value: Some(2_048),
+                failure_reason: None,
                 limit: None,
                 pass: None,
             },
         ];
         let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
-            "package,function,metric,value\n",
-            "my-contract,do_work,CPU Instructions,1000000\n",
-            "my-contract,do_work,Read Bytes,2048\n",
+            "status,package,function,metric,value,failure_reason\n",
+            "success,my-contract,do_work,CPU Instructions,1000000,\n",
+            "success,my-contract,do_work,Read Bytes,2048,\n",
         );
         assert_eq!(csv, expected);
     }
 
     #[test]
-    fn csv_output_with_check_has_six_columns() {
+    fn csv_output_with_check_has_eight_columns() {
         let reports = vec![
             CostReport {
+                status: "success",
                 package: "my-contract".to_string(),
                 function: "do_work".to_string(),
                 metric: "CPU Instructions",
                 value: Some(1_000_000),
+                failure_reason: None,
                 limit: Some(5_000_000),
                 pass: Some(true),
             },
             CostReport {
+                status: "failed",
                 package: "my-contract".to_string(),
                 function: "do_work".to_string(),
                 metric: "Write Bytes",
-                value: Some(4_096),
+                value: None,
+                failure_reason: Some("invoke failed: not enough gas".to_string()),
                 limit: Some(1_000),
                 pass: Some(false),
             },
         ];
         let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
-            "package,function,metric,value,limit,pass\n",
-            "my-contract,do_work,CPU Instructions,1000000,5000000,true\n",
-            "my-contract,do_work,Write Bytes,4096,1000,false\n",
+            "status,package,function,metric,value,failure_reason,limit,pass\n",
+            "success,my-contract,do_work,CPU Instructions,1000000,,5000000,true\n",
+            "failed,my-contract,do_work,Write Bytes,,invoke failed: not enough gas,1000,false\n",
+        );
+        assert_eq!(csv, expected);
+    }
+
+    #[test]
+    fn csv_output_without_check_includes_failure_entries() {
+        let reports = vec![CostReport {
+            status: "failed",
+            package: "my-contract".to_string(),
+            function: "do_work".to_string(),
+            metric: "",
+            value: None,
+            failure_reason: Some("RPC error: timeout".to_string()),
+            limit: None,
+            pass: None,
+        }];
+        let csv = reports_to_csv(&reports, false);
+        let expected = concat!(
+            "status,package,function,metric,value,failure_reason\n",
+            "failed,my-contract,do_work,,,RPC error: timeout\n",
         );
         assert_eq!(csv, expected);
     }
@@ -2396,26 +2459,30 @@ cpu_limit_pct = 50
     fn csv_output_without_check_excludes_null_values() {
         let reports = vec![
             CostReport {
+                status: "success",
                 package: "my-contract".to_string(),
                 function: "do_work".to_string(),
                 metric: "CPU Instructions",
                 value: None,
+                failure_reason: None,
                 limit: None,
                 pass: None,
             },
             CostReport {
+                status: "success",
                 package: "my-contract".to_string(),
                 function: "do_work".to_string(),
                 metric: "Read Bytes",
                 value: Some(2_048),
+                failure_reason: None,
                 limit: None,
                 pass: None,
             },
         ];
         let csv = module_32::reports_to_csv(&reports, false);
         let expected = concat!(
-            "package,function,metric,value\n",
-            "my-contract,do_work,Read Bytes,2048\n",
+            "status,package,function,metric,value,failure_reason\n",
+            "success,my-contract,do_work,Read Bytes,2048,\n",
         );
         assert_eq!(csv, expected);
     }
@@ -2423,17 +2490,19 @@ cpu_limit_pct = 50
     #[test]
     fn csv_output_with_check_includes_simulation_failures() {
         let reports = vec![CostReport {
+            status: "failed",
             package: "my-contract".to_string(),
             function: "do_work".to_string(),
             metric: "CPU Instructions",
             value: None,
+            failure_reason: Some("invoke failed: out of gas".to_string()),
             limit: Some(5_000_000),
             pass: Some(false),
         }];
         let csv = module_32::reports_to_csv(&reports, true);
         let expected = concat!(
-            "package,function,metric,value,limit,pass\n",
-            "my-contract,do_work,CPU Instructions,,5000000,false\n",
+            "status,package,function,metric,value,failure_reason,limit,pass\n",
+            "failed,my-contract,do_work,CPU Instructions,,invoke failed: out of gas,5000000,false\n",
         );
         assert_eq!(csv, expected);
     }
