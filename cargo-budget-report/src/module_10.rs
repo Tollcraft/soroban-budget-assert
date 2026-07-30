@@ -1,5 +1,4 @@
-//! Backward-compatibility shim that re-exports the canonical error types
-//! from [`crate::module_30`].
+//! Consolidated error handling for `cargo-budget-report`.
 //!
 //! Provides the canonical [`Error`] enum that captures every failure mode
 //! of the reporting pipeline, along with a convenience [`Result`] alias so
@@ -130,11 +129,6 @@ pub enum SimulationOutcome {
         instructions: u32,
         read_bytes: u32,
         write_bytes: u32,
-        /// Memory bytes extracted from `result.cost.memBytes` on Protocol 22+.
-        /// `None` when the field is absent (older protocol responses or
-        /// malformed payloads); callers should continue without surfacing
-        /// the metric rather than treating absence as zero cost.
-        memory_bytes: Option<u32>,
         /// Base64-encoded `SorobanTransactionData` from the RPC response.
         transaction_data_xdr: String,
     },
@@ -155,7 +149,4 @@ pub enum SimulationFailure {
     Rpc(String),
     /// The RPC response didn't contain a decodable `SorobanTransactionData`.
     MetricsExtraction(String),
-    /// A spawn or IO error on the `stellar`/`curl` subprocess itself
-    /// (not a failure returned *by* the subprocess).
-    Spawn(String),
 }

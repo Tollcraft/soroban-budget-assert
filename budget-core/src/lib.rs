@@ -167,7 +167,10 @@ mod tests {
             read_limit: None,
             write_limit: None,
         };
-        assert_eq!(limit_for_metric(&config, "CPU Instructions"), Some(5_000_000));
+        assert_eq!(
+            limit_for_metric(&config, "CPU Instructions"),
+            Some(5_000_000)
+        );
     }
 
     #[test]

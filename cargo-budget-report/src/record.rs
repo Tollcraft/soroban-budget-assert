@@ -1,6 +1,6 @@
 use crate::fixture::FixtureFile;
 use crate::transport::Transport;
-use crate::module_30::Result;
+use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
