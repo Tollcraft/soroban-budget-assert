@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use cargo_metadata::MetadataCommand;
+use budget_core::{CostReport, evaluate_check, emit_check_failure_entries, limit_for_metric, BudgetToml};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;

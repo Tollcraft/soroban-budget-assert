@@ -10,6 +10,7 @@
 mod off_by_one_and_zero_length_tests {
     use crate::module_32::{isolate_temp_dir, reports_to_csv, restore_cwd};
     use crate::*;
+    use budget_core::{emit_check_failure_entries, evaluate_check, limit_for_metric, BudgetToml, CostReport, FunctionConfig};
 
     // ── evaluate_check off-by-one tests ─────────────────────────────────
 

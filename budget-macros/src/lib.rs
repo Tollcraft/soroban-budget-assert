@@ -1,5 +1,6 @@
 extern crate proc_macro;
 
+use budget_core::{resolve_config_value, ConfigResolution};
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{parse::Parse, parse::ParseStream, Expr, Ident, ItemFn, LitInt, LitStr, Token};

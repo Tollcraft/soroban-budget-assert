@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "budget-core",
     "budget-macros",
     "cargo-budget-report",
     "amm-pool-contract",
