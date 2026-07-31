@@ -138,11 +138,46 @@ let caller_address: Address = env.register_contract_wasm(None, caller_wasm.as_sl
 
 ## Budget report for cross-contract contracts
 
-The `cargo budget-report` CLI discovers every contract in the workspace automatically. Add per-function arguments in `budget.toml` for any exported function that needs them:
+## Budget report for cross-contract contracts
+
+The `cargo budget-report` CLI discovers every contract in the workspace automatically. For workspaces with interdependent contracts, two mechanisms are available:
+
+### Deployment ordering
+
+Add a `deploy_order` field at the top level of `budget.toml` to control the sequence in which contracts are deployed to the network. This is required when one contract's simulation depends on another workspace member being already deployed:
+
+```toml
+deploy_order = ["token_contract", "amm_pool_contract"]
+```
+
+Contracts listed in `deploy_order` are deployed first (in the declared order). Contracts not listed deploy in their natural workspace-discovery order after the ordered ones.
+
+### Sibling address placeholder
+
+Use the `{contract:<package_name>}` placeholder in `[functions.*].args` to reference a sibling workspace member's deployed address. The placeholder is replaced with the actual contract ID at simulation time:
 
 ```toml
 [functions.do_cross_contract_work]
-args = ["--other", "CC...", "--n", "10000"]
+args = ["--other", "{contract:helper_contract}", "--n", "10000"]
+```
+
+The referenced package must be listed in `deploy_order` so that it is deployed before the calling contract is simulated.
+
+### Cost attribution
+
+When a function uses `{contract:...}` placeholders, the report includes a footnote noting that the cost figures are **inclusive** — they represent the total cost of the caller plus all callees. The Soroban `simulateTransaction` API returns a single aggregate cost for the entire call chain and does not decompose costs per contract. If you need per-contract breakdown, measure each contract in isolation by simulating its exported functions individually.
+
+### Example: cross-contract workspace
+
+```toml
+# budget.toml
+deploy_order = ["helper_contract", "my_contract"]
+
+[functions.do_cross_contract_work]
+args = ["--other", "{contract:helper_contract}", "--n", "10000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
 ```
 
 Run the report to get the network-simulated cost of the full cross-contract call chain — the same number that determines whether the transaction succeeds on-chain.

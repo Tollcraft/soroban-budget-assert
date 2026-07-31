@@ -1,0 +1,30 @@
+{
+  "operation_type": "Cross-contract call",
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "function": "do_cross_contract_work",
+    "arguments": {
+      "n": 100
+    },
+    "registration": "register_contract_wasm"
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.85.0",
+  "network": {
+    "method": "simulateTransaction",
+    "network": "Soroban testnet"
+  },
+  "measurements": {
+    "cpu_instructions": {
+      "local_estimate": "TBD",
+      "network_figure": "TBD",
+      "delta": "TBD",
+      "delta_percent": "TBD"
+    }
+  },
+  "capture": {
+    "local_command": "cargo test -p amm-pool-contract test_cross_contract_wasm -- --exact --nocapture",
+    "network_command": "Cross-contract dispatch requires the helper to be a separately-deployed contract whose address the caller invokes. Both `do_cross_contract_work` and `HelperContract::multiply` are exported from the same WASM, so on-chain reproduction must deploy the WASM twice on testnet — once to obtain a caller address, once to obtain a helper address — and populate `budget.toml` so the caller is invoked against the helper. Steps: (1) deploy the WASM twice via `stellar contract deploy --wasm target/wasm32v1-none/release/amm_pool_contract.wasm --source alice --network testnet`, capturing the two contract ids as `caller_address` and `helper_address`; (2) populate budget.toml with `[functions.do_cross_contract_work]\\nargs = [\"--other\", \"<helper_address>\", \"--n\", \"100\"]`. The --other / --n flag order matches the Rust signature `pub fn do_cross_contract_work(env: Env, other: Address, n: u32) -> u32` at amm-pool-contract/src/lib.rs:247; (3) `cargo run --bin cargo-budget-report -- --network testnet --source alice`. The binary auto-builds, auto-deploys the WASM, and emits one table row per exported function. Pick the do_cross_contract_work row out of the resulting multi-row report — other rows in the same WASM (deposit, swap, withdraw, do_expensive_work, multiply, etc.) are unrelated to the cross-contract measurement and must not be mistaken for it.",
+    "recorded_at": "2026-Q3"
+  }
+}

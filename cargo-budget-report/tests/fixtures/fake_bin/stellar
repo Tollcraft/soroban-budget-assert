@@ -16,8 +16,7 @@ FAIL_COUNT_FILE="${MOCK_STELLAR_FAIL_COUNT_FILE:-}"
 case "${1:-}" in
   --version)
     echo "stellar-cli 0.0.0-mock"
-    ;;
-  contract)
+    ;;    contract)
     case "${2:-}" in
       deploy)
         if [ "$FAIL_COUNT" -gt 0 ] && [ -n "$FAIL_COUNT_FILE" ]; then
@@ -31,7 +30,33 @@ case "${1:-}" in
                 exit 1
             fi
         fi
-        echo "CAMOCKCONTRACTIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        # Generate a deterministic contract ID based on the WASM path
+        # (the last `--wasm` argument), so different contracts get
+        # different IDs for cross-contract testing.
+        WASM_PATH=""
+        for i in "$@"; do
+            case "$i" in
+                --wasm) shift; WASM_PATH="$1";;
+            esac
+            shift
+        done
+        case "$WASM_PATH" in
+            *mock_callee*)
+                echo "CCALLEECONTRACTIDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+                ;;
+            *mock_contract_renamed*)
+                echo "CRENAMEDCONTRACTIDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+                ;;
+            *mock_contract_a*)
+                echo "CAMOCKCONTRACTIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                ;;
+            *mock_contract_b*)
+                echo "CBMOCKCONTRACTIDBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                ;;
+            *)
+                echo "CGENERICCONTRACTIDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
+                ;;
+        esac
         ;;
       invoke)
         # Real output is a base64 XDR transaction envelope. Its content is
@@ -45,6 +70,82 @@ case "${1:-}" in
         exit 1
         ;;
     esac
+    ;;
+  xdr)
+    # Support `stellar xdr decode --type SorobanTransactionData --output json`
+    # for validation integration tests.
+    if [ "${2:-}" = "decode" ]; then
+        # Drain stdin (the base64 XDR piped in)
+        cat >/dev/null
+        # Output the JSON that the real CLI would produce when decoding the
+        # fixture XDR. The fixture XDR "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA="
+        # decodes to instructions=1000000, read_bytes=2048, write_bytes=4096.
+        cat <<'XDRJSON'
+{
+  "ext": "V0",
+  "resources": {
+    "footprint": {
+      "read_only": [],
+      "read_write": []
+    },
+    "instructions": 1000000,
+    "read_bytes": 2048,
+    "write_bytes": 4096
+  },
+  "resource_fee": 0
+}
+XDRJSON
+    else
+        echo "mock stellar: unsupported 'xdr' subcommand: ${2:-}" >&2
+        exit 1
+    fi
+    ;;
+  *)
+    echo "mock stellar: unsupported command: ${1:-}" >&2
+    exit 1
+    ;;
+esac
+      invoke)
+        # Real output is a base64 XDR transaction envelope. Its content is
+        # opaque to cargo-budget-report (it's forwarded verbatim to the RPC
+        # `simulateTransaction` call), so any placeholder string is fine here
+        # since `curl` is also mocked below.
+        echo "AAAAAgAAAAA="
+        ;;
+      *)
+        echo "mock stellar: unsupported 'contract' subcommand: ${2:-}" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  xdr)
+    # Support `stellar xdr decode --type SorobanTransactionData --output json`
+    # for validation integration tests.
+    if [ "${2:-}" = "decode" ]; then
+        # Drain stdin (the base64 XDR piped in)
+        cat >/dev/null
+        # Output the JSON that the real CLI would produce when decoding the
+        # fixture XDR. The fixture XDR "AAAAAAAAAAAAAAAAAA9CQAAACAAAABAAAAAAAAAAAAA="
+        # decodes to instructions=1000000, read_bytes=2048, write_bytes=4096.
+        cat <<'XDRJSON'
+{
+  "ext": "V0",
+  "resources": {
+    "footprint": {
+      "read_only": [],
+      "read_write": []
+    },
+    "instructions": 1000000,
+    "read_bytes": 2048,
+    "write_bytes": 4096
+  },
+  "resource_fee": 0
+}
+XDRJSON
+    else
+        echo "mock stellar: unsupported 'xdr' subcommand: ${2:-}" >&2
+        exit 1
+    fi
     ;;
   *)
     echo "mock stellar: unsupported command: ${1:-}" >&2
