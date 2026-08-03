@@ -30,7 +30,72 @@ enum BudgetLimit {
 struct BudgetSpec {
     cpu: Option<BudgetLimit>,
     mem: Option<BudgetLimit>,
+    cpu_baseline: Option<Expr>,
+    mem_baseline: Option<Expr>,
     env_ident: Option<Ident>,
+}
+
+/// A limit plus an optional baseline, for the single-metric attributes
+/// (`budget_cpu_lt`, `budget_mem_lt`, `budget_write_bytes_lt`).
+///
+/// `budget_lt` takes its baselines as the separate `cpu_baseline` /
+/// `mem_baseline` keys instead, because it carries two metrics at once.
+struct StandaloneSpec {
+    limit: BudgetLimit,
+    baseline: Option<Expr>,
+}
+
+impl Parse for StandaloneSpec {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let limit: BudgetLimit = input.parse()?;
+
+        if input.is_empty() {
+            return Ok(StandaloneSpec {
+                limit,
+                baseline: None,
+            });
+        }
+
+        input.parse::<Token![,]>()?;
+        let ident: Ident = input.parse()?;
+        if ident != "baseline" {
+            return Err(syn::Error::new(
+                ident.span(),
+                format!("expected `baseline`, got `{ident}`"),
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let baseline: Expr = input.parse()?;
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "unexpected trailing tokens after `baseline = …`",
+            ));
+        }
+
+        Ok(StandaloneSpec {
+            limit,
+            baseline: Some(baseline),
+        })
+    }
+}
+
+/// True when the next tokens (optionally after a leading comma) name one of
+/// the `BudgetLimit` *source* keys.
+///
+/// Used to tell "this literal is being illegally combined with a second source
+/// for the same value" apart from "this literal is complete and what follows
+/// belongs to the caller" (a sibling `mem = …`, or `, baseline = …`).
+fn peeks_limit_source_key(input: ParseStream) -> bool {
+    let ahead = input.fork();
+    if ahead.peek(Token![,]) {
+        let _ = ahead.parse::<Token![,]>();
+    }
+    ahead
+        .parse::<Ident>()
+        .map(|i| matches!(i.to_string().as_str(), "env" | "env_file" | "config"))
+        .unwrap_or(false)
 }
 
 /// Parses the attribute arguments for `budget_cpu_lt` / `budget_mem_lt`
@@ -54,16 +119,21 @@ impl Parse for BudgetLimit {
         let mut env_var: Option<String> = None;
         let mut env_file: Option<proc_macro2::TokenStream> = None;
         let mut config_key: Option<String> = None;
+        // First identifier seen that is not a limit-source key. Only used to
+        // improve the error when nothing valid was parsed at all.
+        let mut unknown_key: Option<Ident> = None;
 
         // The leading form may also be a bare integer literal. Detect that
         // case before parsing identifiers.
         if input.peek(LitInt) {
             let lit: LitInt = input.parse()?;
-            // If anything follows, it must be key=value pairs (e.g.
-            // `950_000, env_file = "..."`) — but we currently don't model
-            // mixed literal+modifier forms. Reject to keep the rule
-            // simple: a literal stands alone.
-            if !input.is_empty() {
+            // A literal names the limit outright, so pairing it with `env` /
+            // `env_file` / `config` — which name a *source* for that same
+            // value — is contradictory and stays rejected. Anything else that
+            // follows belongs to the caller and is left in the stream: a
+            // sibling `mem = …` when parsed from `BudgetSpec`, or the
+            // `, baseline = …` that `StandaloneSpec` consumes.
+            if peeks_limit_source_key(input) {
                 return Err(syn::Error::new(
                     lit.span(),
                     "integer literal cannot be combined with env / config / env_file",
@@ -96,6 +166,11 @@ impl Parse for BudgetLimit {
                 let ahead = input.fork();
                 let key: Ident = ahead.parse().unwrap();
                 if !matches!(key.to_string().as_str(), "env" | "env_file" | "config") {
+                    // Remember it: if no limit source turns up at all, this is
+                    // the token the user got wrong, and naming it beats a
+                    // generic "expected one of …" pointed at the whole
+                    // attribute.
+                    unknown_key = Some(key);
                     break;
                 }
             } else {
@@ -152,10 +227,16 @@ impl Parse for BudgetLimit {
                 proc_macro2::Span::call_site(),
                 "`env` and `config` cannot be combined; pick one",
             )),
-            (None, None, None) => Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "expected an integer literal, `env = \"VAR\"`, `env_file = \"PATH\"` + `env = \"VAR\"`, or `config = \"KEY\"`",
-            )),
+            (None, None, None) => Err(match unknown_key {
+                Some(key) => syn::Error::new(
+                    key.span(),
+                    format!("expected `env`, `env_file`, or `config`, got `{key}`"),
+                ),
+                None => syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    "expected an integer literal, `env = \"VAR\"`, `env_file = \"PATH\"` + `env = \"VAR\"`, or `config = \"KEY\"`",
+                ),
+            }),
         }
     }
 }
@@ -175,6 +256,10 @@ impl Parse for BudgetSpec {
                 spec.cpu = Some(input.parse()?);
             } else if ident_str == "mem" {
                 spec.mem = Some(input.parse()?);
+            } else if ident_str == "cpu_baseline" {
+                spec.cpu_baseline = Some(input.parse()?);
+            } else if ident_str == "mem_baseline" {
+                spec.mem_baseline = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -191,6 +276,22 @@ impl Parse for BudgetSpec {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 "must provide at least one of `cpu` or `mem` limits",
+            ));
+        }
+
+        // A baseline is subtracted from its own metric's measurement, so one
+        // without the matching limit silently does nothing. Reject it rather
+        // than let the assertion quietly not exist.
+        if spec.cpu_baseline.is_some() && spec.cpu.is_none() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`cpu_baseline` requires a `cpu` limit",
+            ));
+        }
+        if spec.mem_baseline.is_some() && spec.mem.is_none() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`mem_baseline` requires a `mem` limit",
             ));
         }
 
@@ -264,6 +365,56 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
     }
 }
 
+/// Builds one metric's measurement + assertion.
+///
+/// Without a baseline this is the historical behaviour: measure, compare to
+/// the limit. With one, the baseline is subtracted from the measurement first
+/// and the *marginal* cost is what gets compared.
+///
+/// The subtraction saturates. A measurement below the baseline means the
+/// baseline probe was the more expensive of the two — noise around a
+/// near-zero marginal cost — and clamping to 0 reports that honestly as "no
+/// measurable marginal cost" instead of wrapping to a huge u64 and failing.
+///
+/// The raw measurement is taken *before* the baseline expression is evaluated,
+/// so a baseline helper that spins up its own `Env` cannot perturb the number
+/// being asserted on.
+fn generate_metric_assert(
+    cost_ident: &proc_macro2::Ident,
+    cost_expr: proc_macro2::TokenStream,
+    limit_expr: &proc_macro2::TokenStream,
+    baseline: Option<&Expr>,
+    plain_msg: &str,
+    marginal_msg: &str,
+) -> proc_macro2::TokenStream {
+    match baseline {
+        None => quote! {
+            let #cost_ident = #cost_expr;
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                #cost_ident < limit_u64,
+                #plain_msg,
+                #cost_ident,
+                limit_u64
+            );
+        },
+        Some(baseline_expr) => quote! {
+            let #cost_ident = #cost_expr;
+            let __budget_baseline: u64 = #baseline_expr;
+            let __budget_marginal: u64 = #cost_ident.saturating_sub(__budget_baseline);
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                __budget_marginal < limit_u64,
+                #marginal_msg,
+                __budget_marginal,
+                limit_u64,
+                #cost_ident,
+                __budget_baseline
+            );
+        },
+    }
+}
+
 /// Splits a test body into its leading statements and an optional trailing
 /// expression.
 ///
@@ -304,35 +455,27 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
     if let Some(limit) = spec.cpu {
         let limit_expr = generate_limit_expr(&limit, "budget_cpu_lt");
         let cost_ident = proc_macro2::Ident::new("cpu_cost", proc_macro2::Span::call_site());
-        let cost_expr = quote! { budget.cpu_instruction_cost() };
-        let assert_msg = "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction";
-        asserts.push(quote! {
-            let #cost_ident = #cost_expr;
-            let limit_u64: u64 = #limit_expr;
-            assert!(
-                #cost_ident < limit_u64,
-                #assert_msg,
-                #cost_ident,
-                limit_u64
-            );
-        });
+        asserts.push(generate_metric_assert(
+            &cost_ident,
+            quote! { budget.cpu_instruction_cost() },
+            &limit_expr,
+            spec.cpu_baseline.as_ref(),
+            "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
+            "CPU instruction cost {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, real network cost may differ significantly in either direction",
+        ));
     }
 
     if let Some(limit) = spec.mem {
         let limit_expr = generate_limit_expr(&limit, "budget_mem_lt");
         let cost_ident = proc_macro2::Ident::new("mem_cost", proc_macro2::Span::call_site());
-        let cost_expr = quote! { budget.memory_bytes_cost() };
-        let assert_msg = "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction";
-        asserts.push(quote! {
-            let #cost_ident = #cost_expr;
-            let limit_u64: u64 = #limit_expr;
-            assert!(
-                #cost_ident < limit_u64,
-                #assert_msg,
-                #cost_ident,
-                limit_u64
-            );
-        });
+        asserts.push(generate_metric_assert(
+            &cost_ident,
+            quote! { budget.memory_bytes_cost() },
+            &limit_expr,
+            spec.mem_baseline.as_ref(),
+            "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
+            "Memory bytes cost {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, real network cost may differ significantly in either direction",
+        ));
     }
 
     let new_block = quote! {
@@ -498,14 +641,16 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
 /// `tier-a-limits.env`.
 #[proc_macro_attribute]
 pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let limit = match syn::parse2::<BudgetLimit>(attr.into()) {
-        Ok(l) => l,
+    let spec = match syn::parse2::<StandaloneSpec>(attr.into()) {
+        Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
     generate_budget_assert(
         BudgetSpec {
-            cpu: Some(limit),
+            cpu: Some(spec.limit),
             mem: None,
+            cpu_baseline: spec.baseline,
+            mem_baseline: None,
             env_ident: None,
         },
         item,
@@ -521,8 +666,8 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Must be placed on a test function that has a local `env` variable.
 #[proc_macro_attribute]
 pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let limit = match syn::parse::<BudgetLimit>(attr) {
-        Ok(l) => l,
+    let spec = match syn::parse::<StandaloneSpec>(attr) {
+        Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
     let mut input_fn = match syn::parse::<ItemFn>(item) {
@@ -532,9 +677,18 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
 
     let (stmts, tail_capture, tail_return) = split_tail_expr(&input_fn.block);
 
-    let limit_expr = generate_limit_expr(&limit, "budget_write_bytes_lt");
+    let limit_expr = generate_limit_expr(&spec.limit, "budget_write_bytes_lt");
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let cost_ident = proc_macro2::Ident::new("write_bytes_cost", proc_macro2::Span::call_site());
+    let assertion = generate_metric_assert(
+        &cost_ident,
+        quote! { budget.memory_bytes_cost() },
+        &limit_expr,
+        spec.baseline.as_ref(),
+        "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
+        "Write bytes cost (memory proxy) {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, underestimates real network cost",
+    );
 
     let new_block = quote! {
         {
@@ -542,14 +696,7 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
             #tail_capture
 
             let budget = #env_ident.cost_estimate().budget();
-            let write_bytes_cost = budget.memory_bytes_cost();
-            let limit_u64: u64 = #limit_expr;
-            assert!(
-                write_bytes_cost < limit_u64,
-                "Write bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
-                write_bytes_cost,
-                limit_u64
-            );
+            #assertion
             #tail_return
         }
     };
@@ -626,14 +773,16 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
 ///   the test panics at runtime with an explicit error naming the variable and invalid value.
 #[proc_macro_attribute]
 pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let limit = match syn::parse2::<BudgetLimit>(attr.into()) {
-        Ok(l) => l,
+    let spec = match syn::parse2::<StandaloneSpec>(attr.into()) {
+        Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
     generate_budget_assert(
         BudgetSpec {
             cpu: None,
-            mem: Some(limit),
+            mem: Some(spec.limit),
+            cpu_baseline: None,
+            mem_baseline: spec.baseline,
             env_ident: None,
         },
         item,

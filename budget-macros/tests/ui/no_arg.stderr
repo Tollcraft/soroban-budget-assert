@@ -1,4 +1,4 @@
-error: unexpected end of input, expected integer literal
+error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, or `config = "KEY"`
  --> tests/ui/no_arg.rs:4:1
   |
 4 | #[budget_cpu_lt]
