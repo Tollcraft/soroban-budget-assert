@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract
+//! cargo build --target wasm32v1-none --release -p amm-pool-contract
 //! cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture
 //! ```
 //!
@@ -21,7 +21,7 @@ use amm_pool_contract::ConstantProductPoolClient;
 use soroban_sdk::Env;
 
 fn measure_extend_ttl(env: &Env) {
-    let wasm_path = "../target/wasm32-unknown-unknown/release/amm_pool_contract.wasm";
+    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
     // AUDIT (Issue #92): `register_contract_wasm` is deprecated but remains the
     // only API for registering raw WASM bytes in soroban-sdk 22.x.

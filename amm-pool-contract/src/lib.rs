@@ -205,6 +205,24 @@ impl ConstantProductPool {
         (amount_a, amount_b)
     }
 
+    /// Does nothing, deliberately.
+    ///
+    /// This is the **baseline probe** for marginal-cost assertions. Invoking
+    /// any exported function in the local test VM pays a fixed instantiation
+    /// cost — the host parses and instantiates the whole Wasm module on every
+    /// invocation — before a single byte of contract logic runs. That floor is
+    /// several million CPU instructions and dwarfs the work most of these
+    /// functions actually do, which is why raw local measurements cannot be
+    /// compared against Tier B *network* limits.
+    ///
+    /// Invoking `noop` measures that floor and nothing else. Subtracting it
+    /// from another measurement leaves the *marginal* cost of that call, which
+    /// is the quantity the Tier A limits are expressed in. See the
+    /// `baseline` argument on `budget_cpu_lt` / `budget_mem_lt` /
+    /// `budget_write_bytes_lt` and `cpu_baseline` / `mem_baseline` on
+    /// `budget_lt`.
+    pub fn noop(_env: Env) {}
+
     pub fn require_auth_only(_env: Env, addr: Address) {
         addr.require_auth();
     }
