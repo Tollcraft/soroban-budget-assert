@@ -15,6 +15,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # `scripts/node_modules` was committed and later untracked in d6cb2db,
+      # leaving ~1.7MB blobs such as stellar-sdk.js in history permanently —
+      # .gitignore does not retract what is already committed, and a clone
+      # downloads history. This repository got off lightly at 10MB; the sibling
+      # soroban-cost-linter reached a 252MB clone the same way. These checks run
+      # before the Rust setup so they fail in seconds.
+      - name: No dependency or build output committed
+        run: |
+          if tracked=$(git ls-files | grep -E '(^|/)(target|node_modules)/'); then
+            echo "::error::Build output or vendored dependencies are committed:"
+            echo "$tracked"
+            exit 1
+          fi
+
+      - name: No large files committed
+        run: |
+          # The largest legitimate tracked file is ~88KB, so 5MB is generous.
+          large=$(git ls-files -z | xargs -0 du -k | awk '$1 > 5120 {print $1" KB\t"$2}')
+          if [ -n "$large" ]; then
+            echo "::error::Tracked files over 5MB. History is permanent, so these"
+            echo "::error::would inflate every clone forever even if deleted later:"
+            echo "$large"
+            exit 1
+          fi
+
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
