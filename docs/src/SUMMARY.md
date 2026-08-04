@@ -5,6 +5,7 @@
 - [Tool Reference](reference.md)
 - [Cost Terms Glossary](glossary.md)
 - [End-User Guide](user_guide.md)
+- [Deriving Limits](deriving_limits.md)
 - [CI Tutorial](ci_tutorial.md)
 - [CI/CD Integration](ci_cd_integration.md)
 - [Developer Guide](developer_guide.md)
