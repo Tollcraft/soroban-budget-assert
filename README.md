@@ -6,13 +6,16 @@
   [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   <p>
     <a href="https://tollcraft.gitbook.io/docs/budget-assert"><strong>Documentation</strong></a> ·
-    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a>
+    <a href="https://tollcraft.github.io/soroban-budget-assert/dashboard.html"><strong>Dashboard</strong></a> ·
+    <a href="https://asciinema.org/a/qqC0RysuCDBvfUXC"><strong>Demo</strong></a>
   </p>
 </div>
 
 ---
 
 ## 📖 Overview
+
+[![asciicast](https://asciinema.org/a/qqC0RysuCDBvfUXC.svg)](https://asciinema.org/a/qqC0RysuCDBvfUXC)
 
 `soroban-budget-assert` is a developer tool that measures the gap between local Soroban test estimates and real network costs. It allows developers to assert budget limits during testing and automatically generate detailed execution-resource reports across an entire workspace.
 
