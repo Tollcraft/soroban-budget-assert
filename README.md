@@ -8,7 +8,7 @@ The landing page is a lightweight, responsive, single-page website built with st
 
 ### Structure
 
-- `index.html`: Main single-page document containing hero section, problem statement, cost-gap comparison metrics, two-tier architecture overview, quick start code blocks, and community links.
+- `index.html`: Main single-page document containing hero section, problem statement, cost-gap comparison metrics, two-tier architecture overview, quick start code blocks, asciinema demo embed, and community links.
 - `styles.css`: Custom CSS styles including design system tokens, responsive grid layouts, animations, and dark mode aesthetics.
 
 ## 🛠️ Local Development & Preview
