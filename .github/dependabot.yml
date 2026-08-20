@@ -8,6 +8,25 @@ updates:
       dependencies:
         patterns:
           - "*"
+    ignore:
+      # These three are migrations tracked as their own issues, not routine bumps.
+      # Grouping them in with everything else is what left PR #375 unmergeable, and
+      # then reproduced the same failure in PR #385: one grouped PR carrying a
+      # five-major-version `soroban-sdk` jump, a `stellar-xdr` jump that removes the
+      # `curr` module `cargo-budget-report` depends on, and a `wasmparser` jump of
+      # well over a hundred minor versions across which the parsing API changed.
+      # When they land together a failure in any one of them cannot be attributed.
+      #
+      # Bump these manually, one migration per PR, via their issues:
+      #   #382 — soroban-sdk / stellar-xdr
+      #   #383 — wasmparser
+      #
+      # REMOVE THESE ENTRIES once #382 and #383 have landed, so routine updates
+      # resume. While they are here these three crates get no automated updates at
+      # all, security advisories included — watch them by hand until then.
+      - dependency-name: "soroban-sdk"
+      - dependency-name: "stellar-xdr"
+      - dependency-name: "wasmparser"
 
   - package-ecosystem: "github-actions"
     directory: "/"
