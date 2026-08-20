@@ -9,7 +9,7 @@ updates:
         patterns:
           - "*"
     ignore:
-      # These three are migrations tracked as their own issues, not routine bumps.
+      # These four are migrations tracked as their own issues, not routine bumps.
       # Grouping them in with everything else is what left PR #375 unmergeable, and
       # then reproduced the same failure in PR #385: one grouped PR carrying a
       # five-major-version `soroban-sdk` jump, a `stellar-xdr` jump that removes the
@@ -20,13 +20,22 @@ updates:
       # Bump these manually, one migration per PR, via their issues:
       #   #382 — soroban-sdk / stellar-xdr
       #   #383 — wasmparser
+      #   #469 — cargo_metadata (0.18 -> 0.23 retypes `crate_types` to `CrateType`
+      #          and `package.name` to `PackageName`; both are load-bearing in the
+      #          workspace-discovery path in `main.rs`)
       #
-      # REMOVE THESE ENTRIES once #382 and #383 have landed, so routine updates
-      # resume. While they are here these three crates get no automated updates at
-      # all, security advisories included — watch them by hand until then.
+      # REMOVE EACH ENTRY as its issue lands, so routine updates resume. While an
+      # entry is here that crate gets no automated updates at all, security
+      # advisories included — watch them by hand until then.
+      #
+      # `toml` (0.8 -> 1.1) and `tabled` (0.14 -> 0.21) are also majors in this
+      # group. They are deliberately NOT ignored: nothing has shown them to be
+      # breaking yet. If one turns out to be, give it its own issue and its own
+      # entry rather than widening this list pre-emptively.
       - dependency-name: "soroban-sdk"
       - dependency-name: "stellar-xdr"
       - dependency-name: "wasmparser"
+      - dependency-name: "cargo_metadata"
 
   - package-ecosystem: "github-actions"
     directory: "/"
