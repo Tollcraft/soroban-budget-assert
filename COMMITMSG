@@ -1,0 +1,9 @@
+fix: address #482
+
+docs: the lint and formatting configuration is unexplained
+
+- update README.md
+
+Fixes #482
+
+Signed-off-by: Vedant Madane <6527493+VedantMadane@users.noreply.github.com>

@@ -245,3 +245,7 @@ We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for 
 ### 🧑‍💻 Contributors
 
 [![Contributors](https://contrib.rocks/image?repo=Tollcraft/soroban-budget-assert)](https://github.com/Tollcraft/soroban-budget-assert/graphs/contributors)
+
+## Lint and formatting
+
+This repository uses the workspace Clippy and rustfmt settings enforced in CI. Run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` before opening a PR.
