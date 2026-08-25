@@ -98,7 +98,7 @@ jobs:
 
       - name: Publish Step Summary
         run: |
-          cargo run --bin cargo-budget-report -- budget-report --format md >> "$GITHUB_STEP_SUMMARY"
+          cargo run --bin cargo-budget-report -- budget-report >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Budget Report
         uses: actions/upload-artifact@v4.2.0
@@ -152,7 +152,9 @@ Runs `cargo run --bin cargo-budget-report -- budget-report --json` to produce a 
 The `--json` flag produces machine-readable output suitable for artifact upload and further processing. Use `--check` to enforce limits configured in `budget.toml`.
 
 ### Publish Step Summary
-Runs `cargo run --bin cargo-budget-report -- budget-report --format md` and appends the Markdown table to `$GITHUB_STEP_SUMMARY`. The table appears inline on the workflow run page and, on pull requests, in the PR's Summary section. This makes the budget data visible without downloading an artifact.
+Runs `cargo run --bin cargo-budget-report -- budget-report` and appends the plain-text budget table (the default output) to `$GITHUB_STEP_SUMMARY`. The table appears inline on the workflow run page and, on pull requests, in the PR's Summary section. This makes the budget data visible without downloading an artifact.
+
+> Note: the previously documented `--format md` flag does not exist. Output selection is done with the `--json` and `--csv` booleans; when neither is passed the tool emits a plain-text table to stdout. A Markdown renderer exists in `cargo-budget-report/src/markdown.rs` (`format_markdown_table` / `MarkdownReportRow`) but is not yet wired to a CLI flag and only models a narrow row shape (`name`, `cpu_cost`, `memory_cost`, `passed`), so it cannot represent the full report today. Adding `--format md` is tracked as a separate feature request (see PR discussion / issue).
 
 ### Upload Budget Report
 Uploads `current_report.json` as a workflow artifact named `budget-report`. The artifact can be downloaded from the run page for manual inspection or downstream processing (e.g., the cost-over-time dashboard's `record-history` job).

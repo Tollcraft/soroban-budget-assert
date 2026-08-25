@@ -48,7 +48,7 @@ jobs:
           # Optionally, this uses budget.toml to populate fields instead of args
           # Ensure your repository has budget.toml configured for this to work
           # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-          # cargo run --bin cargo-budget-report -- budget-report --format md >> "$GITHUB_STEP_SUMMARY"
+          # cargo run --bin cargo-budget-report -- budget-report >> "$GITHUB_STEP_SUMMARY"
           # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
 
           # Mocking the JSON output for the demo so CI passes without testnet secrets:
