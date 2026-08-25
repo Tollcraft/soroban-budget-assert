@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Budget assertion tests for `require_auth` host calls: isolated `require_auth_only` contract function with CPU/memory budget assertions, plus per-operation deposit/swap/withdraw granular budget checks.
 - Budget assertion tests for `extend_ttl` operations: isolated `extend_instance_ttl` contract function with CPU/memory budget assertions and deliberate-regression fixtures, demonstrating how to budget-test ledger-rent operations.
 
+### Removed
+
+- **`audit_and_roadmap.md` (issue #448).** The file was an archive of finished audit/roadmap work with only three live items left, none of which belong in a tracked-down file: the missing `v0.1.0` release tag and two GitHub repository settings (branch protection, topics) that cannot be verified from the working tree. Each leftover now has its own issue; nothing else in the repository links to the file.
+
 ### Changed
 
 - Tier A reconciliation comments in `amm-pool-contract/tests/budget_test.rs` are now auto-generated from `tier-a-limits.provenance.md`, not transcribed by hand. Re-derive the artifact instead of editing the test inline when a limit needs to change.
