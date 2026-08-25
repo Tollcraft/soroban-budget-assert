@@ -46,7 +46,7 @@ Deployment workflow: [`.github/workflows/deploy-site.yml`](../.github/workflows/
 
 ### How the deployment pieces fit together
 
-1. **`budget.yml` (`record-history` job)**: On every push to `main`, runs contract simulations and appends `{commit, timestamp, data}` entries to `history.json` on the `gh-pages` branch.
+1. **`budget.yml` (`record-history` job)**: On every push to `main`, verifies the uploaded report is a genuine network-measured measurement (placeholder or mocked reports are declined — the run still succeeds), purges any historical entries that fail the same check, and appends `{commit, timestamp, data}` entries to `history.json` on the `gh-pages` branch. Only real measurements ever reach the dashboard's charts.
 2. **`deploy-site.yml`**: Publishes the contents of `site/` to `gh-pages` using `peaceiris/actions-gh-pages` with `keep_files: true`, so `history.json` is never deleted or overwritten. Both workflows share the `gh-pages-deploy` concurrency group to prevent race conditions on the `gh-pages` branch.
 3. **Client-side Dashboard**: The dashboard page (`dashboard.html`) fetches `history.json` same-origin and pivots the data client-side into `package → function → metric` series — requiring no backend server or build-time data baking.
 
