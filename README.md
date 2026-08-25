@@ -65,17 +65,27 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+The workspace does not pin a single `soroban-sdk` version — the two contract fixtures pin different ones, and the reporting CLI depends on the XDR decoder rather than the SDK. The manifest dependencies (the source of truth for intent; `Cargo.lock` only records resolution) are:
+
+| Crate | Manifest dependency |
+| :--- | :--- |
+| `amm-pool-contract` ([manifest](amm-pool-contract/Cargo.toml)) | `soroban-sdk` = `"22.0.11"` (also as a dev-dependency with the `testutils` feature) |
+| `host-function-contract` ([manifest](host-function-contract/Cargo.toml)) | `soroban-sdk` = `"22.0.0"` |
+| `cargo-budget-report` ([manifest](cargo-budget-report/Cargo.toml)) | `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses; no direct `soroban-sdk` dependency) |
+
 * **Corresponding Stellar Protocol**: **Protocol 22**
+
+### What "Supported" means here
+
+A row marked **Supported** means: every workspace crate builds and passes `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` in CI on each push/PR to `main` ([quality.yml](.github/workflows/quality.yml), [budget.yml](.github/workflows/budget.yml)) — which compiles both pinned `soroban-sdk` versions and runs the Tier A macro test suite against the `amm-pool-contract` fixture. Additionally, the network-side figures in [MEASUREMENTS.md](MEASUREMENTS.md) were captured manually against Soroban testnet with these pins (one-time verification, not continuous CI). A row marked **Untested** has neither CI coverage nor manual verification.
 
 ### Compatibility Matrix
 
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
-| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
+| **`22.0.x`** | `22` | **Supported** | Matches all pinned manifest dependencies: `soroban-sdk` `22.0.11` (`amm-pool-contract`), `soroban-sdk` `22.0.0` (`host-function-contract`), `stellar-xdr` `22.1.0` (`cargo-budget-report`). Note that the two fixtures pin different patch versions of the same minor line; whether to unify them is a separate concern not covered by this table. |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. Migration to newer SDK/XDR versions is actively worked on — see [#382](https://github.com/Tollcraft/soroban-budget-assert/issues/382) (soroban-sdk/stellar-xdr migration) and [#383](https://github.com/Tollcraft/soroban-budget-assert/issues/383) (wasmparser migration) — so the project is not stuck on protocol 22. |
 
 ---
 
