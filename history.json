@@ -250,5 +250,23 @@
         "value": 4096
       }
     ]
+  },
+  {
+    "commit": "34d614292bd459508d181ec50a9706029f03e64c",
+    "timestamp": "2026-08-25T21:53:30Z",
+    "data": [
+      {
+        "package": "amm-pool-contract",
+        "function": "do_expensive_work",
+        "metric": "CPU Instructions",
+        "value": 1000000
+      },
+      {
+        "package": "amm-pool-contract",
+        "function": "do_expensive_work",
+        "metric": "Read Bytes",
+        "value": 4096
+      }
+    ]
   }
 ]
