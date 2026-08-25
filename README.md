@@ -10,6 +10,9 @@ The landing page is a lightweight, responsive, single-page website built with st
 
 - `index.html`: Main single-page document containing hero section, problem statement, cost-gap comparison metrics, two-tier architecture overview, quick start code blocks, asciinema demo embed, and community links.
 - `styles.css`: Custom CSS styles including design system tokens, responsive grid layouts, animations, and dark mode aesthetics.
+- `dashboard.html`: Cost-over-time dashboard that visualises the budget history dataset.
+- `assets/dashboard.js`: Dashboard data fetching and chart rendering logic.
+- `assets/dashboard.css`: Dashboard-specific styles.
 
 ## 🛠️ Local Development & Preview
 
@@ -29,4 +32,4 @@ Then visit `http://localhost:8000` in your browser.
 
 The site is automatically deployed to GitHub Pages (`gh-pages` root) via GitHub Actions whenever changes are merged into `main`.
 
-Deployment workflow: `.github/workflows/docs.yml`.
+Deployment workflow: `.github/workflows/deploy-site.yml`.
