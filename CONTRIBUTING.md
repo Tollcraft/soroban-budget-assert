@@ -134,11 +134,28 @@ stellar --version
 cargo --version
 ```
 
-## Code Quality Standards
-Before submitting a pull request, please ensure our quality standards by running the following commands locally:
-- `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
+## Code Quality Standards & Lint/Formatting Configuration
+
+This workspace configures both `clippy.toml` and `rustfmt.toml` at the repository root to enforce consistent code styling and static analysis rules across all development environments and CI pipelines.
+
+### Linting (`clippy.toml`)
+- **Purpose**: `clippy.toml` pins tunable lint thresholds (such as `too-many-arguments-threshold = 7`, `type-complexity-threshold = 250`, `enum-variant-name-threshold = 3`, and `single-char-binding-names-threshold = 4`) to upstream defaults.
+- **Rationale**: Freezing these thresholds ensures that future Rust/Clippy toolchain updates will not trigger unexpected lint failures on unchanged source code.
+
+### Formatting (`rustfmt.toml`)
+- **Purpose**: `rustfmt.toml` specifies workspace code style rules, including `max_width = 100`, Unix line endings (`newline_style = "Unix"`), 4-space indentation (`tab_spaces = 4`), import reordering, and derive merging.
+- **Toolchain Note**: The repository pins stable `1.91.0` in `rust-toolchain.toml`. Several configured options (`style_edition`, `force_explicit_abi`, `fn_params_layout`, `match_arm_leading_pipes`, `use_field_init_shorthand`, `use_try_shorthand`) are nightly-only in `rustfmt` and are silently ignored when running `cargo fmt` on the pinned stable 1.91.0 toolchain.
+
+### Editor Setup
+Most Rust-enabled editors (such as VS Code with `rust-analyzer`) automatically detect `rustfmt.toml` and `clippy.toml` at the workspace root when formatting on save. If your editor formats using a different style, ensure rust-analyzer is configured to use cargo/workspace commands (`"rust-analyzer.rustfmt.overrideCommand": ["cargo", "fmt", "--", "--config-path", "rustfmt.toml"]`).
+
+### Pre-Push Verification Checklist
+Before submitting a pull request, run the following commands locally from the workspace root to ensure all quality gates pass:
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
 Please follow the styling and architectural patterns already used in the codebase.
 
