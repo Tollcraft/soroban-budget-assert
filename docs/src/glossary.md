@@ -2,6 +2,94 @@
 
 This glossary maps the cost terms used across this project to their definitions in Stellar's documentation, the XDR field names in `SorobanTransactionData`, and the display names in `cargo budget-report` output. Each entry notes whether the tool measures, does not measure, or derives the term.
 
+The first block defines the vocabulary this project itself coined — tiers, margins, scenarios, baselines, and the configuration file the tooling is built around. Entries labelled **Origin** are project terms; all later entries come from Stellar's documentation.
+
+---
+
+## Tier A
+
+- **Origin**: coined by this project
+- **Where you'll see it**: `#[budget_cpu_lt(N)]` / `#[budget_mem_lt(N)]`, `tier-a-limits.env`, CI workflow step names
+- **What it is**: The local fast-fail tier. The `budget-macros` attribute macros rewrite a test's body so a strict (`<`) assertion on the local cost estimate runs on every path out of the test, and any breach fails `cargo test`. It needs no network and is deterministic, so it is safe to run on every push and pull request.
+
+**Docs**: [Protocol Mechanics](mechanics.md#tier-a-local-fast-fail-budget-macros); limits can be generated into `tier-a-limits.env` rather than hand-written — see [Deriving Limits](deriving_limits.md).
+
+---
+
+## Tier B
+
+- **Origin**: coined by this project
+- **Where you'll see it**: every `cargo budget-report` invocation and its `--json` output
+- **What it is**: The network-simulation tier. The CLI builds each contract's WASM, deploys it to the configured network, and reports what `simulateTransaction` says each exported function really costs. These figures are ground truth — the input Tier A limits are derived from — though they vary slightly with ledger state.
+
+**Docs**: [Protocol Mechanics](mechanics.md#tier-b-network-simulation-cargo-budget-report)
+
+---
+
+## Margin
+
+- **Origin**: coined by this project
+- **Where you'll see it**: `--margin-{cpu,memory,read,write}` flags, the `[margin]` block of `budget.toml`, `tier-a-limits.provenance.md`
+- **What it is**: A per-metric multiplier applied to Tier B values when deriving Tier A limits: `tier_a_limit = ceil(tier_b_value × margin)`. There are four margins (CPU, memory, read bytes, write bytes), supplied via `--margin-*` flags or the `[margin]` block of `budget.toml`; none has a default, because the project treats the margin as data that must be stated explicitly so every derived limit stays auditable. Too small a margin produces limits that fail on measurement noise; too large one masks real regressions.
+
+**Docs**: [Deriving Limits](deriving_limits.md); rationale in `cargo-budget-report/src/derive.rs` (`Margin`) and the `--margin-cpu` doc comment in `cargo-budget-report/src/main.rs`.
+
+---
+
+## Scenario
+
+- **Origin**: coined by this project
+- **Where you'll see it**: `[[scenarios.<name>]]` blocks in `budget.toml`, derived env-var keys like `TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU`
+- **What it is**: A named multi-step workflow declared as a list of component functions in `budget.toml`. During limit derivation the components' Tier B values are summed into a single Tier A `KEY=VALUE` per metric, so one test exercising the whole workflow (e.g. `deposit` → `swap` → `withdraw`) asserts against one limit instead of several.
+
+**Docs**: [Deriving Limits](deriving_limits.md)
+
+---
+
+## Baseline
+
+- **Origin**: coined by this project
+- **Where you'll see it**: `--record-baseline` / `--check-baseline`, `budget-baseline.toml`; and the `baseline = …` argument on the budget macros
+- **What it is**: Two related but distinct things in this project:
+  - **Regression snapshot** — a TOML file of network-simulated costs per function, recorded with `cargo budget-report --record-baseline` and enforced on later runs by `--check-baseline` within a configured tolerance; a metric exceeding its allowed budget exits non-zero.
+  - **Marginal-cost probe** — a measurement of a deliberately minimal call (such as the example contract's `noop`), passed via the macros' `baseline` argument and subtracted from a raw local measurement so only the *marginal* cost is asserted against the limit.
+  
+  The snapshot pins what the network charged; the probe removes what the local VM charges before your contract logic runs.
+
+**Docs**: [End-User Guide, Step 6](user_guide.md#step-6-optional-catch-regressions-on-the-workspace-with-a-baseline) for the snapshot; the `noop` baseline probe doc comment in `amm-pool-contract/src/lib.rs` for marginal-cost assertions.
+
+---
+
+## Marginal cost
+
+- **Origin**: coined by this project
+- **Where you'll see it**: macro assertion messages ("marginal: N measured − M baseline"), the `baseline` argument on `budget_cpu_lt` / `budget_mem_lt` / `budget_read_bytes_lt` / `budget_write_bytes_lt`, and `cpu_baseline` / `mem_baseline` on `budget_lt`
+- **What it is**: The cost model where a baseline probe's measurement is subtracted from a raw measurement and the difference — not the raw figure — is compared against the limit. The subtraction saturates at zero, so noise below the probe reports honestly as no measurable marginal cost rather than wrapping to a huge value; the raw measurement is taken before the probe expression is evaluated so the probe cannot perturb it.
+
+**Docs**: `generate_metric_assert` in `budget-macros/src/lib.rs`; usage in `amm-pool-contract/tests/budget_test.rs`.
+
+---
+
+## Local-vs-network gap
+
+- **Origin**: coined by this project
+- **Where you'll see it**: "The measured gap" section of Protocol Mechanics, the measurement series in Measurements
+- **What it is**: The difference between a local estimate and the network's simulated cost of the same WASM. Its direction is not stable: it has been observed at double-digit percentages in either direction depending on build profile, and it shifts across `soroban-sdk` versions. This instability is why the tool trusts only network simulation for budget decisions and uses local estimates only for fast-fail gating.
+
+**Docs**: [Protocol Mechanics — The measured gap](mechanics.md#the-measured-gap); per-version calibration in [Measurements](measurements.md#sdk-version-calibration)
+
+---
+
+## budget.toml
+
+- **Origin**: coined by this project
+- **Where you'll see it**: workspace root of any project using `cargo budget-report`
+- **What it is**: The CLI's configuration file, found by walking upward from the current directory. It holds network and source-account overrides, per-function arguments, limits, and tolerances, plus the `[margin]` and `[[scenarios.<name>]]` blocks consumed by `--derive-limits`. CLI flags take precedence over values set here.
+
+**Docs**: [Tool Reference — Configuration](reference.md#configuration-budgettoml)
+
+---
+
 ## CPU Instructions
 
 - **Tool display name**: `CPU Instructions`
