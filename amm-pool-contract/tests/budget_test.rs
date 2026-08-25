@@ -45,15 +45,14 @@ const TIER_A_LIMITS_FILE: &str = "../tier-a-limits.env";
 fn setup_wasm(env: &Env) -> (ConstantProductPoolClient<'_>, Address) {
     let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
-    // AUDIT (Issue #92): `soroban_sdk::Env::register_contract_wasm` is deprecated in soroban-sdk 22.x
-    // in favor of `Env::register`. However, `Env::register` only registers Rust contract types for
-    // in-memory host execution, whereas `register_contract_wasm` remains the sole API in soroban-sdk 22.x
-    // for registering raw precompiled `.wasm` byte slices into the test environment VM. Because WASM-level
-    // execution is required for accurate CPU/memory budget measurements (raw Rust estimates undercount costs),
-    // `register_contract_wasm` with `#[allow(deprecated)]` remains necessary until soroban-sdk provides
-    // a non-deprecated replacement for raw WASM byte registration.
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    // Register the precompiled WASM so measurements exercise the contract in
+    // the host's Wasm VM rather than as linked-in Rust (raw Rust estimates
+    // undercount costs — see MEASUREMENTS.md). `Env::register` accepts raw
+    // WASM bytes: `Register` is implemented for `&[u8]`, and it drives the
+    // exact same host path the deprecated `register_contract_wasm` used
+    // (`upload_contract_wasm` + `CreateContractV2`, no constructor args),
+    // verified against soroban-sdk 22.0.11 (Issue #472).
+    let contract_id = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(env, &contract_id);
 
     let user = Address::generate(env);
@@ -139,8 +138,7 @@ fn test_measure_gap_vs_input_size() {
     for &n in &sizes {
         // --- Wasm measurement ---
         let env = Env::default();
-        #[allow(deprecated)]
-        let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+        let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(&env, &contract_id);
         env.cost_estimate().budget().reset_unlimited();
         client.do_expensive_work(&n);
@@ -617,8 +615,7 @@ fn test_storage_read_wasm_local() {
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
 
     let env = Env::default();
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let contract_id = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(&env, &contract_id);
 
     env.cost_estimate().budget().reset_unlimited();

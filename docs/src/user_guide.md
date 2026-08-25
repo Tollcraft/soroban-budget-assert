@@ -80,14 +80,12 @@ fn test_expensive_function_budget() {
     )
     .expect("WASM file not found — build the contract first");
 
-    // `register_contract_wasm` is deprecated in soroban-sdk 22.x in favour of
-    // `Env::register`, but `Env::register` only registers Rust contract types
-    // for in-memory host execution.  Raw WASM byte-slice registration is
-    // required for accurate CPU/memory budget measurements (Rust-level
-    // estimates undercount costs), and `register_contract_wasm` is the only
-    // API that supports it in the current SDK.
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    // `Env::register` accepts raw WASM bytes: `Register` is implemented for
+    // `&[u8]` in soroban-sdk 22.x, and it drives the same host path the
+    // deprecated `register_contract_wasm` used. Raw WASM registration (rather
+    // than linked-in Rust) is required for accurate CPU/memory budget
+    // measurements, since Rust-level estimates undercount costs.
+    let contract_id = env.register(wasm.as_slice(), ());
 
     // Replace `MyContractClient` with the generated client type for your
     // contract, e.g. `MyContractClient::new(&env, &contract_id)`.
