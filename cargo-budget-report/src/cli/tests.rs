@@ -19,7 +19,6 @@ mod tests {
     fn parse_args(args: &[&str]) -> Result<BudgetReportArgs, clap::Error> {
         let mut full_args = vec!["cargo", "budget-report"];
         full_args.extend_from_slice(args);
-        
         match CargoCli::try_parse_from(full_args) {
             Ok(CargoCli::BudgetReport(args)) => Ok(args),
             Err(e) => Err(e),
