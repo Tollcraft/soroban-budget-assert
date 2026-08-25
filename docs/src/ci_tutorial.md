@@ -94,7 +94,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.93.0
+          toolchain: 1.91.0
           target: wasm32-unknown-unknown
 
       - name: Install System Dependencies
@@ -283,7 +283,7 @@ The workflow builds WASM *before* running tests. If `cargo build -p my-contract 
 
 ### Toolchain mismatch on the runner
 
-The workflow pins the Rust toolchain to `1.93.0` via `dtolnay/rust-toolchain`. If your `rust-toolchain.toml` pins a different version, `rustup` will fetch the right toolchain on the runner — but the macro and tests both live in a workspace that has to build against one toolchain. Mismatches manifest as `cargo test` failing with cryptic "feature stable since 1.XX" errors, not as a budget assertion. Pin both files to the same version.
+The workflow pins the Rust toolchain to `1.91.0` via `dtolnay/rust-toolchain`. If your `rust-toolchain.toml` pins a different version, `rustup` will fetch the right toolchain on the runner — but the macro and tests both live in a workspace that has to build against one toolchain. Mismatches manifest as `cargo test` failing with cryptic "feature stable since 1.XX" errors, not as a budget assertion. Pin both files to the same version.
 
 ## Up next: posting the report to `$GITHUB_STEP_SUMMARY`
 
