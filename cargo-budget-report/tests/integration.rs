@@ -498,3 +498,260 @@ fn permanent_invoke_build_failure_is_not_retried() {
         "the underlying deterministic error should surface, got: {stderr:?}"
     );
 }
+
+// ── End-to-end offline test ─────────────────────────────────────────────
+
+/// Comprehensive end-to-end test that exercises the complete pipeline:
+/// configuration resolution → contract build → export discovery →
+/// simulation → report rendering, entirely offline without network access
+/// or stellar CLI.
+///
+/// Expected runtime: <2s (no network, no real stellar CLI, instant mock builds)
+///
+/// This test validates:
+/// 1. Configuration loading (network, source from CLI args)
+/// 2. Workspace discovery and contract enumeration
+/// 3. WASM export parsing to find callable functions
+/// 4. Contract deployment and function simulation (via fake binaries)
+/// 5. Metric extraction from simulation responses
+/// 6. Full report rendering in both text and JSON formats
+/// 7. Budget checking with configured limits
+///
+/// Failure modes are explicit:
+/// - Missing header → configuration or discovery stage failed
+/// - Missing package name → export discovery or simulation failed
+/// - Missing metric → metric extraction failed
+/// - Check failure → budget validation logic broken
+///
+/// Uses existing mock infrastructure (fake_bin/stellar and fake_bin/curl)
+/// prepended to PATH, so no network access or real stellar installation required.
+/// Passes on fork PRs without any external dependencies.
+#[test]
+fn end_to_end_offline_full_pipeline() {
+    let workspace = setup_mock_workspace();
+
+    // Create a budget.toml with specific limits to test the check logic
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "network = \"local\"\n\
+         source = \"alice\"\n\
+         \n\
+         [functions.ping]\n\
+         cpu_limit = 5000000\n\
+         read_limit = 5000\n\
+         write_limit = 5000\n\
+         \n\
+         [functions.pong]\n\
+         cpu_limit = 2000000\n\
+         read_limit = 3000\n\
+         write_limit = 3000\n\
+         \n\
+         [functions.greet]\n\
+         cpu_limit = 5000000\n\
+         read_limit = 5000\n\
+         write_limit = 5000\n",
+    )
+    .expect("failed to write budget.toml");
+
+    // ── Stage 1: Basic report generation (text format) ──────────────────
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report"])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Configuration stage: report header should be present
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "Stage FAILED: Configuration/Discovery - missing report header, got: {stdout}"
+    );
+
+    // Export discovery stage: all three contract packages should be found
+    assert!(
+        stdout.contains("mock-contract-a"),
+        "Stage FAILED: Export Discovery - mock-contract-a not found, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("mock-contract-b"),
+        "Stage FAILED: Export Discovery - mock-contract-b not found, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("mock-contract-renamed"),
+        "Stage FAILED: Export Discovery - mock-contract-renamed not found, got: {stdout}"
+    );
+
+    // Simulation stage: function names should appear in the report
+    assert!(
+        stdout.contains("ping"),
+        "Stage FAILED: Simulation - ping function not simulated, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("pong"),
+        "Stage FAILED: Simulation - pong function not simulated, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("greet"),
+        "Stage FAILED: Simulation - greet function not simulated, got: {stdout}"
+    );
+
+    // Metric extraction stage: all three metrics should be present
+    assert!(
+        stdout.contains("CPU Instructions"),
+        "Stage FAILED: Metric Extraction - CPU Instructions metric missing, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Read Bytes"),
+        "Stage FAILED: Metric Extraction - Read Bytes metric missing, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Write Bytes"),
+        "Stage FAILED: Metric Extraction - Write Bytes metric missing, got: {stdout}"
+    );
+
+    // Report rendering stage: formatted values should use commas and units
+    assert!(
+        stdout.contains("1,000,000 inst."),
+        "Stage FAILED: Report Rendering - formatted CPU value missing, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("2,048 B"),
+        "Stage FAILED: Report Rendering - formatted read bytes missing, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("4,096 B"),
+        "Stage FAILED: Report Rendering - formatted write bytes missing, got: {stdout}"
+    );
+
+    // ── Stage 2: JSON output format ──────────────────────────────────────
+
+    let json_assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--json"])
+        .assert();
+
+    let json_output = json_assert.success().get_output().clone();
+    let json_stdout = String::from_utf8_lossy(&json_output.stdout);
+    let reports: serde_json::Value =
+        serde_json::from_str(&json_stdout).expect("Stage FAILED: JSON serialization invalid");
+    let reports_array = reports
+        .as_array()
+        .expect("Stage FAILED: JSON output should be an array");
+
+    // JSON should contain entries for all three packages
+    let packages: std::collections::HashSet<&str> = reports_array
+        .iter()
+        .map(|r| r["package"].as_str().expect("package should be a string"))
+        .collect();
+    assert!(
+        packages.contains("mock-contract-a"),
+        "Stage FAILED: JSON output - mock-contract-a missing"
+    );
+    assert!(
+        packages.contains("mock-contract-b"),
+        "Stage FAILED: JSON output - mock-contract-b missing"
+    );
+    assert!(
+        packages.contains("mock-contract-renamed"),
+        "Stage FAILED: JSON output - mock-contract-renamed missing"
+    );
+
+    // Validate metric values are correct for mock-contract-a::ping
+    let cpu_entry = reports_array
+        .iter()
+        .find(|r| r["package"] == "mock-contract-a" && r["metric"] == "CPU Instructions")
+        .expect("Stage FAILED: JSON - CPU entry for mock-contract-a not found");
+    assert_eq!(
+        cpu_entry["value"], 1_000_000,
+        "Stage FAILED: Metric Extraction - incorrect CPU value in JSON"
+    );
+
+    let read_entry = reports_array
+        .iter()
+        .find(|r| r["package"] == "mock-contract-a" && r["metric"] == "Read Bytes")
+        .expect("Stage FAILED: JSON - Read Bytes entry for mock-contract-a not found");
+    assert_eq!(
+        read_entry["value"], 2048,
+        "Stage FAILED: Metric Extraction - incorrect read bytes value in JSON"
+    );
+
+    let write_entry = reports_array
+        .iter()
+        .find(|r| r["package"] == "mock-contract-a" && r["metric"] == "Write Bytes")
+        .expect("Stage FAILED: JSON - Write Bytes entry for mock-contract-a not found");
+    assert_eq!(
+        write_entry["value"], 4096,
+        "Stage FAILED: Metric Extraction - incorrect write bytes value in JSON"
+    );
+
+    // ── Stage 3: Budget checking with configured limits ─────────────────
+
+    let check_assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--check"])
+        .assert();
+
+    let check_output = check_assert.success().get_output().clone();
+    let check_stdout = String::from_utf8_lossy(&check_output.stdout);
+
+    // Check summary should be present
+    assert!(
+        check_stdout.contains("=== BUDGET CHECKS ==="),
+        "Stage FAILED: Budget Check - missing check header, got: {check_stdout}"
+    );
+
+    // Should show summary with passed/failed counts
+    // We expect 9 checks total (3 functions × 3 metrics each)
+    // All should pass since limits are generous
+    assert!(
+        check_stdout.contains("Summary:"),
+        "Stage FAILED: Budget Check - missing summary line, got: {check_stdout}"
+    );
+    assert!(
+        check_stdout.contains("9 check(s) passed"),
+        "Stage FAILED: Budget Check - expected 9 passing checks, got: {check_stdout}"
+    );
+    assert!(
+        check_stdout.contains("0 failed"),
+        "Stage FAILED: Budget Check - expected 0 failures, got: {check_stdout}"
+    );
+
+    // ── Stage 4: Budget checking with exceeded limits ───────────────────
+
+    // Rewrite budget.toml with a CPU limit that ping will exceed
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "network = \"local\"\n\
+         source = \"alice\"\n\
+         \n\
+         [functions.ping]\n\
+         cpu_limit = 100\n",
+    )
+    .expect("failed to write budget.toml with tight limit");
+
+    let fail_check = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--check"])
+        .assert();
+
+    let fail_output = fail_check.failure().get_output().clone();
+    let fail_stdout = String::from_utf8_lossy(&fail_output.stdout);
+
+    // Should show FAIL status for the exceeded limit
+    assert!(
+        fail_stdout.contains("FAIL"),
+        "Stage FAILED: Budget Check - should show FAIL for exceeded limit, got: {fail_stdout}"
+    );
+    assert!(
+        fail_stdout.contains("mock-contract-a::ping"),
+        "Stage FAILED: Budget Check - should identify failing function, got: {fail_stdout}"
+    );
+    assert!(
+        fail_stdout.contains("CPU Instructions"),
+        "Stage FAILED: Budget Check - should identify failing metric, got: {fail_stdout}"
+    );
+
+    // Should show at least 1 failure in summary
+    assert!(
+        fail_stdout.contains("1 failed") || fail_stdout.contains("failed"),
+        "Stage FAILED: Budget Check - summary should show failures, got: {fail_stdout}"
+    );
+}

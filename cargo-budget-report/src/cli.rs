@@ -156,3 +156,6 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "SECS")]
     pub retry_backoff_secs: Option<u64>,
 }
+
+#[cfg(test)]
+mod tests;

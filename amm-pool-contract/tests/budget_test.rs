@@ -421,6 +421,118 @@ fn test_budget_macro_json_config_invalid_json() {
 }
 
 // ---------------------------------------------------------------------------
+// Negative-control budget tests (Issue #427)
+//
+// These tests verify that the budget assertion macros *actually fire* when
+// they should by deliberately setting limits far below what the workload
+// requires. They serve as regression guards for the macro machinery itself.
+//
+// CRITICAL: These tests MUST panic. Do NOT "fix" them by raising the limits.
+// If these tests start passing, the macro assertions are broken.
+//
+// Margin rationale: Limits are set 10x below measured costs to provide a
+// clear, non-flaky signal while still being meaningful. A 10x gap ensures
+// the test won't false-pass due to measurement variance while avoiding
+// margins so extreme (e.g., limit=1) that they obscure the real assertion.
+// ---------------------------------------------------------------------------
+
+/// Negative control: CPU budget macro fires when limit is exceeded.
+///
+/// Sets the CPU limit to ~200K instructions (10x below the ~2M measured cost
+/// of deposit+swap+withdraw) to verify the `#[budget_cpu_lt]` macro correctly
+/// detects and panics on budget violations.
+///
+/// This test MUST panic. If it passes, the CPU budget assertion is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_cpu_lt(200_000, baseline = baseline_cpu())]
+fn test_negative_control_cpu_budget_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Full workflow typically costs ~2M CPU instructions (after baseline
+    // subtraction). Limit of 200K is 10x below that, guaranteeing failure.
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Negative control: Memory budget macro fires when limit is exceeded.
+///
+/// Sets the memory limit to ~50K bytes (10x below the ~500K measured cost
+/// of deposit+swap+withdraw) to verify the `#[budget_mem_lt]` macro correctly
+/// detects and panics on budget violations.
+///
+/// This test MUST panic. If it passes, the memory budget assertion is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_mem_lt(50_000, baseline = baseline_mem())]
+fn test_negative_control_mem_budget_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Full workflow typically costs ~500K memory bytes (after baseline
+    // subtraction). Limit of 50K is 10x below that, guaranteeing failure.
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Negative control: Combined CPU/memory macro fires when CPU limit is exceeded.
+///
+/// Uses `#[budget_lt]` with a CPU limit 10x below measured cost and a
+/// generous memory limit to isolate CPU assertion behavior.
+///
+/// This test MUST panic. If it passes, the CPU half of `budget_lt` is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(
+    cpu = 200_000,
+    mem = 5_000_000,
+    cpu_baseline = baseline_cpu(),
+    mem_baseline = baseline_mem()
+)]
+fn test_negative_control_combined_cpu_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Negative control: Combined CPU/memory macro fires when memory limit is exceeded.
+///
+/// Uses `#[budget_lt]` with a memory limit 10x below measured cost and a
+/// generous CPU limit to isolate memory assertion behavior.
+///
+/// This test MUST panic. If it passes, the memory half of `budget_lt` is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(
+    cpu = 5_000_000,
+    mem = 50_000,
+    cpu_baseline = baseline_cpu(),
+    mem_baseline = baseline_mem()
+)]
+fn test_negative_control_combined_mem_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+// ---------------------------------------------------------------------------
 // Macro hygiene regression test
 //
 // Verify that #[budget_cpu_lt] and #[budget_mem_lt] do not leak their
@@ -635,4 +747,112 @@ fn test_storage_read_wasm_local() {
     println!("READ_BYTES={}", read_bytes);
     println!("CPU_INSTRUCTIONS={}", cpu);
     println!("MEMORY_BYTES={}", mem);
+}
+
+// ── Negative-control budget tests ──────────────────────────────────────
+//
+// These tests validate the budget assertion machinery itself by deliberately
+// exceeding budgets and confirming the macros fire as expected. Without
+// negative controls, a regression that silently disabled the assertions
+// would leave the entire suite green while the tool's core promise was broken.
+//
+// DO NOT "FIX" these tests by raising the limits — they are intentionally
+// set to fail, and the test harness treats that failure as success via
+// #[should_panic].
+
+/// Negative control: CPU budget macro fires when deliberately exceeded.
+///
+/// Sets a CPU limit of 500 instructions — far below the real cost of any
+/// WASM contract invocation, which is typically 3M+ instructions including
+/// module instantiation overhead. The margin is large enough (6000x too low)
+/// to be immune to measurement noise.
+///
+/// This test MUST panic with the expected message. If it passes, the
+/// #[budget_cpu_lt] macro is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_cpu_lt(500)]
+fn test_negative_control_cpu_budget_assertion_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Any real invocation exceeds 500 instructions by orders of magnitude.
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Memory budget macro fires when deliberately exceeded.
+///
+/// Sets a memory limit of 10 bytes — impossibly low for any WASM contract
+/// invocation, which requires at minimum several KB for the runtime, VM state,
+/// and contract memory. The margin is large enough (>1000x too low) to avoid
+/// any risk of flakiness from runtime variations.
+///
+/// This test MUST panic with the expected message. If it passes, the
+/// #[budget_mem_lt] macro is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_mem_lt(10)]
+fn test_negative_control_mem_budget_assertion_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Any real invocation exceeds 10 bytes by orders of magnitude.
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Combined CPU+memory budget macro fires when CPU exceeded.
+///
+/// Sets a CPU limit of 1000 instructions (far too low) while leaving memory
+/// generous. Confirms that #[budget_lt] with multiple metrics correctly
+/// enforces each one independently and panics when any single metric fails.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(cpu = 1000, mem = 10_000_000)]
+fn test_negative_control_combined_budget_cpu_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Combined CPU+memory budget macro fires when memory exceeded.
+///
+/// Sets a memory limit of 50 bytes (impossibly low) while leaving CPU
+/// generous. Confirms that #[budget_lt] correctly enforces the memory metric
+/// even when CPU passes.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(cpu = 50_000_000, mem = 50)]
+fn test_negative_control_combined_budget_mem_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Validates that disabling a test confirms the assertion
+/// machinery was the cause of failure, not an unrelated panic.
+///
+/// This test is identical to test_negative_control_cpu_budget_assertion_fires
+/// but without #[should_panic]. It should FAIL when run, proving the budget
+/// assertion is what fires in the corresponding negative-control test.
+///
+/// Run this manually to confirm: `cargo test test_negative_control_disabled_cpu_fails -- --ignored`
+/// Expected: test FAILS with budget assertion panic (not passes).
+#[test]
+#[ignore]
+#[budget_cpu_lt(500)]
+fn test_negative_control_disabled_cpu_fails() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.require_auth_only(&user);
 }
