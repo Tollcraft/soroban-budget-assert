@@ -1735,6 +1735,9 @@ mod edge_case_tests;
 #[cfg(test)]
 mod boundary_tests;
 
+#[cfg(test)]
+mod additional_edge_tests;
+
 /// Serializes tests that mutate the process working directory.
 #[cfg(test)]
 static TEST_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
