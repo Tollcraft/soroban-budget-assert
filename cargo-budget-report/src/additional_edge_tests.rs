@@ -51,6 +51,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         // "Bytes" (exact match, no prefix) does not match any known metric.
         assert_eq!(limit_for_metric(&config, "Bytes"), None);
@@ -70,6 +71,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions\n"), None);
     }
