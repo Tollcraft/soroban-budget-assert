@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **Pre-commit hook installer parity between `scripts/install-hooks.sh` and `scripts/install-hooks.ps1` (issue #476).** Both installers now validate that `scripts/pre-commit` exists before copying it (a clear error instead of a raw `cp` / `Copy-Item` failure), create the `.git/hooks` directory when it is missing instead of failing, and print the same success message describing what the hook checks and how to recover from a blocked commit. `install-hooks.ps1` also prints an explicit note that the hook is a bash script executed via the bash bundled with Git for Windows, so it runs correctly from PowerShell without a separate Git Bash terminal. `cargo-budget-report/tests/pre_commit_hook.rs` gains coverage for the missing-hooks-directory, double-run, subdirectory, and missing-source states on the shell path, plus a PowerShell-path test that runs when `pwsh` / `powershell` is available on `PATH` and otherwise reports that it was skipped.
+
 ### Added
 
 - **CI/CD integration example documentation (`docs/src/ci_cd_integration.md`).** Adds a reference-style page showing how to integrate `soroban-budget-assert` into a GitHub Actions workflow, covering the complete workflow YAML, step-by-step explanations, customization guidance, best practices, and troubleshooting.
