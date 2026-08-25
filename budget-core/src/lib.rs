@@ -248,15 +248,15 @@ mod tests {
             #[test]
             fn percentage_of_no_wraparound(value in any::<u64>(), pct in any::<u64>()) {
                 let result = percentage_of(value, pct);
-                
+
                 // Check for overflow: if pct <= 100, result should not be less than value
                 // (assuming no wraparound). If pct > 100, result should be >= value.
                 if pct <= 100 && value > 0 {
-                    prop_assert!(result <= value, 
+                    prop_assert!(result <= value,
                         "Expected result <= value when pct <= 100, but got {} > {} (pct={})",
                         result, value, pct);
                 }
-                
+
                 // For pct > 100, we can check using checked operations
                 if let Some(product) = value.checked_mul(pct) {
                     let expected = product / 100;
@@ -434,7 +434,7 @@ mod tests {
                 prop_assume!(unknown_metric != "CPU Instructions");
                 prop_assume!(unknown_metric != "Read Bytes");
                 prop_assume!(unknown_metric != "Write Bytes");
-                
+
                 let config = FunctionConfig {
                     args: vec![],
                     cpu_limit,
@@ -456,7 +456,7 @@ mod tests {
                     read_limit: None,
                     write_limit: None,
                 };
-                
+
                 // CPU Instructions should return cpu_limit
                 prop_assert_eq!(limit_for_metric(&config, "CPU Instructions"), cpu_limit);
                 // Other known metrics should return None

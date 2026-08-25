@@ -323,7 +323,10 @@ mod tests {
         // According to reference.md, profile defaults to "release" when not provided,
         // but that's resolved at runtime, not in the CLI struct.
         let args = parse_args(&[]).unwrap();
-        assert_eq!(args.profile, None, "profile should default to None in CLI struct");
+        assert_eq!(
+            args.profile, None,
+            "profile should default to None in CLI struct"
+        );
     }
 
     #[test]
@@ -433,8 +436,8 @@ mod tests {
 
     #[test]
     fn test_check_baseline_with_tolerance() {
-        let args = parse_args(&["--check-baseline", "baseline.json", "--tolerance", "0.10"])
-            .unwrap();
+        let args =
+            parse_args(&["--check-baseline", "baseline.json", "--tolerance", "0.10"]).unwrap();
         assert_eq!(args.check_baseline, Some("baseline.json".to_string()));
         assert_eq!(args.tolerance, Some("0.10".to_string()));
     }
@@ -467,8 +470,7 @@ mod tests {
 
     #[test]
     fn test_retry_flags_together() {
-        let args = parse_args(&["--max-retry-attempts", "3", "--retry-backoff-secs", "5"])
-            .unwrap();
+        let args = parse_args(&["--max-retry-attempts", "3", "--retry-backoff-secs", "5"]).unwrap();
         assert_eq!(args.max_retry_attempts, Some(3));
         assert_eq!(args.retry_backoff_secs, Some(5));
     }
@@ -498,7 +500,7 @@ mod tests {
     // ========================================================================
     // SECTION 4: Precedence testing (CLI vs budget.toml)
     // ========================================================================
-    // 
+    //
     // Note: CLI precedence over budget.toml is tested at integration level
     // because it requires loading and merging configuration files. The CLI
     // parsing itself just captures the values; main.rs does the precedence
@@ -506,7 +508,7 @@ mod tests {
     //
     // According to reference.md:
     // - network: CLI flag overrides budget.toml
-    // - source: CLI flag overrides budget.toml  
+    // - source: CLI flag overrides budget.toml
     // - tolerance: CLI flag overrides budget.toml
     // - margin_*: CLI flag overrides budget.toml
     // - max_retry_attempts: CLI flag overrides budget.toml
@@ -521,10 +523,7 @@ mod tests {
     #[test]
     fn test_unknown_flag_rejected() {
         let result = parse_args(&["--unknown-flag"]);
-        assert!(
-            result.is_err(),
-            "unknown flags should be rejected by clap"
-        );
+        assert!(result.is_err(), "unknown flags should be rejected by clap");
         let err = result.unwrap_err();
         let err_str = err.to_string();
         assert!(
@@ -795,14 +794,20 @@ mod tests {
     fn test_documented_check_default() {
         // Reference.md documents --check defaults to not set (false)
         let args = parse_args(&[]).unwrap();
-        assert!(!args.check, "reference.md documents --check defaults to false");
+        assert!(
+            !args.check,
+            "reference.md documents --check defaults to false"
+        );
     }
 
     #[test]
     fn test_documented_json_default() {
         // Reference.md documents --json is optional and not set by default
         let args = parse_args(&[]).unwrap();
-        assert!(!args.json, "reference.md documents --json defaults to false");
+        assert!(
+            !args.json,
+            "reference.md documents --json defaults to false"
+        );
     }
 
     #[test]
@@ -955,8 +960,7 @@ mod tests {
     #[test]
     fn test_custom_profile_usage() {
         // Using a custom build profile
-        let args =
-            parse_args(&["--network", "testnet", "--profile", "release-opt"]).unwrap();
+        let args = parse_args(&["--network", "testnet", "--profile", "release-opt"]).unwrap();
         assert_eq!(args.network, Some("testnet".to_string()));
         assert_eq!(args.profile, Some("release-opt".to_string()));
     }
