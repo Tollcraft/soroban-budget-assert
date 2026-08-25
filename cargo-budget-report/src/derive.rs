@@ -39,7 +39,7 @@
 //! - non-Rust tooling (CI scripts, dashboards, the cost-over-time
 //!   consumer) can read the same file.
 
-use crate::module_10::{Error, Result};
+use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

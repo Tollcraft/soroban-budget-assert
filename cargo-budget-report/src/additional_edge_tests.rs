@@ -1,6 +1,6 @@
 //! Unit tests targeting additional off-by-one and zero-length edge cases.
 //!
-//! Complements `module_8` by exercising boundary conditions in functions that
+//! Complements `edge_case_tests` by exercising boundary conditions in functions that
 //! were not yet covered there. Focuses on:
 //! - Off-by-one errors in `evaluate_check` at type-cast boundaries
 //! - Zero-length and exactly-one-length inputs across all helpers

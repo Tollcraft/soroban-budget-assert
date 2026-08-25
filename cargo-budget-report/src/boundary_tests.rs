@@ -278,7 +278,7 @@ mod off_by_one_and_zero_length_tests {
     // ── scaffold_init edge case tests ──────────────────────────────────
     //
     // These tests mutate process CWD, so they must not run concurrently
-    // with each other (or with module_8's scaffold tests).
+    // with each other (or with edge_case_tests's scaffold tests).
 
     fn isolate_temp_dir() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().expect("failed to create temp dir");

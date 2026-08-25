@@ -1,6 +1,6 @@
 use crate::cli::{BudgetReportArgs, CargoCli};
 use crate::derive::{DerivationConfig, Margin};
-use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
+use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
 use anyhow::Context;
 mod cli;
 mod compare;
@@ -23,7 +23,7 @@ use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
 mod derive;
-mod module_10;
+mod error;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
@@ -1842,9 +1842,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-mod module_2;
-mod module_3;
-mod module_4;
+mod config;
+mod limit_checks;
+mod url_checks;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1876,10 +1876,10 @@ impl Mode {
 }
 
 #[cfg(test)]
-mod module_8;
+mod edge_case_tests;
 
 #[cfg(test)]
-mod module_18;
+mod boundary_tests;
 
 /// Serializes tests that mutate the process working directory.
 #[cfg(test)]
