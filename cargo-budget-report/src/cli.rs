@@ -142,4 +142,17 @@ pub struct BudgetReportArgs {
     /// `tier-a-limits.provenance.md` for `tier-a-limits.env`).
     #[arg(long, value_name = "PATH")]
     pub provenance_out: Option<String>,
+
+    /// Maximum number of attempts (including the first) for deploy,
+    /// invoke-build, and simulate-RPC calls before giving up. `1`
+    /// disables retry entirely. Overrides `retry.max_attempts` in
+    /// `budget.toml`; defaults to 4.
+    #[arg(long, value_name = "N")]
+    pub max_retry_attempts: Option<u32>,
+
+    /// Initial backoff, in seconds, before the first retry. Doubles on
+    /// each subsequent attempt (2 → 4 → 8). Overrides
+    /// `retry.initial_backoff_secs` in `budget.toml`; defaults to 2.
+    #[arg(long, value_name = "SECS")]
+    pub retry_backoff_secs: Option<u64>,
 }

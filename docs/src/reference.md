@@ -413,12 +413,40 @@ args = ["--n", "10000"]
 cpu_limit = 5000000
 read_limit = 5000
 write_limit = 1000
+
+# Retry policy for network calls (deploy, invoke-build, simulate RPC).
+[retry]
+# Total attempts including the first. `1` disables retry entirely.
+max_attempts = 4
+# Seconds to wait before the first retry; doubles on each further attempt.
+initial_backoff_secs = 2
 ```
 {% endcode %}
 
 - `network`, `source` — defaults for the corresponding CLI flags.
 - `[functions.<name>].args` — arguments injected when simulating that exported function. Functions without an entry are simulated with no arguments; if a required argument is missing, the simulation fails with a warning and that function is skipped.
 - `[functions.<name>].cpu_limit`, `.read_limit`, `.write_limit` — inclusive upper bounds for simulated CPU instructions, read bytes, and write bytes. Enforced only when `--check` is passed. A missing field means "not enforced" for that metric.
+
+### `[retry]`: transient-failure retry policy
+
+Deploy, invoke-build, and the simulate RPC request are all retried on *plausibly transient* failures: rate-limit responses (HTTP 429), connection errors and timeouts, and server-side blips (502/503). Deterministic failures — a contract that does not exist, a malformed XDR, an RPC-reported simulation error — are **not** retried, because repeating them cannot change the outcome.
+
+| Field | CLI override | Default | Meaning |
+|---|---|---|---|
+| `max_attempts` | `--max-retry-attempts` | `4` | Total attempts per call site, including the first. `1` disables retry. |
+| `initial_backoff_secs` | `--retry-backoff-secs` | `2` | Delay before the first retry; doubles on each subsequent attempt. |
+
+Precedence is CLI over `budget.toml` over defaults, matching every other configurable key.
+
+The worst-case time spent sleeping per call site is bounded and derivable from the config alone:
+
+```text
+initial_backoff_secs × (2^(max_attempts − 1) − 1)
+```
+
+With the defaults that is 2 + 4 + 8 = **14 s** per call site. A CI job with a tight time limit can set `max_attempts = 2` (worst case 2 s) or `max_attempts = 1` (no retry); against a private network that never rate-limits, `max_attempts = 1` removes the dead time entirely.
+
+Retry progress messages go to stderr and are suppressed by `--quiet`.
 
 ## Output
 

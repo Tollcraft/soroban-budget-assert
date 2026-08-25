@@ -63,6 +63,27 @@ case "${1:-}" in
         esac
         ;;
       invoke)
+        # Optional invoke-failure simulation for retry tests.
+        # MOCK_STELLAR_INVOKE_FAIL_COUNT=N makes `contract invoke` fail the
+        # first N times; MOCK_STELLAR_INVOKE_FAIL_MODE selects the stderr
+        # text: "transient" (retryable) or "permanent" (not retryable).
+        INVOKE_FAIL_COUNT="${MOCK_STELLAR_INVOKE_FAIL_COUNT:-0}"
+        INVOKE_FAIL_MODE="${MOCK_STELLAR_INVOKE_FAIL_MODE:-transient}"
+        if [ "$INVOKE_FAIL_COUNT" -gt 0 ] && [ -n "$FAIL_COUNT_FILE" ]; then
+            if [ ! -f "$FAIL_COUNT_FILE" ]; then
+                echo "0" > "$FAIL_COUNT_FILE"
+            fi
+            call_num=$(cat "$FAIL_COUNT_FILE")
+            if [ "$call_num" -lt "$INVOKE_FAIL_COUNT" ]; then
+                echo "$((call_num + 1))" > "$FAIL_COUNT_FILE"
+                if [ "$INVOKE_FAIL_MODE" = "permanent" ]; then
+                    echo "Error: contract CAMOCKCONTRACTIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA does not exist" >&2
+                else
+                    echo "Error: connection reset by peer" >&2
+                fi
+                exit 1
+            fi
+        fi
         # Real output is a base64 XDR transaction envelope. Its content is
         # opaque to cargo-budget-report (it's forwarded verbatim to the RPC
         # `simulateTransaction` call), so any placeholder string is fine here

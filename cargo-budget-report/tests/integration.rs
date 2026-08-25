@@ -277,3 +277,224 @@ fn retry_mechanism_fails_after_exhausting_all_attempts() {
         "stderr should mention source account funding, got: {stderr:?}"
     );
 }
+
+// ── Configurable retry policy integration tests ─────────────────────────
+
+/// `--max-retry-attempts 1` must disable retry entirely: a transient
+/// deploy failure fails the run on the first attempt with no backoff.
+#[test]
+fn max_retry_attempts_one_disables_retry_via_cli() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_disabled");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let output = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--max-retry-attempts",
+            "1",
+        ])
+        .env("MOCK_STELLAR_FAIL_COUNT", "3")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Retrying in"),
+        "retry disabled must not print retry messages, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("after 1 attempts"),
+        "should report exhaustion after exactly one attempt, got: {stderr:?}"
+    );
+}
+
+/// `[retry] max_attempts = 1` in budget.toml also disables retry.
+#[test]
+fn max_retry_attempts_one_disables_retry_via_budget_toml() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[retry]\nmax_attempts = 1\n",
+    )
+    .expect("failed to write budget.toml");
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_toml_off");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let output = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .env("MOCK_STELLAR_FAIL_COUNT", "3")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Retrying in"),
+        "retry disabled must not print retry messages, got: {stderr:?}"
+    );
+}
+
+/// budget.toml `[retry].max_attempts` is honored when no CLI flag is given:
+/// two configured attempts against three failures exhausts the budget.
+#[test]
+fn budget_toml_retry_max_attempts_is_respected() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[retry]\nmax_attempts = 2\ninitial_backoff_secs = 0\n",
+    )
+    .expect("failed to write budget.toml");
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_toml_2");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let output = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .env("MOCK_STELLAR_FAIL_COUNT", "10")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("after 2 attempts"),
+        "budget.toml max_attempts = 2 should bound attempts, got: {stderr:?}"
+    );
+}
+
+/// The CLI flag overrides the budget.toml `[retry]` section: the config
+/// says retry is off, but `--max-retry-attempts 2` re-enables one retry,
+/// which is enough for the single transient failure.
+#[test]
+fn cli_max_retry_attempts_overrides_budget_toml() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[retry]\nmax_attempts = 1\n",
+    )
+    .expect("failed to write budget.toml");
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_cli_wins");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let output = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--max-retry-attempts",
+            "2",
+            "--retry-backoff-secs",
+            "0",
+        ])
+        .env("MOCK_STELLAR_FAIL_COUNT", "1")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "CLI override should re-enable retry and succeed, got: {stdout}"
+    );
+}
+
+/// Retry applies to the invoke-build call site too: a transient
+/// (`connection reset by peer`) invoke failure is retried and the run
+/// still succeeds.
+#[test]
+fn transient_invoke_build_failure_is_retried_and_recovers() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_invoke_fail_transient");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let output = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--retry-backoff-secs",
+            "0",
+        ])
+        .env("MOCK_STELLAR_INVOKE_FAIL_COUNT", "2")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "report should succeed after transient invoke failures, got: {stdout}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invoke build attempt 1/4 failed"),
+        "stderr should show invoke-build retry progress, got: {stderr:?}"
+    );
+}
+
+/// A deterministic invoke failure (contract does not exist) must NOT be
+/// retried: the run fails on the first attempt with no retry messages.
+#[test]
+fn permanent_invoke_build_failure_is_not_retried() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_invoke_fail_permanent");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let output = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .env("MOCK_STELLAR_INVOKE_FAIL_COUNT", "5")
+        .env("MOCK_STELLAR_INVOKE_FAIL_MODE", "permanent")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Retrying in"),
+        "permanent failures must not be retried, got: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("does not exist"),
+        "the underlying deterministic error should surface, got: {stderr:?}"
+    );
+}
