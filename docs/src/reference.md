@@ -604,3 +604,190 @@ answering "how much will my users pay".
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
 | **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
 | **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
+
+## `budget.toml` schema reference
+
+This is the complete reference for the `budget.toml` file. It was verified against the parser — the `BudgetToml`, `MarginToml`, `ScenarioToml`, `FunctionConfig`, and `RetryToml` types in `cargo-budget-report/src/main.rs` (with the core `BudgetToml`/`FunctionConfig`/`limit_for_metric` subset mirrored in `budget-core/src/lib.rs`) — not against the example file or the `--init` template, so where an example elsewhere in this repository is loose, this section is normative.
+
+### File discovery and error handling
+
+- The file is read from the path `budget.toml` **relative to the current working directory**. There is no ancestor-directory search in the parser: run the command from the workspace root, or pass everything via flags.
+- A **missing**, empty, whitespace-only, or comments-only file is not an error — the tool proceeds with an all-default configuration (every section optional, nothing enforced).
+- A file that exists but fails to parse aborts the run with a TOML error that includes line and column information.
+
+### Top-level keys
+
+| Key | Type | Required | Default | Effect |
+|---|---|---|---|---|
+| `network` | string | no | none | Target network for deploy/simulate (`"testnet"`, `"futurenet"`, `"local"`, or a custom network from your Stellar CLI config). Falls back to `--network`; if neither is set the run aborts with `missing --network or budget.toml network field`. |
+| `source` | string | no | none | Stellar source identity used for deployment fees and as simulation source. Falls back to `--source`; if neither is set the run aborts. |
+| `tolerance` | number (fraction) | no | `0.10` | Default regression tolerance for `--check-baseline`. Overridable per function (see below) and by `--tolerance`. |
+| `[margin]` | table | no | none | Per-metric margin multipliers consumed only by `--derive-limits`. See [below](#margin-deriving-tier-a-limits). |
+| `[scenarios.<name>]` | table of tables | no | none | Function-to-scenario mapping consumed only by `--derive-limits`. See [below](#scenariosnamemapping-functions-to-derived-scenario-limits). |
+| `[functions.<name>]` | table of tables | no | none | Per-function configuration. See [below](#functionsnameper-function-configuration). |
+| `[retry]` | table | no | built-in defaults | Retry policy for deploy / invoke-build / simulate RPC calls. See [below](#retrytransient-failure-retry-policy). |
+
+**Unknown top-level keys and sections are silently accepted.** This is deliberate: `[lints]` (for soroban-cost-linter) and other foreign sections let two tools share one `budget.toml`. Note the asymmetry with `[functions.*]`, where unknown keys are a hard error.
+
+### Value precedence
+
+Where a value can come from more than one place, this is the exact order the resolver applies:
+
+| Value | 1st choice | 2nd choice | Fallback |
+|---|---|---|---|
+| Network | `--network` flag | `network` key | fatal error naming the field |
+| Source identity | `--source` flag | `source` key | fatal error naming the field |
+| Baseline tolerance | per-function `tolerance`¹ | `--tolerance` flag | `tolerance` key, then `0.10` |
+| Derive margins | all four `--margin-*` flags² | complete `[margin]` block | fatal error ("no margin supplied") |
+| Retry policy | `--max-retry-attempts` / `--retry-backoff-secs` | `[retry]` block | defaults (4 attempts, 2 s) |
+
+1. The per-function override is the one place where file configuration outranks a command-line flag: during `--check-baseline`, a function's own `tolerance` beats even `--tolerance`.
+2. Margin flags are all-or-nothing: supplying any subset of the four flags is an error listing the missing ones; there is never a mix of CLI and file margins.
+
+`cargo budget-report` reads **no environment variables** as configuration input. Environment variables appear on the output side only: `--derive-limits` writes `KEY=VALUE` pairs into `tier-a-limits.env` for the Tier A test macros to consume at test time.
+
+### `functions.<name>`: per-function configuration
+
+The section key `<name>` must match the **exported WASM function name exactly** (case-sensitive). Names are not package-qualified: if two contracts export the same function name, the single entry applies to both simulations.
+
+| Field | Type | Required | Default | Effect |
+|---|---|---|---|---|
+| `args` | array of strings | no | `[]` | Forwarded verbatim after the `--` separator to `stellar contract invoke -- <fn> <args>`. Functions without an entry are simulated with no arguments. |
+| `cpu_limit` | integer (u64) | no | none | Inclusive upper bound on the measured `CPU Instructions` metric in `--check` mode. |
+| `read_limit` | integer (u64) | no | none | Inclusive upper bound on `Read Bytes`. |
+| `write_limit` | integer (u64) | no | none | Inclusive upper bound on `Write Bytes`. |
+| `tolerance` | number (fraction) | no | global tolerance | Per-function regression-tolerance override applied during `--check-baseline`. Takes precedence over `--tolerance`. |
+
+- A missing `*_limit` field means that metric is **reported but not enforced**.
+- Limits are inclusive: a measurement equal to the limit passes.
+- There is deliberately no limit field for `WASM Bytes` — binary size is reported but can never be enforced through this file.
+- **Unknown keys inside a `[functions.*]` block produce a parse error** (e.g. a typo like `cpu_lmit` fails the run instead of silently doing nothing).
+- Under `--check`, a configured function whose *simulation fails* counts as a check failure even when none of its limits are set, so a broken invocation cannot masquerade as a pass.
+
+{% hint style="warning" %}
+A `[functions.<name>]` entry whose name does not match any exported function of any workspace package is **silently ignored** — no warning, no error, nothing measured. This is the file's main trap: a typo in a function name looks identical to a function you chose not to configure. Cross-check names against the export list (e.g. `stellar contract invoke --help` output or a passing report row) when limits mysteriously fail to apply.
+{% endhint %}
+
+### What happens when a listed function or package does not exist
+
+Simulation is driven by what the workspace *exports*, not by what the file declares:
+
+1. Every workspace package with a `cdylib` target is built for `wasm32` and deployed.
+2. Every exported function (excluding names starting with `_` and the `memory` export) is simulated — with its `[functions.*]` entry if one exists, without arguments otherwise.
+3. Config entries are then looked up by name. Consequences:
+   - An entry for a function absent from every package's exports is **ignored silently** (see the warning above).
+   - A package cannot be "listed" in `budget.toml` at all — there is no per-package section. Packages are discovered from `cargo metadata`, and removing or renaming a package needs no config change; renaming an exported *function*, however, orphans its entry silently.
+   - Because entries are keyed by bare function name, one entry fans out to every package exporting that name.
+
+### `margin`: deriving Tier A limits
+
+Consumed only by `cargo budget-report --derive-limits`; ignored by every other mode.
+
+| Field | Type | Required | Default | Effect |
+|---|---|---|---|---|
+| `cpu_margin` | number | see note | none | Multiplier applied to Tier B CPU values. |
+| `memory_margin` | number | see note | none | Multiplier applied to Tier B memory values. |
+| `read_margin` | number | see note | none | Multiplier applied to Tier B read-bytes values. |
+| `write_margin` | number | see note | none | Multiplier applied to Tier B write-bytes values. |
+
+Each field is individually optional *at parse time*, but the block is usable only when **complete**: if no `--margin-*` flags are given, an incomplete `[margin]` block produces the same `no margin supplied` error as no block at all. All four values must be finite and `>= 1.0`; a sub-1.0 margin would tighten the limit below the measured Tier B value and is rejected. No default is ever picked silently — margins are treated as audit-trail data.
+
+### `scenarios.<name>`: mapping functions to derived scenario limits
+
+Consumed only by `--derive-limits`. Each scenario sums the Tier B values of its component functions into a single Tier A limit under one environment-variable key.
+
+| Field | Type | Required | Default | Effect |
+|---|---|---|---|---|
+| `package` | string | effectively yes | `""` | Package namespace of the scenario. The derived env-var key is `<package>::<name>`; omitting `package` yields `::<name>`, which will not line up with a test annotation. |
+| `functions` | array of strings | no | `[]` | Exported function names whose Tier B values are summed into the scenario's Tier A limit. |
+
+Syntax is `[scenarios.<name>]` — a table of tables — despite some doc comments spelling it `[[scenarios.<name>]]`.
+
+### `retry`: transient-failure retry policy
+
+Controls how many times deploy, invoke-build, and the simulate RPC call are retried on plausibly transient failures (rate limits, connection errors, 5xx blips). Deterministic errors (missing contract, malformed XDR, simulation errors) are never retried.
+
+| Field | Type | Required | Default | CLI override | Effect |
+|---|---|---|---|---|---|
+| `max_attempts` | integer (u32) | no | `4` | `--max-retry-attempts` | Total attempts including the first. `1` disables retry; `0` is rejected. |
+| `initial_backoff_secs` | integer (u64) | no | `2` | `--retry-backoff-secs` | Delay before the first retry; doubles each further attempt. |
+
+Unlike `[margin]`, a partial `[retry]` block is fine: each missing field keeps its default independently. Worst-case sleep per call site is `initial_backoff_secs × (2^(max_attempts − 1) − 1)` — 14 s with the defaults.
+
+### Worked example: minimal
+
+```toml
+network = "testnet"
+source = "alice"
+```
+
+With just these two lines (or the equivalent `--network` / `--source` flags), every exported function of every cdylib workspace package is simulated with no arguments and reported; nothing is enforced and baseline comparisons use the default 10% tolerance. Omitting both keys is also valid if they are supplied as flags.
+
+### Worked example: realistic multi-package setup
+
+```toml
+network = "testnet"
+source = "alice"
+
+# Regression gate for --check-baseline: allow up to 10% growth unless a
+# function overrides it below.
+tolerance = 0.10
+
+# -- AMM pool ------------------------------------------------------------
+[functions.initialize]
+args = ["--admin", "alice", "--fee-bps", "30"]
+cpu_limit = 5000000
+write_limit = 1000
+
+[functions.deposit]
+args = ["--amount", "10000000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
+tolerance = 0.05        # hot path: tighter regression budget than the global 10%
+
+[functions.swap]
+args = ["--amount", "1000000", "--min-out", "900000"]
+cpu_limit = 8000000
+read_limit = 8000
+write_limit = 1200
+
+[functions.withdraw]
+args = ["--amount", "10000000"]
+
+# -- Synthetic baseline (exercises loops + instance storage) --------------
+[functions.do_expensive_work]
+args = ["--n", "10000"]
+cpu_limit = 5000000
+read_limit = 5000
+write_limit = 1000
+
+# -- Tier A derivation (only consulted by --derive-limits) -----------------
+[margin]
+cpu_margin    = 1.50   # 50% headroom over Tier B CPU ceiling
+memory_margin = 1.25   # 25% headroom over Tier B memory ceiling
+read_margin   = 2.00   # 100% headroom over Tier B read-bytes ceiling
+write_margin  = 3.00   # 200% headroom over Tier B write-bytes ceiling
+
+# deposit + swap + withdraw summed into one Tier A limit for tests that
+# exercise the whole workflow in a single assertion. The derived env var
+# will be named amm-pool-contract::full_workflow.
+[scenarios.full_workflow]
+package = "amm-pool-contract"
+functions = ["deposit", "swap", "withdraw"]
+
+# -- Network retry policy ---------------------------------------------------
+[retry]
+max_attempts = 4
+initial_backoff_secs = 2
+
+# -- Foreign section: consumed by soroban-cost-linter, ignored here ---------
+[lints]
+complexity = "warn"
+```
+
+Effects of this file:
+
+- `withdraw` has an entry but no `*_limit` fields, so its metrics are reported and it participates in `--check`'s fail-on-simulation-error rule, but no metric is enforced.
+- If `amm-pool-contract` were renamed tomorrow, every section above would keep working unchanged except `[scenarios.full_workflow]`, whose `package` value must match the annotation used by Tier A tests.
+- If `initialize` had been misspelled (e.g. `[functions.initialise]`), nothing would error and nothing would fail: the orphaned entry would be ignored, `initialize` would run unconfigured with no arguments, and none of its metrics would be enforced — the only symptom is missing rows in a later report.
