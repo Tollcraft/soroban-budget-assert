@@ -1175,6 +1175,72 @@ fn is_leap(y: u64) -> bool {
     (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
+/// The transport a run uses, chosen by CLI flags.
+///
+/// `--replay <path>` serves every deploy/invoke/simulate response from a
+/// recorded fixture, so the whole pipeline runs with no `stellar` CLI,
+/// `curl`, or network access. `--record <path>` wraps the live transport
+/// and captures every response so a later run can be replayed. Without
+/// either flag, runs use [`live::LiveTransport`] directly.
+enum TransportKind {
+    Live(live::LiveTransport),
+    Recording(record::RecordingTransport<live::LiveTransport>),
+    Replay(replay::ReplayTransport),
+}
+
+impl transport::Transport for TransportKind {
+    fn deploy_contract(
+        &mut self,
+        wasm_path: &Path,
+        source: &str,
+        network: &str,
+        package_name: &str,
+    ) -> anyhow::Result<String> {
+        match self {
+            TransportKind::Live(t) => t.deploy_contract(wasm_path, source, network, package_name),
+            TransportKind::Recording(t) => {
+                t.deploy_contract(wasm_path, source, network, package_name)
+            }
+            TransportKind::Replay(t) => t.deploy_contract(wasm_path, source, network, package_name),
+        }
+    }
+
+    fn build_invoke_xdr(
+        &mut self,
+        contract_id: &str,
+        source: &str,
+        network: &str,
+        function: &str,
+        func_args: &[String],
+        package: &str,
+    ) -> anyhow::Result<String> {
+        match self {
+            TransportKind::Live(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+            TransportKind::Recording(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+            TransportKind::Replay(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+        }
+    }
+
+    fn simulate_transaction(
+        &mut self,
+        b64_xdr: &str,
+        package: &str,
+        function: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        match self {
+            TransportKind::Live(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Recording(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Replay(t) => t.simulate_transaction(b64_xdr, package, function),
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let CargoCli::BudgetReport(args) = CargoCli::parse();
 
@@ -1196,7 +1262,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ── Preflight environment checks ──────────────────────────────────
-    run_preflight_checks(args.quiet)?;
+    // Replay runs serve every network call from a fixture, so they need
+    // neither the `stellar` CLI nor `curl`; skip the checks entirely.
+    if args.replay.is_none() {
+        run_preflight_checks(args.quiet)?;
+    }
 
     let toml_config = load_budget_toml("budget.toml")?;
     let default_tolerance = resolve_tolerance(args.tolerance.as_deref(), &toml_config)
@@ -1243,10 +1313,22 @@ fn main() -> anyhow::Result<()> {
     let build_profile = args.profile.as_deref().unwrap_or("release");
 
     // All network interaction happens through the transport. Production runs
-    // use `LiveTransport` (which owns the retry policy); `ReplayTransport`
-    // (fed by `RecordingTransport`) is available to tests and a follow-up
-    // CLI flag.
-    let mut transport = live::LiveTransport::new(retry_config, args.quiet);
+    // use `LiveTransport` (which owns the retry policy); `--record` wraps it
+    // in a `RecordingTransport` that captures every response, and `--replay`
+    // serves responses back from a recorded fixture with no network at all.
+    let mut transport = if let Some(replay_path) = &args.replay {
+        TransportKind::Replay(replay::ReplayTransport::new(
+            fixture::FixtureFile::load(replay_path)
+                .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
+        ))
+    } else if args.record.is_some() {
+        TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
+            retry_config,
+            args.quiet,
+        )))
+    } else {
+        TransportKind::Live(live::LiveTransport::new(retry_config, args.quiet))
+    };
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -1429,7 +1511,9 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // ── Optional Stellar CLI validation ──────────────
-                    if args.validate {
+                    // `--validate` shells out to `stellar xdr decode`, which
+                    // replay mode cannot assume exists; skip it there.
+                    if args.validate && args.replay.is_none() {
                         let v_result = validate::validate_metrics(
                             &transaction_data_xdr,
                             instructions,
@@ -1499,6 +1583,23 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+        }
+    }
+
+    // Persist the recorded fixture when `--record` was requested, so the
+    // run can be reproduced offline with `--replay`.
+    if let Some(path) = &args.record {
+        match transport {
+            TransportKind::Recording(recording) => {
+                recording
+                    .into_fixture()
+                    .save(path)
+                    .with_context(|| format!("failed to save fixture to {}", path))?;
+                if !args.quiet {
+                    eprintln!("Recorded fixture to {}", path);
+                }
+            }
+            _ => unreachable!("--record always constructs a RecordingTransport"),
         }
     }
 
@@ -2292,6 +2393,8 @@ mod tests {
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2322,6 +2425,8 @@ mod tests {
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2352,6 +2457,8 @@ mod tests {
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2385,6 +2492,8 @@ mod tests {
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,

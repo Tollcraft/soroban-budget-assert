@@ -336,10 +336,12 @@ cargo budget-report [--network <network>] [--source <source>] [--json] [--check]
 | `--json` | no | Emit the report as pretty-printed JSON instead of a table |
 | `--html` | no | Emit the report as a single self-contained HTML page — no external CSS, scripts, or fonts, so it renders from a `file://` URL and from a downloaded CI artifact. Rows mirror the JSON output; with `--check` each row also shows its limit and pass/fail status |
 | `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
+| `--record <PATH>` | no | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` reproduce the same report offline. Mutually exclusive with `--replay` |
+| `--replay <PATH>` | no | Replay a run from a fixture written by `--record`. The whole pipeline runs offline — no `stellar` CLI, no `curl`, no network access — and the report is byte-identical to the recorded run. Mutually exclusive with `--record` |
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
-External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32-unknown-unknown` Rust target installed.
+External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32-unknown-unknown` Rust target installed. `--replay` is the exception — it needs none of the network tooling (no `stellar`, no `curl`), only the workspace itself.
 
 ### Required release profile for comparable measurements
 

@@ -573,3 +573,79 @@ fn permanent_invoke_build_failure_is_not_retried() {
         "the underlying deterministic error should surface, got: {stderr:?}"
     );
 }
+
+// ── Record / replay transport integration tests ─────────────────────────
+
+#[test]
+fn record_then_replay_produces_identical_report() {
+    let workspace = setup_mock_workspace();
+    let fixture_path = workspace.path().join("fixture.json");
+
+    // First run records every transport response into the fixture. It runs
+    // against the fake stellar/curl scripts like the other tests.
+    let record = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--record",
+            fixture_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let recorded_stdout = String::from_utf8_lossy(&record.stdout);
+    assert!(
+        recorded_stdout.contains("WORKSPACE BUDGET REPORT"),
+        "recorded run should produce a report, got: {recorded_stdout}"
+    );
+
+    // The fixture must exist and contain the expected entry keys.
+    let fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&fixture_path).expect("fixture should be written"))
+            .expect("fixture should be valid JSON");
+    assert_eq!(fixture["fixture_version"], 1);
+    let entries = fixture["entries"]
+        .as_object()
+        .expect("fixture should have an entries object");
+    assert!(
+        entries.keys().any(|k| k.starts_with("deploy:")),
+        "fixture should contain deploy entries, got keys: {:?}",
+        entries.keys()
+    );
+    assert!(
+        entries.keys().any(|k| k.starts_with("simulate:")),
+        "fixture should contain simulate entries, got keys: {:?}",
+        entries.keys()
+    );
+
+    // Replay with a PATH that excludes the fake stellar/curl scripts: the
+    // whole pipeline must run with no `stellar` CLI and no `curl` at all.
+    let mut replay_cmd = Command::cargo_bin("cargo-budget-report").expect("binary should be built");
+    replay_cmd
+        .current_dir(workspace.path())
+        .env("PATH", std::env::var("PATH").unwrap_or_default());
+    let replay = replay_cmd
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--replay",
+            fixture_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let replayed_stdout = String::from_utf8_lossy(&replay.stdout);
+
+    assert_eq!(
+        recorded_stdout, replayed_stdout,
+        "replaying the fixture must reproduce the recorded report byte-for-byte"
+    );
+}

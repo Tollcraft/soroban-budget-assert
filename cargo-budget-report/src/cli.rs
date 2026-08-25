@@ -165,4 +165,21 @@ pub struct BudgetReportArgs {
     /// `--check` mode rows also show their limit and pass/fail status.
     #[arg(long, default_value_t = false)]
     pub html: bool,
+
+    /// Record every transport response (deploy, invoke-build, and
+    /// simulate RPC) into a replayable fixture file at this path.
+    ///
+    /// The run itself still talks to the network; the fixture it writes
+    /// lets a later `--replay` run reproduce the same report offline.
+    #[arg(long, value_name = "PATH", conflicts_with = "replay")]
+    pub record: Option<String>,
+
+    /// Replay a run from a fixture file written by `--record`.
+    ///
+    /// The whole report pipeline runs offline: no `stellar` CLI, no
+    /// `curl`, no network access. Deploy, invoke-build and simulate RPC
+    /// responses are served from the fixture. `--record` and `--replay`
+    /// are mutually exclusive.
+    #[arg(long, value_name = "PATH", conflicts_with = "record")]
+    pub replay: Option<String>,
 }
