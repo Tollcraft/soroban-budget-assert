@@ -260,16 +260,19 @@ network = "testnet"
 source = "bob"  # changed from "alice"
 ```
 
-**Reset the local environment** (use when cache or configuration is stale):
+**Reset the local environment** (use when a stale WASM build produces confusing numbers):
+
+`cargo budget-report` keeps no cache of its own — every run rebuilds the WASM and deploys it from scratch, so there are no cached deploy artifacts to remove. The only stale state that can affect results is the Cargo build output in `target/`, which Cargo normally rebuilds incrementally and correctly. If you want a guaranteed-clean run anyway:
 
 ```bash
-# Remove the cached deploy artifacts
-rm -f .budget-cache.toml
+# Force a from-scratch WASM build (removes all build output)
+cargo clean
 
 # Rebuild and re-deploy
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo budget-report
 ```
+
+A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32-unknown-unknown` if you only want to invalidate the WASM artifacts. Note that each `cargo budget-report` run deploys a *new* contract instance on the target network; previously deployed contract IDs are not tracked or reused, so there is nothing to reset on that side.
 
 ### Best practices
 
