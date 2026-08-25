@@ -30,7 +30,9 @@ Include budget validation whenever the contract source, the release profile, or 
 
 ## GitHub Actions Example
 
-The following workflow runs both tiers of budget validation in a single CI pipeline. It is the same workflow this repository uses on every push and pull request.
+The following workflow runs both tiers of budget validation in a single CI pipeline. It implements the same pattern this repository's own `.github/workflows/budget.yml` is built around: **Tier A runs everywhere and needs no secrets; Tier B runs only where secrets exist.** Our shipped file is currently a deliberately reduced case of that pattern — its Tier B step emits placeholder JSON so the job stays green without testnet configuration (see [the fork-safe section](#fork-safe-fallback-for-tier-b) and the [tutorial](ci_tutorial.md#the-fork-pr-constraint-plan-for-secrets-before-you-write-yaml) for why). The example below shows the full destination pattern.
+
+The fork-PR constraint this structure works around: GitHub withholds repository secrets from `pull_request` runs opened from forks, which is where every external contribution arrives. Any ungated step that consumes `secrets.*` fails on exactly those PRs while staying green on maintainer pushes.
 
 ### Example Workflow File
 
@@ -54,14 +56,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85.0
+          toolchain: 1.93.0
           targets: wasm32v1-none wasm32-unknown-unknown
 
       - name: Cache Rust Dependencies
@@ -70,15 +72,20 @@ jobs:
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+      # Everything below that touches the network or a secret is gated on
+      # push events: secrets are withheld from pull_request runs opened from
+      # forks, where every external contribution comes from.
       - name: Install Stellar CLI
+        if: github.event_name == 'push'
         run: |
           curl -sL https://github.com/stellar/stellar-cli/releases/download/v21.5.3/stellar-cli-21.5.3-x86_64-unknown-linux-gnu.tar.gz | tar -xz
           mv stellar ~/.cargo/bin/
 
       - name: Configure Stellar Identity
-        run: stellar keys add alice --secret-key "${{ secrets.ALICE_SECRET_KEY }}"
+        if: github.event_name == 'push'
         env:
-          STELLAR_ACCOUNT: alice
+          ALICE_SECRET_KEY: ${{ secrets.ALICE_SECRET_KEY }}
+        run: stellar keys add alice --secret-key "$ALICE_SECRET_KEY"
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -93,15 +100,33 @@ jobs:
         run: cargo test --workspace
 
       - name: Run Budget Report (Tier B)
+        if: github.event_name == 'push'
+        run: cargo run --bin cargo-budget-report -- budget-report --json --validate > current_report.json
+
+      - name: Write Placeholder Report (fork PR)
+        if: github.event_name != 'push'
         run: |
-          cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
+          # Fork PRs have no testnet identity; emit placeholder rows so the
+          # summary/artifact steps below still find a file. Synthetic values —
+          # never feed these into history or enforcement.
+          echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
 
       - name: Publish Step Summary
+        if: hashFiles('current_report.json') != ''
         run: |
-          cargo run --bin cargo-budget-report -- budget-report >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "# Workspace Budget Report (${{ github.sha }})"
+            echo ""
+            echo "| Package | Function | Metric | Value |"
+            echo "|---------|----------|--------|-------|"
+            jq -r '.[] | "| \(.package) | \(.function) | \(.metric) | \(.value) |"' current_report.json
+            echo ""
+            echo "---"
+            echo "_Simulated resource amounts, not fees._"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Budget Report
-        uses: actions/upload-artifact@v4.2.0
+        uses: actions/upload-artifact@v7
         with:
           name: budget-report
           path: current_report.json
@@ -112,11 +137,11 @@ jobs:
 
 ## Explanation of Each Step
 
-### `actions/checkout@v4`
+### `actions/checkout@v7`
 Checks out the repository so subsequent steps have access to the source code. `fetch-depth: 0` ensures full Git history is available for operations like commit comparison and `record-history`.
 
 ### `dtolnay/rust-toolchain`
-Installs the Rust toolchain pinned to the version in your `rust-toolchain.toml`. The `targets` argument installs `wasm32v1-none` (Soroban target) and `wasm32-unknown-unknown` (fallback target). The toolchain version must match the one in `rust-toolchain.toml` or you may get cryptic build errors.
+Installs the Rust toolchain pinned to the version you measure with locally. The `targets` argument installs `wasm32v1-none` (Soroban target) and `wasm32-unknown-unknown` (fallback target). Keep the pin aligned with the `channel` in your `rust-toolchain.toml`, or local and CI numbers will drift apart.
 
 ### `Swatinem/rust-cache`
 Caches compiled Rust dependencies between runs. Speeds up subsequent workflow executions significantly. The cache key is derived from `Cargo.lock` and the toolchain version, so it invalidates automatically when dependencies change.
@@ -125,10 +150,10 @@ Caches compiled Rust dependencies between runs. Speeds up subsequent workflow ex
 Installs `libdbus-1-dev`, `pkg-config`, and `libudev-dev`. These are required by the Soroban SDK's system dependencies on Linux. Without them, `cargo build` fails with linker errors.
 
 ### Install Stellar CLI
-Downloads and installs the prebuilt `stellar` CLI binary. The workflow uses a tarball rather than `cargo install` to avoid a multi-minute Rust build. The version must match the SDK version this project's contracts were built against.
+Downloads and installs the prebuilt `stellar` CLI binary. The workflow uses a tarball rather than `cargo install` to avoid a multi-minute Rust build. The step is gated on `github.event_name == 'push'`: fork PRs cannot reach testnet anyway (no secrets), so there is no reason to pay for the download — or to fail it when the release tarball moves — on contributor runs. Bump the pinned version when you upgrade the SDK.
 
 ### Configure Stellar Identity
-Imports the testnet secret key as a Stellar CLI identity named `alice`. This identity is used by `cargo budget-report` to deploy and invoke contracts on testnet. The secret key is stored as a GitHub Actions secret (`ALICE_SECRET_KEY`).
+Imports the testnet secret key as a Stellar CLI identity named `alice`. This identity is used by `cargo budget-report` to deploy and invoke contracts on testnet. The identity name must match the `source` field in your `budget.toml`. The secret key arrives through an `env:` mapping from the GitHub Actions secret (`ALICE_SECRET_KEY`) and is referenced as `"$ALICE_SECRET_KEY"` inside the script — do not interpolate `${{ secrets.* }}` directly into `run:` lines or echo the variable. Like every secret-consuming step, this one carries the push-event gate: fork PRs receive no secrets and would fail here otherwise.
 
 ### Check formatting
 Runs `cargo fmt --all -- --check` to verify code formatting. Fails the build if the code does not match the repository's `rustfmt.toml` configuration. This enforces consistent code style across all contributors.
@@ -147,14 +172,16 @@ Use `cargo build -p <your-package> --release --target wasm32v1-none` for a singl
 Runs `cargo test --workspace` to execute all tests, including those annotated with `#[budget_cpu_lt]` and `#[budget_mem_lt]`. This is the fast, local, CI-blocking gate: if a function's measured CPU or memory exceeds its pinned limit, the test fails with the exact metric and limit in the output.
 
 ### Run Budget Report (Tier B)
-Runs `cargo run --bin cargo-budget-report -- budget-report --json` to produce a network-verified resource cost report. The JSON output is saved to `current_report.json`. This step deploys the contract WASM to testnet and simulates each configured function, returning the real resource costs.
+Runs `cargo run --bin cargo-budget-report -- budget-report --json --validate` to produce a network-verified resource cost report. The JSON output is saved to `current_report.json`. This step deploys the contract WASM to testnet and simulates each configured function, returning the real resource costs. The step is gated on `github.event_name == 'push'`, so only runs that actually have the testnet identity available pay the network cost.
 
-The `--json` flag produces machine-readable output suitable for artifact upload and further processing. Use `--check` to enforce limits configured in `budget.toml`.
+The `--json` flag produces machine-readable output suitable for artifact upload, step-summary rendering, and further processing. `--validate` cross-checks reported metrics against the Stellar CLI's own XDR decoder. Use `--check` to enforce limits configured in `budget.toml`.
+
+On fork PRs — where this step is skipped — a sibling step writes placeholder rows to the same path so the summary and artifact steps still find a file. Placeholder values are synthetic: never let them feed cost history or limit enforcement.
 
 ### Publish Step Summary
-Runs `cargo run --bin cargo-budget-report -- budget-report` and appends the plain-text budget table (the default output) to `$GITHUB_STEP_SUMMARY`. The table appears inline on the workflow run page and, on pull requests, in the PR's Summary section. This makes the budget data visible without downloading an artifact.
+Appends a GitHub-flavored Markdown table built from `current_report.json` to `$GITHUB_STEP_SUMMARY`. The table appears inline on the workflow run page and is surfaced with the check on pull requests, making the budget data visible without downloading an artifact. The `jq` filter emits one pipe-table row per JSON entry (`package`, `function`, `metric`, `value`). The step is guarded by `hashFiles('current_report.json') != ''` so it no-ops cleanly if Tier B was skipped and no fallback ran.
 
-> Note: the previously documented `--format md` flag does not exist. Output selection is done with the `--json` and `--csv` booleans; when neither is passed the tool emits a plain-text table to stdout. A Markdown renderer exists in `cargo-budget-report/src/markdown.rs` (`format_markdown_table` / `MarkdownReportRow`) but is not yet wired to a CLI flag and only models a narrow row shape (`name`, `cpu_cost`, `memory_cost`, `passed`), so it cannot represent the full report today. Adding `--format md` is tracked as a separate feature request (see PR discussion / issue).
+> **Note:** A native Markdown output mode for `cargo budget-report` itself is planned but not shipped yet; piping the tool's plain-text table into the summary does not render correctly (GitHub expects Markdown). Build the pipe table with `jq` as shown.
 
 ### Upload Budget Report
 Uploads `current_report.json` as a workflow artifact named `budget-report`. The artifact can be downloaded from the run page for manual inspection or downstream processing (e.g., the cost-over-time dashboard's `record-history` job).
@@ -170,7 +197,7 @@ If your project supports multiple Rust toolchains, use a build matrix:
 ```yaml
 strategy:
   matrix:
-    toolchain: ["1.85.0", "stable"]
+    toolchain: ["1.93.0", "stable"]
 
 steps:
   - name: Install Rust
@@ -219,19 +246,27 @@ Add the Tier B steps when you need network-verified cost measurements and have c
 
 ### Fork-safe fallback for Tier B
 
-Pull requests from forks do not have access to repository secrets. To keep the workflow green on fork PRs while still running Tier B on push events, split the report step:
+Pull requests from forks do not have access to repository secrets — GitHub withholds them by design, because the PR author is untrusted. This is why every secret-consuming step in the example above (CLI install, identity import, Tier B report) is gated on `github.event_name == 'push'`, and why a placeholder-writing sibling covers fork PRs so downstream steps still find `current_report.json`.
+
+The minimal shape of the split:
 
 ```yaml
 - name: Run Budget Report (push)
   if: github.event_name == 'push'
-  env:
-    ALICE_SECRET_KEY: ${{ secrets.ALICE_SECRET_KEY }}
-  run: cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
+  run: cargo run --bin cargo-budget-report -- budget-report --json --validate > current_report.json
 
 - name: Run Budget Report (fork / pull request)
   if: github.event_name != 'push'
   run: echo '[{"package":"your-contract","function":"your_function","metric":"CPU Instructions","value":0}]' > current_report.json
 ```
+
+Rules for the placeholder path:
+
+- Label it loudly (step name and comment) so nobody mistakes synthetic rows for measurements.
+- Never feed placeholder output into cost history (`record-history`-style jobs) or `--check` enforcement; gate anything durable on the push event regardless.
+- The simpler alternative is to skip Tier B on fork PRs entirely (no sibling step) and guard consumers with `if: hashFiles('current_report.json') != ''`. Use that when you do not need an artifact from every run.
+
+This repo's own workflow hit the failure mode before it was documented: gating the job on a secret the job did not need made every contributor PR red, and the fix (dropping the testnet steps entirely until they are reinstated behind event gates) is recorded in a comment in `.github/workflows/budget.yml`. The [End-to-End CI Tutorial](ci_tutorial.md#the-fork-pr-constraint-plan-for-secrets-before-you-write-yaml) covers the constraint in depth.
 
 ---
 
