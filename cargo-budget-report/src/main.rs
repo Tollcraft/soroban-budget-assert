@@ -2,6 +2,7 @@ use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
 use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
 use anyhow::Context;
+mod arg_spec;
 mod cli;
 mod compare;
 mod fixture;
@@ -378,7 +379,7 @@ impl TransactionData {
 #[serde(deny_unknown_fields)]
 pub(crate) struct FunctionConfig {
     #[serde(default)]
-    args: Vec<String>,
+    args: Vec<arg_spec::ArgSpec>,
     /// Inclusive upper bound on the measured CPU `Instructions` metric. `None`
     /// means this metric is reported but not enforced by `--check`.
     #[serde(default)]
@@ -1627,7 +1628,11 @@ fn main() -> anyhow::Result<()> {
             }
 
             let func_config = toml_config.functions.get(&function);
-            let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
+            let func_args = match func_config {
+                Some(cfg) => arg_spec::render_args(&cfg.args, &function)
+                    .map_err(|e| Error::Message(format!("{e:#}")))?,
+                None => Vec::new(),
+            };
 
             match simulate_function(
                 &mut transport,

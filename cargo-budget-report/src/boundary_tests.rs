@@ -425,7 +425,10 @@ args = [""]
 
         let config = load_budget_toml(tmp.path()).expect("empty string arg should parse");
         let func = &config.functions["weird"];
-        assert_eq!(func.args, vec!["".to_string()]);
+        assert_eq!(
+            func.args,
+            vec![crate::arg_spec::ArgSpec::Raw(String::new())]
+        );
     }
 
     // ── build_invoke_args zero-length / boundary tests ─────────────────

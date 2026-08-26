@@ -528,7 +528,10 @@ fn run_measurement_pass(
             }
 
             let func_config = toml_config.functions.get(&function);
-            let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
+            let func_args = match func_config {
+                Some(cfg) => crate::arg_spec::render_args(&cfg.args, &function)?,
+                None => Vec::new(),
+            };
 
             match crate::simulate_function(
                 &mut transport,

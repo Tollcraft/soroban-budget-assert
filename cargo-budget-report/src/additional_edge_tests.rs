@@ -343,7 +343,13 @@ cpu_limit = 5000000
         std::fs::write(tmp.path(), content).unwrap();
         let config = load_budget_toml(tmp.path()).expect("should parse args correctly");
         let func = config.functions.get("do_work").unwrap();
-        assert_eq!(func.args, vec!["--n", "10000", "--flag"]);
+        assert_eq!(
+            func.args,
+            ["--n", "10000", "--flag"]
+                .into_iter()
+                .map(|s| crate::arg_spec::ArgSpec::Raw(s.to_string()))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(func.cpu_limit, Some(5_000_000));
         assert!(func.read_limit.is_none());
         assert!(func.write_limit.is_none());
