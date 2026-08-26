@@ -194,7 +194,7 @@ To reproduce this measurement:
 4. Deploy the WASM to Soroban testnet and run `cargo run --bin cargo-budget-report -- --network testnet`.
 5. Read `Memory Bytes` from the per-function row in the resulting report (or from `--json` output), and update the `Network mem` column.
 6. Compute delta = `(local − network) / network` and add it to the table.
-The host-function row uses a separate fixture that performs 1,000 calls to `env.ledger().sequence()`. It does not perform storage operations, so the reported values isolate the repeated host-function-call workload. The local estimate was obtained from the WASM-registered contract's `cost_estimate().budget()`, and the network figure was obtained from the corresponding testnet `simulateTransaction` response.
+The host-function row uses the dedicated [`host-function-contract`](host-function-contract/README.md) fixture crate that performs 1,000 calls to `env.ledger().sequence()`. It does not perform storage operations or compute loops, so the reported values isolate the repeated host-function-call workload from other billing components. The local estimate was obtained from the WASM-registered contract's `cost_estimate().budget()`, and the network figure was obtained from the corresponding testnet `simulateTransaction` response. For build and reproduction instructions, see [`host-function-contract/README.md`](host-function-contract/README.md).
 | VM-instruction-only (WASM) | 689,312 | 634,912 | +8.6% | `amm-pool-contract::do_vm_instruction_work(10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
 
 The native Rust row is included solely to illustrate that native estimates are unreliable for budget decisions. Only WASM-mode estimates should be used for assertions.

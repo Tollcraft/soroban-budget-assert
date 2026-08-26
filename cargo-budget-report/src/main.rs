@@ -1170,7 +1170,7 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
     } else {
         match toml_config
             .margin
-            .and_then(|m| if m.is_complete() { Some(m) } else { None })
+            .filter(|m| m.is_complete())
         {
             Some(m) => m.into_margin()?,
             None => {
