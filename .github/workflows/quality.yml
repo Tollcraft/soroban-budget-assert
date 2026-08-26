@@ -37,6 +37,12 @@ jobs:
         # clippy/tests report success on them by never looking at them
         # (issue #451).
         run: scripts/check-module-reachability.sh
+      - name: Check CLI docs are up to date
+        # Fail if a flag added to cargo-budget-report/src/cli.rs has no
+        # mention at all in docs/src/reference.md. The reference used to
+        # cover only a fraction of the CLI's flags with nothing stopping
+        # the gap from reopening as flags were added (issue #434).
+        run: scripts/check-cli-docs.sh
       - name: Check for unused dependencies
         run: |
           cargo install cargo-machete --version 0.6.2 --locked
