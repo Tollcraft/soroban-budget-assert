@@ -182,4 +182,26 @@ pub struct BudgetReportArgs {
     /// are mutually exclusive.
     #[arg(long, value_name = "PATH", conflicts_with = "record")]
     pub replay: Option<String>,
+
+    /// When to colourise the plain-text `--check` report.
+    ///
+    /// Breaching rows are rendered red so they stand out when scanning a
+    /// mixed pass/fail table. The status is also carried as plain text
+    /// (`PASS`/`FAIL` markers), so no information is lost when colour is
+    /// disabled. CSV, JSON, and HTML output are never coloured.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
+}
+
+/// Colour policy for the plain-text `--check` output.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorChoice {
+    /// Colour only when stdout is a terminal and `NO_COLOR` is unset or
+    /// empty (the no-color.org convention).
+    #[default]
+    Auto,
+    /// Always emit colour, even into pipes and files.
+    Always,
+    /// Never emit colour.
+    Never,
 }

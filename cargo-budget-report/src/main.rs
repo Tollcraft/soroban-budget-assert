@@ -1,4 +1,4 @@
-use crate::cli::{BudgetReportArgs, CargoCli};
+use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
 use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
 use anyhow::Context;
@@ -19,11 +19,15 @@ use compare::{
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
+use tabled::settings::object::Rows;
+use tabled::settings::Color as TabledColor;
+use tabled::settings::Modify;
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
@@ -441,6 +445,133 @@ struct TableCostReport {
     function: String,
     metric: &'static str,
     value: String,
+}
+
+/// A `CostReport` row for the plain-text table in `--check` mode.
+///
+/// Extends the default table with the configured limit and a textual
+/// pass/fail marker, so a breaching row stays identifiable without any
+/// colour at all (log files, colour-blind readers, terminals without
+/// ANSI support). Colour, when enabled, is applied on top of these text
+/// markers and never replaces them.
+#[derive(Tabled)]
+struct CheckTableCostReport {
+    package: String,
+    function: String,
+    metric: &'static str,
+    value: String,
+    limit: String,
+    check: &'static str,
+}
+
+/// True when the no-color.org convention applies: `NO_COLOR` is present
+/// with a non-empty value. Any other value (unset, empty) means colour
+/// is permitted.
+fn no_color_requested_from(no_color_env: Option<&std::ffi::OsStr>) -> bool {
+    match no_color_env {
+        Some(value) => !value.is_empty(),
+        None => false,
+    }
+}
+
+fn no_color_requested() -> bool {
+    no_color_requested_from(std::env::var_os("NO_COLOR").as_deref())
+}
+
+/// Pure decision core for [`color_enabled`], kept free of environment
+/// and terminal access so it can be unit-tested exhaustively.
+fn color_enabled_with(
+    choice: ColorChoice,
+    no_color_env_set: bool,
+    stdout_is_terminal: bool,
+) -> bool {
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => !no_color_env_set && stdout_is_terminal,
+    }
+}
+
+/// Whether the plain-text report should be colourised for this run.
+///
+/// Only meaningful in `--check` mode; callers gate on `args.check`
+/// before consulting this.
+fn color_enabled(choice: ColorChoice) -> bool {
+    color_enabled_with(
+        choice,
+        no_color_requested(),
+        std::io::stdout().is_terminal(),
+    )
+}
+
+/// ANSI reset / foreground codes for standalone summary lines.
+///
+/// These are deliberately *not* inserted into [`Table`] cells — the
+/// table uses tabled's own styling (`Modify` + `Color`) so its column
+/// width calculation accounts for the escapes. The summary lines below
+/// the table have no width calculation, so plain constants suffice.
+const ANSI_RESET: &str = "\u{1b}[0m";
+const ANSI_FG_RED: &str = "\u{1b}[31m";
+
+/// Wraps `text` in the given ANSI colour code when `colour` is set;
+/// returns `text` unchanged otherwise.
+fn paint(colour: bool, code: &str, text: &str) -> String {
+    if colour {
+        format!("{code}{text}{ANSI_RESET}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Formats a configured limit for display in the tables. Limits wider
+/// than u32::MAX are clamped for display; anything near the practical
+/// ceiling formats fine.
+fn format_limit_display(limit_val: u64, metric: &str) -> String {
+    let display_value = u32::try_from(limit_val).unwrap_or(u32::MAX);
+    format_with_commas_and_units(u64::from(display_value), metric)
+}
+
+/// Renders the plain-text workspace table for `--check` mode.
+///
+/// Rows carrying a measured value get the extra `limit` and `check`
+/// columns (`PASS`/`FAIL`). When `colour` is set, breaching rows are
+/// additionally rendered in red through tabled's styling so the escapes
+/// never disturb the column-width calculation. Passing rows keep the
+/// default style — the distinction comes from colour *and* the text
+/// marker, never from colour alone.
+fn render_check_table(reports: &[CostReport], colour: bool) -> String {
+    let valued: Vec<&CostReport> = reports.iter().filter(|r| r.value.is_some()).collect();
+    let rows: Vec<CheckTableCostReport> = valued
+        .iter()
+        .map(|report| CheckTableCostReport {
+            package: report.package.clone(),
+            function: report.function.clone(),
+            metric: report.metric,
+            value: format_with_commas_and_units(
+                u64::from(report.value.unwrap_or(0)),
+                report.metric,
+            ),
+            limit: report
+                .limit
+                .map(|l| format_limit_display(l, report.metric))
+                .unwrap_or_else(|| "-".to_string()),
+            check: if report.pass == Some(false) {
+                "FAIL"
+            } else {
+                "PASS"
+            },
+        })
+        .collect();
+    let mut table = Table::new(rows);
+    if colour {
+        // Data rows start at table index 1; index 0 is the header row.
+        for (idx, report) in valued.iter().enumerate() {
+            if report.pass == Some(false) {
+                table.with(Modify::new(Rows::one(idx + 1)).with(TabledColor::FG_RED));
+            }
+        }
+    }
+    table.to_string()
 }
 
 /// Returns the configured limit (if any) for the given metric name.
@@ -1728,23 +1859,30 @@ fn main() -> anyhow::Result<()> {
     } else {
         // The plain text report path is preserved byte-for-byte when
         // `--check` is not passed: only entries with a measured value are
-        // rendered in the table, and summary text is unchanged.
+        // rendered in the table, and summary text is unchanged. Colour
+        // exists only in `--check` mode — there are no limits to compare
+        // against otherwise.
         println!("\n=== WORKSPACE BUDGET REPORT ===");
-        let table_reports: Vec<TableCostReport> = reports
-            .iter()
-            .filter(|report| report.value.is_some())
-            .map(|report| {
-                let value = report.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), report.metric);
-                TableCostReport {
-                    package: report.package.clone(),
-                    function: report.function.clone(),
-                    metric: report.metric,
-                    value: formatted,
-                }
-            })
-            .collect();
-        let table = Table::new(table_reports).to_string();
+        let colour = args.check && color_enabled(args.color);
+        let table = if args.check {
+            render_check_table(&reports, colour)
+        } else {
+            let table_reports: Vec<TableCostReport> = reports
+                .iter()
+                .filter(|report| report.value.is_some())
+                .map(|report| {
+                    let value = report.value.unwrap_or(0);
+                    let formatted = format_with_commas_and_units(u64::from(value), report.metric);
+                    TableCostReport {
+                        package: report.package.clone(),
+                        function: report.function.clone(),
+                        metric: report.metric,
+                        value: formatted,
+                    }
+                })
+                .collect();
+            Table::new(table_reports).to_string()
+        };
         println!("{}", table);
         println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
         println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
@@ -1761,21 +1899,19 @@ fn main() -> anyhow::Result<()> {
                 let Some(pass) = report.pass else {
                     continue;
                 };
-                let status = if pass { "PASS" } else { "FAIL" };
                 let value_str = match report.value {
                     Some(v) => format_with_commas_and_units(u64::from(v), report.metric),
                     None => "<simulation failed>".to_string(),
                 };
                 let limit_str = report
                     .limit
-                    .map(|limit_val| {
-                        // Limits wider than u32::MAX are not representable in
-                        // the table's units, but anything close to the
-                        // practical ceiling formats fine.
-                        let display_value = u32::try_from(limit_val).unwrap_or(u32::MAX);
-                        format_with_commas_and_units(u64::from(display_value), report.metric)
-                    })
+                    .map(|limit_val| format_limit_display(limit_val, report.metric))
                     .unwrap_or_else(|| "-".to_string());
+                let status = if pass {
+                    "PASS".to_string()
+                } else {
+                    paint(colour, ANSI_FG_RED, "FAIL")
+                };
                 println!(
                     "{}::{} [{}] value={} limit={} {}",
                     report.package, report.function, report.metric, value_str, limit_str, status
@@ -2408,6 +2544,7 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -2440,6 +2577,7 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -2472,6 +2610,7 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -2507,6 +2646,7 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),
@@ -2704,6 +2844,133 @@ write_limit = 1000
             format_with_commas_and_units(500, "Some Other Metric"),
             "500 inst."
         );
+    }
+
+    // --- Check-result colouring ---------------------------------------------
+
+    fn mixed_pass_fail_reports() -> Vec<CostReport> {
+        vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: Some(5_000_000),
+                pass: Some(true),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: Some(1_000),
+                pass: Some(false),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn color_decision_auto_requires_terminal_and_no_no_color() {
+        use ColorChoice::{Always, Auto, Never};
+        assert!(color_enabled_with(Auto, false, true));
+        assert!(!color_enabled_with(Auto, false, false));
+        assert!(!color_enabled_with(Auto, true, true));
+        assert!(!color_enabled_with(Auto, true, false));
+        // Explicit overrides ignore both signals.
+        assert!(color_enabled_with(Always, true, false));
+        assert!(!color_enabled_with(Never, false, true));
+    }
+
+    #[test]
+    fn no_color_convention_only_non_empty_value_disables_colour() {
+        use std::ffi::OsStr;
+        assert!(no_color_requested_from(Some(OsStr::new("1"))));
+        assert!(!no_color_requested_from(Some(OsStr::new(""))));
+        assert!(!no_color_requested_from(None));
+    }
+
+    #[test]
+    fn check_table_carries_pass_fail_text_without_colour() {
+        let reports = mixed_pass_fail_reports();
+        let table = render_check_table(&reports, false);
+        assert!(table.contains("PASS"), "marker column must exist: {table}");
+        assert!(table.contains("FAIL"), "marker column must exist: {table}");
+        assert!(
+            !table.contains('\u{1b}'),
+            "no ANSI escapes when colour disabled: {table:?}"
+        );
+        assert!(table.contains("limit"), "limit column must exist: {table}");
+        assert!(table.contains("-"), "unconfigured limit renders as dash");
+    }
+
+    #[test]
+    fn check_table_colours_only_breaching_rows_when_enabled() {
+        let reports = mixed_pass_fail_reports();
+        let table = render_check_table(&reports, true);
+        let red = "\u{1b}[31m";
+        assert!(
+            table.contains(red),
+            "breaching rows must be red when colour enabled: {table:?}"
+        );
+        let fail_line = table
+            .lines()
+            .find(|line| line.contains("FAIL"))
+            .expect("FAIL marker present");
+        assert!(
+            fail_line.contains(red),
+            "the FAIL row carries the escape: {fail_line:?}"
+        );
+        let pass_line = table
+            .lines()
+            .find(|line| line.contains("PASS"))
+            .expect("PASS marker present");
+        assert!(
+            !pass_line.contains('\u{1b}'),
+            "passing rows stay default-styled: {pass_line:?}"
+        );
+    }
+
+    #[test]
+    fn check_table_skips_simulation_failure_rows_like_default_table() {
+        let mut reports = mixed_pass_fail_reports();
+        reports.push(CostReport {
+            package: "my-contract".to_string(),
+            function: "broken".to_string(),
+            metric: "CPU Instructions",
+            value: None,
+            limit: Some(5_000),
+            pass: Some(false),
+        });
+        let table = render_check_table(&reports, true);
+        assert!(
+            !table.contains("broken"),
+            "value-less rows stay out of the workspace table: {table}"
+        );
+    }
+
+    #[test]
+    fn paint_wraps_text_only_when_enabled() {
+        assert_eq!(paint(false, ANSI_FG_RED, "FAIL"), "FAIL");
+        assert_eq!(paint(true, ANSI_FG_RED, "FAIL"), "\u{1b}[31mFAIL\u{1b}[0m");
+    }
+
+    #[test]
+    fn csv_output_is_never_coloured_even_in_check_mode() {
+        // The CSV writer path takes its data straight from `CostReport`
+        // fields; this asserts the contract end-to-end for a coloured run's
+        // worth of rows.
+        let reports = mixed_pass_fail_reports();
+        let csv = reports_to_csv(&reports, true);
+        assert!(!csv.contains('\u{1b}'), "CSV must be plain: {csv:?}");
+        assert!(csv.contains(",false"));
     }
 
     // --- CSV serialization tests ---
