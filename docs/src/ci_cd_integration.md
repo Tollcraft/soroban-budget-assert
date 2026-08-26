@@ -270,6 +270,52 @@ This repo's own workflow hit the failure mode before it was documented: gating t
 
 ---
 
+## SARIF Output for GitHub Security Tab
+
+The `--sarif` flag produces a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/) file that integrates with GitHub's Code Scanning feature. Budget breaches appear as annotations on pull requests and in the repository's Security tab, making cost regressions visible alongside security findings.
+
+### How SARIF works with `--check`
+
+When you pass `--sarif <path>` alongside `--check`, the tool writes a valid SARIF document to the given path. Each budget breach becomes a SARIF result with:
+
+- A **stable `ruleId`** per metric type (`cpu-limit-exceeded`, `read-limit-exceeded`, `write-limit-exceeded`) so GitHub tracks findings across runs.
+- A **human-readable message** with the package, function, metric, measured value, limit, and percentage over.
+- An optional **source location** (file + line) when the function can be resolved in the workspace.
+
+A run with zero breaches produces a valid SARIF document with an empty results array — GitHub treats a missing file as an upload failure.
+
+### Example GitHub Actions integration
+
+```yaml
+- name: Run Budget Check with SARIF
+  run: |
+    cargo run --bin cargo-budget-report -- \
+      budget-report --check --sarif budget-results.sarif
+
+- name: Upload SARIF to GitHub Security
+  if: always()
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: budget-results.sarif
+```
+
+The `if: always()` ensures the upload step runs even when `--check` exits non-zero (budget breaches), so findings are always visible.
+
+### SARIF result properties
+
+Each SARIF result includes a `properties` object with structured metadata:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `package` | string | Workspace package name |
+| `function` | string | Exported function name |
+| `metric` | string | Metric name (`CPU Instructions`, `Read Bytes`, `Write Bytes`) |
+| `measured` | integer | Measured resource value |
+| `limit` | integer | Configured budget limit |
+| `percent_over` | number | Percentage over the limit |
+
+---
+
 ## Best Practices
 
 ### Fail builds on budget regressions
@@ -369,3 +415,4 @@ Friendbot-funded accounts are reset periodically. If the workflow has been idle 
 - [Tool Reference](reference.md) — every CLI flag and macro signature.
 - [Developer Guide](developer_guide.md) — building and extending the tool itself.
 - [Measurements](measurements.md) — the measured gap between local and network costs.
+- [SARIF Output](#sarif-output-for-github-security-tab) — integrating budget checks with GitHub Code Scanning.

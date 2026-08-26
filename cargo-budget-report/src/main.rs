@@ -33,6 +33,7 @@ use wasmparser::Parser as WasmParser;
 
 mod derive;
 mod error;
+mod sarif;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -1962,6 +1963,29 @@ fn main() -> anyhow::Result<()> {
             println!("Summary: {} check(s) passed, {} failed", passed, failed);
         }
     }
+    // ── SARIF output ────────────────────────────────────────────────
+    // When --sarif is set, write a SARIF 2.1.0 document to the given
+    // path. The exit code is unchanged — SARIF is an additional output.
+    if let Some(sarif_path) = &args.sarif {
+        let metadata = MetadataCommand::new()
+            .no_deps()
+            .exec()
+            .context("failed to execute cargo metadata for SARIF source lookup")?;
+        let sarif_doc = sarif::build_sarif(&reports, Some(&metadata));
+        let json = sarif::to_json(&sarif_doc);
+        std::fs::write(sarif_path, &json)
+            .with_context(|| format!("failed to write SARIF to {}", sarif_path))?;
+        if !args.quiet {
+            let breach_count = sarif_doc.runs[0].results.len();
+            eprintln!(
+                "Wrote SARIF to {} ({} finding{})",
+                sarif_path,
+                breach_count,
+                if breach_count == 1 { "" } else { "s" }
+            );
+        }
+    }
+
     // PR #195: `--check` exits non-zero when any limit was breached so CI can
     // gate on the result. Mirrors the empty-measurements branch above.
     if (args.check && checks_failed) || validation_failed {
@@ -2583,6 +2607,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            sarif: None,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -2617,6 +2642,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            sarif: None,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -2651,6 +2677,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            sarif: None,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -2688,6 +2715,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            sarif: None,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),

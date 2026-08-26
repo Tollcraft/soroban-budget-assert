@@ -206,6 +206,19 @@ pub struct BudgetReportArgs {
     /// Refuses to start when stdout is not a terminal (CI guard).
     #[arg(long, default_value_t = false)]
     pub watch: bool,
+
+    /// Emit a SARIF 2.1.0 file for integration with GitHub's Security tab.
+    ///
+    /// When set alongside `--check`, the tool writes a valid SARIF document
+    /// to the given path. One result is emitted per budget breach. A run
+    /// with no breaches produces a valid SARIF document with an empty results
+    /// array. GitHub annotations are generated when the result carries a
+    /// source location.
+    ///
+    /// The exit code is unchanged — SARIF is an additional output, not a
+    /// replacement for the failure signal.
+    #[arg(long, value_name = "PATH")]
+    pub sarif: Option<String>,
 }
 
 /// Colour policy for the plain-text `--check` output.
