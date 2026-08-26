@@ -39,7 +39,7 @@
 //! - non-Rust tooling (CI scripts, dashboards, the cost-over-time
 //!   consumer) can read the same file.
 
-use crate::module_10::{Error, Result};
+use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -354,6 +354,9 @@ impl Derivation {
                         Some(v) => total_tier_b = total_tier_b.saturating_add(*v),
                         None => missing.push(component.clone()),
                     }
+                }
+                if missing.len() == components.len() {
+                    continue;
                 }
                 if !missing.is_empty() {
                     return Err(Error::Message(format!(

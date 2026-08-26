@@ -1,10 +1,16 @@
 use crate::cli::{BudgetReportArgs, CargoCli};
 use crate::derive::{DerivationConfig, Margin};
-use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
+use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
 use anyhow::Context;
 mod cli;
 mod compare;
-use cargo_metadata::MetadataCommand;
+mod fixture;
+mod html_output;
+mod live;
+mod record;
+mod replay;
+mod transport;
+use cargo_metadata::{CrateType, MetadataCommand};
 use clap::Parser;
 use compare::{
     build_baseline, check_against_baseline, max_allowed as max_allowed_metric, parse_tolerance,
@@ -13,9 +19,8 @@ use compare::{
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
@@ -23,7 +28,7 @@ use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
 mod derive;
-mod module_10;
+mod error;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
@@ -34,6 +39,170 @@ const MAX_DEPLOY_ATTEMPTS: u32 = 4;
 /// Initial backoff delay between deployment retries. Doubles on each
 /// subsequent attempt (2 s → 4 s → 8 s).
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
+
+/// `[retry]` section of `budget.toml`.
+///
+/// Both fields are optional; missing values fall back to the built-in
+/// defaults (`MAX_DEPLOY_ATTEMPTS` / `INITIAL_RETRY_DELAY_SECS`).
+#[derive(serde::Deserialize, Default, Debug, Clone, Copy)]
+struct RetryToml {
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    initial_backoff_secs: Option<u64>,
+}
+
+/// Fully resolved retry policy: CLI over `budget.toml` over defaults.
+///
+/// The worst-case total sleep for one call site is bounded and derivable
+/// from this struct: `initial_backoff * (2^(max_attempts - 1) - 1)`.
+/// With the defaults (4 attempts, 2 s initial) that is 2 + 4 + 8 = 14 s.
+#[derive(Debug, Clone, Copy)]
+struct RetryConfig {
+    /// Total attempts including the first. A value of 1 disables retry.
+    max_attempts: u32,
+    initial_backoff: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        RetryConfig {
+            max_attempts: MAX_DEPLOY_ATTEMPTS,
+            initial_backoff: Duration::from_secs(INITIAL_RETRY_DELAY_SECS),
+        }
+    }
+}
+
+impl RetryConfig {
+    /// True when retry is disabled (a single attempt is made).
+    fn disabled(&self) -> bool {
+        self.max_attempts <= 1
+    }
+}
+
+/// Resolves the effective retry policy: CLI flags win over the
+/// `budget.toml` `[retry]` section, which wins over the defaults.
+fn resolve_retry_config(
+    cli_max_attempts: Option<u32>,
+    cli_backoff_secs: Option<u64>,
+    toml_retry: Option<RetryToml>,
+) -> Result<RetryConfig> {
+    let mut config = RetryConfig::default();
+    if let Some(retry) = toml_retry {
+        if let Some(attempts) = retry.max_attempts {
+            config.max_attempts = attempts;
+        }
+        if let Some(secs) = retry.initial_backoff_secs {
+            config.initial_backoff = Duration::from_secs(secs);
+        }
+    }
+    if let Some(attempts) = cli_max_attempts {
+        config.max_attempts = attempts;
+    }
+    if let Some(secs) = cli_backoff_secs {
+        config.initial_backoff = Duration::from_secs(secs);
+    }
+    if config.max_attempts == 0 {
+        return Err(Error::Message(
+            "retry max_attempts must be at least 1 (1 disables retry)".into(),
+        ));
+    }
+    Ok(config)
+}
+
+/// Why a single attempt failed, from the point of view of the retry loop.
+///
+/// Only [`RetryFailure::Transient`] failures are retried; a
+/// [`RetryFailure::Permanent`] failure aborts immediately because
+/// repeating it cannot change the outcome.
+enum RetryFailure {
+    /// Plausibly transient: rate-limit responses, connection errors,
+    /// timeouts. Worth retrying after a backoff.
+    Transient(String),
+    /// Deterministic: a contract that does not exist, a malformed XDR,
+    /// an RPC-reported simulation error. Retrying would only make the
+    /// run slower before failing anyway.
+    Permanent(String),
+}
+
+/// Heuristically classifies an error message as plausibly transient.
+///
+/// Retried: rate-limit / HTTP-429 style responses ("rate limit",
+/// "rate-limited", "429", "too many requests"), connection-level
+/// failures ("connection", "timed out", "timeout", "reset by peer",
+/// "broken pipe", "network"), server-side blips ("503", "502", "504",
+/// "unavailable", "temporarily", "try again").
+///
+/// Everything else — unknown errors included — is treated as permanent.
+/// A conservative whitelist keeps deterministic failures (missing
+/// contract, malformed XDR, simulation errors) from being retried four
+/// times before failing anyway.
+fn is_transient_error(message: &str) -> bool {
+    const TRANSIENT_MARKERS: [&str; 15] = [
+        "rate limit",
+        "rate-limited",
+        "ratelimit",
+        "429",
+        "too many requests",
+        "connection",
+        "timed out",
+        "timeout",
+        "reset by peer",
+        "broken pipe",
+        "503",
+        "502",
+        "unavailable",
+        "temporarily",
+        "try again",
+    ];
+    let lowered = message.to_ascii_lowercase();
+    TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
+}
+
+/// Runs `op` up to `config.max_attempts` times with exponential backoff.
+///
+/// Backoff sleeps `config.initial_backoff` before the second attempt and
+/// doubles on each further attempt, so the worst-case total sleep is
+/// `initial_backoff * (2^(max_attempts - 1) - 1)` — bounded and
+/// predictable from configuration alone.
+///
+/// Progress messages go to stderr unless `quiet` is set. When every
+/// attempt fails, `exhausted` builds the final error from the last
+/// transient error message so each call site can keep its own wording.
+fn run_with_retry<T, Op, ErrFn>(
+    config: &RetryConfig,
+    quiet: bool,
+    label: &str,
+    mut op: Op,
+    exhausted: ErrFn,
+) -> Result<T>
+where
+    Op: FnMut() -> std::result::Result<T, RetryFailure>,
+    ErrFn: FnOnce(&str) -> Error,
+{
+    let mut last_error = String::new();
+
+    for attempt in 0..config.max_attempts {
+        if attempt > 0 {
+            let delay_secs = config.initial_backoff.as_secs() * 2u64.pow(attempt - 1);
+            if !quiet {
+                eprintln!(
+                    "{label} attempt {}/{} failed. Retrying in {} s...",
+                    attempt, config.max_attempts, delay_secs
+                );
+            }
+            thread::sleep(Duration::from_secs(delay_secs));
+        }
+
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(RetryFailure::Transient(err)) => last_error = err,
+            Err(RetryFailure::Permanent(err)) => return Err(exhausted(&err)),
+        }
+    }
+
+    Err(exhausted(&last_error))
+}
 
 /// Commented budget.toml template written by `cargo budget-report --init`.
 const BUDGET_TOML_TEMPLATE: &str = r#"# -- Budget report configuration ---------------------------------------------
@@ -93,6 +262,10 @@ struct BudgetToml {
     scenarios: HashMap<String, ScenarioToml>,
     #[serde(default)]
     functions: HashMap<String, FunctionConfig>,
+    /// `[retry]` section controlling deploy / simulate / invoke-build
+    /// retry behavior. Absent means "use the built-in defaults".
+    #[serde(default)]
+    retry: Option<RetryToml>,
 }
 
 /// Per-metric margin multipliers persisted in `budget.toml`.
@@ -455,87 +628,56 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
     })
 }
 
-/// POSTs a `simulateTransaction` JSON-RPC request for `b64_xdr` and returns
-/// the parsed response body.
+/// Simulates one exported function end-to-end through a
+/// [`transport::Transport`]: builds the invocation transaction, POSTs it to
+/// `simulateTransaction` and decodes the reported resource usage.
 ///
-/// Uses `curl` to send the request to the Soroban RPC endpoint. The
-/// request body is piped via stdin to avoid shell-quoting issues.
+/// `LiveTransport` shells out to `stellar contract invoke --build-only` and
+/// `curl`, retrying plausibly transient failures (rate limits, connection
+/// errors) with the crate-wide retry configuration; `ReplayTransport`
+/// serves the same calls from a recorded fixture, which is how the rest of
+/// the crate can be tested without a network.
 ///
-/// # Errors
-///
-/// Returns an error if `curl` cannot be spawned, the request fails, or
-/// the response body is not valid JSON.
-fn simulate_transaction_rpc(b64_xdr: &str) -> Result<serde_json::Value> {
-    let rpc_payload = build_rpc_payload(b64_xdr);
-
-    let mut curl = Command::new("curl")
-        .args([
-            "-s",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            "@-",
-            "https://soroban-testnet.stellar.org:443",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| Error::CommandFailed(format!("failed to execute curl: {}", e)))?;
-
-    {
-        let stdin = curl
-            .stdin
-            .as_mut()
-            .ok_or_else(|| Error::CommandFailed("Failed to open stdin".into()))?;
-        stdin
-            .write_all(rpc_payload.to_string().as_bytes())
-            .map_err(|e| Error::CommandFailed(format!("failed to write to stdin: {}", e)))?;
-    }
-
-    let curl_output = curl
-        .wait_with_output()
-        .map_err(|e| Error::CommandFailed(format!("failed to read curl output: {}", e)))?;
-    serde_json::from_slice(&curl_output.stdout)
-        .map_err(|e| Error::Message(format!("Failed to parse RPC response: {}", e)))
-}
-
-/// Simulates one exported function end-to-end: runs
-/// `stellar contract invoke --build-only` to build the transaction, then
-/// POSTs it to `simulateTransaction` and decodes the reported resource
-/// usage.
-///
-/// Returns `Err` only for a spawn/IO failure on the `stellar`/`curl` child
-/// processes — the tool cannot proceed without those binaries. A
+/// Returns `Err` only for a persistent RPC transport failure after every
+/// retry attempt is exhausted, or for an unrecoverable environment
+/// problem — the tool cannot proceed without those binaries. A
 /// *recoverable* simulation failure (non-zero invoke exit, an RPC `error`
 /// field, or an undecodable response) is reported as
 /// `Ok(SimulationOutcome::Failed(..))` so the caller can move on to the next
 /// function instead of aborting the whole report.
 fn simulate_function(
+    transport: &mut impl transport::Transport,
     contract_id: &str,
     source: &str,
     network: &str,
     function: &str,
     func_args: &[String],
+    package: &str,
 ) -> Result<SimulationOutcome> {
-    let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
-    let invoke_output = Command::new("stellar")
-        .args(&invoke_args)
-        .output()
-        .map_err(|e| {
-            Error::CommandFailed(format!("failed to execute stellar-cli invoke: {}", e))
-        })?;
+    // Build the invocation XDR through the transport. The live transport
+    // reports a failed `stellar contract invoke` as an error (after any
+    // transient retries); that is a recoverable per-function failure (the
+    // CLI ran, the invocation failed), so it is recorded as
+    // `Failed(Invoke(..))` rather than aborting the whole report.
+    let b64_xdr = match transport.build_invoke_xdr(
+        contract_id,
+        source,
+        network,
+        function,
+        func_args,
+        package,
+    ) {
+        Ok(xdr) => xdr,
+        Err(err) => {
+            return Ok(SimulationOutcome::Failed(SimulationFailure::Invoke(
+                format!("{:#}", err),
+            )));
+        }
+    };
 
-    if !invoke_output.status.success() {
-        let stderr = String::from_utf8_lossy(&invoke_output.stderr).to_string();
-        return Ok(SimulationOutcome::Failed(SimulationFailure::Invoke(stderr)));
-    }
-
-    let b64_xdr = String::from_utf8_lossy(&invoke_output.stdout)
-        .trim()
-        .to_string();
-    let rpc_resp = simulate_transaction_rpc(&b64_xdr)?;
+    let rpc_resp = transport
+        .simulate_transaction(&b64_xdr, package, function)
+        .map_err(|e| Error::CommandFailed(format!("{:#}", e)))?;
 
     if let Some(error) = rpc_resp.get("error") {
         return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
@@ -802,64 +944,31 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
     Ok(())
 }
 
-/// Deploys a contract WASM to the network with automatic retry on
-/// friendbot-related transient failures.
+/// Deploys a contract WASM to the network through a [`transport::Transport`]
+/// and turns a failed deploy into the canonical user-facing error.
 ///
-/// The `stellar contract deploy` command implicitly triggers friendbot
-/// funding for the source account on testnet. Friendbot may return 429
-/// (rate-limited) or the account may not be confirmed on-ledger yet.
-/// This function makes up to `MAX_DEPLOY_ATTEMPTS` total attempts with
-/// exponential backoff before giving up.
+/// Retrying is the live transport's job: [`live::LiveTransport`] wraps the
+/// `stellar contract deploy` call in the crate-wide retry machinery, which
+/// retries friendbot rate limits and other plausibly transient stderr (429,
+/// connection errors) up to `retry_config.max_attempts` times with
+/// exponential backoff and skips retrying deterministic failures. All this
+/// function does is report the outcome with the familiar "source account is
+/// funded" hint.
 fn deploy_contract_with_retry(
+    transport: &mut impl transport::Transport,
     wasm_path: &Path,
     source: &str,
     network: &str,
     package_name: &str,
+    retry_config: &RetryConfig,
 ) -> Result<String> {
-    let mut last_error = String::new();
-
-    for attempt in 0..MAX_DEPLOY_ATTEMPTS {
-        if attempt > 0 {
-            let delay = INITIAL_RETRY_DELAY_SECS * 2u64.pow(attempt - 1);
-            eprintln!(
-                "Deploy attempt {}/{} failed. Retrying in {} s...",
-                attempt, MAX_DEPLOY_ATTEMPTS, delay
-            );
-            thread::sleep(Duration::from_secs(delay));
-        }
-
-        let deploy_output = Command::new("stellar")
-            .args([
-                "contract",
-                "deploy",
-                "--wasm",
-                wasm_path
-                    .to_str()
-                    .ok_or_else(|| Error::Message("wasm path is not valid UTF-8".into()))?,
-                "--source",
-                source,
-                "--network",
-                network,
-            ])
-            .output()
-            .map_err(|e| {
-                Error::CommandFailed(format!("failed to execute stellar-cli deploy: {}", e))
-            })?;
-
-        if deploy_output.status.success() {
-            let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
-                .trim()
-                .to_string();
-            return Ok(contract_id);
-        }
-
-        last_error = String::from_utf8_lossy(&deploy_output.stderr).to_string();
+    match transport.deploy_contract(wasm_path, source, network, package_name) {
+        Ok(contract_id) => Ok(contract_id),
+        Err(err) => Err(Error::Message(format!(
+            "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
+            package_name, retry_config.max_attempts, err
+        ))),
     }
-
-    Err(Error::Message(format!(
-        "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
-        package_name, MAX_DEPLOY_ATTEMPTS, last_error
-    )))
 }
 
 fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<()> {
@@ -1066,6 +1175,72 @@ fn is_leap(y: u64) -> bool {
     (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
+/// The transport a run uses, chosen by CLI flags.
+///
+/// `--replay <path>` serves every deploy/invoke/simulate response from a
+/// recorded fixture, so the whole pipeline runs with no `stellar` CLI,
+/// `curl`, or network access. `--record <path>` wraps the live transport
+/// and captures every response so a later run can be replayed. Without
+/// either flag, runs use [`live::LiveTransport`] directly.
+enum TransportKind {
+    Live(live::LiveTransport),
+    Recording(record::RecordingTransport<live::LiveTransport>),
+    Replay(replay::ReplayTransport),
+}
+
+impl transport::Transport for TransportKind {
+    fn deploy_contract(
+        &mut self,
+        wasm_path: &Path,
+        source: &str,
+        network: &str,
+        package_name: &str,
+    ) -> anyhow::Result<String> {
+        match self {
+            TransportKind::Live(t) => t.deploy_contract(wasm_path, source, network, package_name),
+            TransportKind::Recording(t) => {
+                t.deploy_contract(wasm_path, source, network, package_name)
+            }
+            TransportKind::Replay(t) => t.deploy_contract(wasm_path, source, network, package_name),
+        }
+    }
+
+    fn build_invoke_xdr(
+        &mut self,
+        contract_id: &str,
+        source: &str,
+        network: &str,
+        function: &str,
+        func_args: &[String],
+        package: &str,
+    ) -> anyhow::Result<String> {
+        match self {
+            TransportKind::Live(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+            TransportKind::Recording(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+            TransportKind::Replay(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+        }
+    }
+
+    fn simulate_transaction(
+        &mut self,
+        b64_xdr: &str,
+        package: &str,
+        function: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        match self {
+            TransportKind::Live(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Recording(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Replay(t) => t.simulate_transaction(b64_xdr, package, function),
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let CargoCli::BudgetReport(args) = CargoCli::parse();
 
@@ -1087,7 +1262,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ── Preflight environment checks ──────────────────────────────────
-    run_preflight_checks(args.quiet)?;
+    // Replay runs serve every network call from a fixture, so they need
+    // neither the `stellar` CLI nor `curl`; skip the checks entirely.
+    if args.replay.is_none() {
+        run_preflight_checks(args.quiet)?;
+    }
 
     let toml_config = load_budget_toml("budget.toml")?;
     let default_tolerance = resolve_tolerance(args.tolerance.as_deref(), &toml_config)
@@ -1103,6 +1282,16 @@ fn main() -> anyhow::Result<()> {
         .source
         .or(toml_config.source.clone())
         .context("missing --source or budget.toml source field")?;
+
+    let retry_config = resolve_retry_config(
+        args.max_retry_attempts,
+        args.retry_backoff_secs,
+        toml_config.retry,
+    )
+    .context("failed to resolve retry configuration")?;
+    if retry_config.disabled() && !args.quiet {
+        eprintln!("Retry is disabled (--max-retry-attempts 1): each call gets a single attempt.");
+    }
 
     if !args.quiet {
         eprintln!("Discovering workspace members...");
@@ -1123,11 +1312,29 @@ fn main() -> anyhow::Result<()> {
 
     let build_profile = args.profile.as_deref().unwrap_or("release");
 
+    // All network interaction happens through the transport. Production runs
+    // use `LiveTransport` (which owns the retry policy); `--record` wraps it
+    // in a `RecordingTransport` that captures every response, and `--replay`
+    // serves responses back from a recorded fixture with no network at all.
+    let mut transport = if let Some(replay_path) = &args.replay {
+        TransportKind::Replay(replay::ReplayTransport::new(
+            fixture::FixtureFile::load(replay_path)
+                .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
+        ))
+    } else if args.record.is_some() {
+        TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
+            retry_config,
+            args.quiet,
+        )))
+    } else {
+        TransportKind::Live(live::LiveTransport::new(retry_config, args.quiet))
+    };
+
     for package in metadata.packages {
         let is_cdylib = package
             .targets
             .iter()
-            .any(|target| target.crate_types.iter().any(|ct| *ct == "cdylib"));
+            .any(|target| target.crate_types.contains(&CrateType::CDyLib));
         if !is_cdylib {
             continue;
         }
@@ -1139,7 +1346,7 @@ fn main() -> anyhow::Result<()> {
             .args([
                 "build",
                 "-p",
-                &package.name,
+                package.name.as_str(),
                 "--target",
                 "wasm32-unknown-unknown",
                 "--profile",
@@ -1158,7 +1365,7 @@ fn main() -> anyhow::Result<()> {
         let cdylib_target = package
             .targets
             .iter()
-            .find(|t| t.crate_types.iter().any(|ct| *ct == "cdylib"));
+            .find(|t| t.crate_types.contains(&CrateType::CDyLib));
         let wasm_name = match cdylib_target {
             Some(target) => target.name.clone(),
             None => {
@@ -1228,8 +1435,14 @@ fn main() -> anyhow::Result<()> {
             Some(pb)
         };
 
-        let contract_id =
-            deploy_contract_with_retry(wasm_path.as_std_path(), &source, &network, &package.name)?;
+        let contract_id = deploy_contract_with_retry(
+            &mut transport,
+            wasm_path.as_std_path(),
+            &source,
+            &network,
+            &package.name,
+            &retry_config,
+        )?;
 
         if let Some(spinner) = spinner {
             spinner.finish_and_clear();
@@ -1245,7 +1458,15 @@ fn main() -> anyhow::Result<()> {
             let func_config = toml_config.functions.get(&function);
             let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
 
-            match simulate_function(&contract_id, &source, &network, &function, &func_args)? {
+            match simulate_function(
+                &mut transport,
+                &contract_id,
+                &source,
+                &network,
+                &function,
+                &func_args,
+                &package.name,
+            )? {
                 SimulationOutcome::Metrics {
                     instructions,
                     read_bytes,
@@ -1261,7 +1482,7 @@ fn main() -> anyhow::Result<()> {
                         write_bytes: write_bytes as u64,
                     };
                     measurements
-                        .entry(package.name.clone())
+                        .entry(package.name.as_str().to_string())
                         .or_default()
                         .insert(function.clone(), measured);
 
@@ -1290,7 +1511,9 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // ── Optional Stellar CLI validation ──────────────
-                    if args.validate {
+                    // `--validate` shells out to `stellar xdr decode`, which
+                    // replay mode cannot assume exists; skip it there.
+                    if args.validate && args.replay.is_none() {
                         let v_result = validate::validate_metrics(
                             &transaction_data_xdr,
                             instructions,
@@ -1363,7 +1586,29 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Persist the recorded fixture when `--record` was requested, so the
+    // run can be reproduced offline with `--replay`.
+    if let Some(path) = &args.record {
+        match transport {
+            TransportKind::Recording(recording) => {
+                recording
+                    .into_fixture()
+                    .save(path)
+                    .with_context(|| format!("failed to save fixture to {}", path))?;
+                if !args.quiet {
+                    eprintln!("Recorded fixture to {}", path);
+                }
+            }
+            _ => unreachable!("--record always constructs a RecordingTransport"),
+        }
+    }
+
     if measurements.is_empty() {
+        // `--html` still produces a valid page so a consumer pointed at the
+        // output sees an explicit empty state rather than an empty file.
+        if args.html {
+            println!("{}", html_output::render_html(&[], args.check));
+        }
         if !args.quiet {
             eprintln!("No successful simulations to report.");
         }
@@ -1478,6 +1723,8 @@ fn main() -> anyhow::Result<()> {
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
+    } else if args.html {
+        print!("{}", html_output::render_html(&reports, args.check));
     } else {
         // The plain text report path is preserved byte-for-byte when
         // `--check` is not passed: only entries with a measured value are
@@ -1550,9 +1797,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-mod module_2;
-mod module_3;
-mod module_4;
+mod config;
+mod limit_checks;
+mod url_checks;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1584,10 +1831,13 @@ impl Mode {
 }
 
 #[cfg(test)]
-mod module_8;
+mod edge_case_tests;
 
 #[cfg(test)]
-mod module_18;
+mod boundary_tests;
+
+#[cfg(test)]
+mod additional_edge_tests;
 
 /// Serializes tests that mutate the process working directory.
 #[cfg(test)]
@@ -1949,6 +2199,185 @@ mod tests {
         assert!(err.contains("tolerance must be a number"), "got: {err}");
     }
 
+    // --- Retry configuration -------------------------------------------------
+
+    #[test]
+    fn resolve_retry_config_precedence_cli_over_toml_over_default() {
+        let toml_retry = RetryToml {
+            max_attempts: Some(6),
+            initial_backoff_secs: Some(5),
+        };
+
+        // Defaults when neither source sets anything.
+        let config = resolve_retry_config(None, None, None).expect("defaults should resolve");
+        assert_eq!(config.max_attempts, MAX_DEPLOY_ATTEMPTS);
+        assert_eq!(
+            config.initial_backoff,
+            Duration::from_secs(INITIAL_RETRY_DELAY_SECS)
+        );
+        assert!(!config.disabled());
+
+        // budget.toml wins over defaults.
+        let config =
+            resolve_retry_config(None, None, Some(toml_retry)).expect("toml should resolve");
+        assert_eq!(config.max_attempts, 6);
+        assert_eq!(config.initial_backoff, Duration::from_secs(5));
+
+        // CLI wins over both.
+        let config = resolve_retry_config(Some(1), Some(7), Some(toml_retry))
+            .expect("cli should win over toml");
+        assert_eq!(config.max_attempts, 1);
+        assert_eq!(config.initial_backoff, Duration::from_secs(7));
+        assert!(config.disabled(), "max_attempts = 1 must disable retry");
+    }
+
+    #[test]
+    fn resolve_retry_config_partial_toml_section_keeps_defaults_for_missing_fields() {
+        let config = resolve_retry_config(
+            None,
+            None,
+            Some(RetryToml {
+                max_attempts: Some(2),
+                initial_backoff_secs: None,
+            }),
+        )
+        .expect("partial toml should resolve");
+        assert_eq!(config.max_attempts, 2);
+        assert_eq!(
+            config.initial_backoff,
+            Duration::from_secs(INITIAL_RETRY_DELAY_SECS)
+        );
+    }
+
+    #[test]
+    fn resolve_retry_config_rejects_zero_attempts() {
+        let err = resolve_retry_config(Some(0), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("max_attempts must be at least 1"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn is_transient_error_matches_plausibly_retryable_failures() {
+        for msg in [
+            "friendbot rate-limited (try again later)",
+            "HTTP 429 Too Many Requests",
+            "Connection refused",
+            "request timed out",
+            "connection reset by peer",
+            "service unavailable",
+        ] {
+            assert!(
+                is_transient_error(msg),
+                "{msg:?} should classify as transient"
+            );
+        }
+    }
+
+    #[test]
+    fn is_transient_error_treats_deterministic_failures_as_permanent() {
+        for msg in [
+            "contract CAMOCKCONTRACTID does not exist",
+            "Failed to decode XDR: invalid base64",
+            "simulation error: HostError",
+            "unknown argument --bogus",
+            "",
+        ] {
+            assert!(
+                !is_transient_error(msg),
+                "{msg:?} should classify as permanent"
+            );
+        }
+    }
+
+    #[test]
+    fn run_with_retry_max_attempts_one_makes_exactly_one_call() {
+        let config = RetryConfig {
+            max_attempts: 1,
+            initial_backoff: Duration::from_secs(0),
+        };
+        let calls = std::cell::Cell::new(0);
+        let result = run_with_retry(
+            &config,
+            true,
+            "test",
+            || {
+                calls.set(calls.get() + 1);
+                Err::<(), _>(RetryFailure::Transient("rate-limited".into()))
+            },
+            |last| Error::Message(format!("exhausted: {last}")),
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 1, "retry disabled means exactly one attempt");
+    }
+
+    #[test]
+    fn run_with_retry_does_not_retry_permanent_failures() {
+        let config = RetryConfig {
+            max_attempts: 4,
+            initial_backoff: Duration::from_secs(0),
+        };
+        let calls = std::cell::Cell::new(0);
+        let result: Result<()> = run_with_retry(
+            &config,
+            true,
+            "test",
+            || {
+                calls.set(calls.get() + 1);
+                Err(RetryFailure::Permanent("contract does not exist".into()))
+            },
+            |last| Error::Message(format!("failed: {last}")),
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 1, "permanent failures abort immediately");
+    }
+
+    #[test]
+    fn run_with_retry_reports_last_transient_error_on_exhaustion() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_backoff: Duration::from_secs(0),
+        };
+        let result: Result<()> = run_with_retry(
+            &config,
+            true,
+            "test",
+            || Err(RetryFailure::Transient("still rate-limited".into())),
+            |last| Error::Message(format!("exhausted: {last}")),
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("still rate-limited"), "got: {err}");
+    }
+
+    #[test]
+    fn run_with_retry_stops_as_soon_as_an_attempt_succeeds() {
+        let config = RetryConfig {
+            max_attempts: 4,
+            initial_backoff: Duration::from_secs(0),
+        };
+        let calls = std::cell::Cell::new(0);
+        let result: Result<&str> = run_with_retry(
+            &config,
+            true,
+            "test",
+            || {
+                let n = calls.get();
+                calls.set(n + 1);
+                if n < 2 {
+                    Err(RetryFailure::Transient("timed out".into()))
+                } else {
+                    Ok("ok")
+                }
+            },
+            |last| Error::Message(format!("exhausted: {last}")),
+        );
+        assert_eq!(result.expect("should succeed on third attempt"), "ok");
+        assert_eq!(calls.get(), 3);
+    }
+
     // --- Mode dispatch ------------------------------------------------------
 
     #[test]
@@ -1961,11 +2390,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -1974,6 +2406,8 @@ mod tests {
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            max_retry_attempts: None,
+            retry_backoff_secs: None,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -1988,11 +2422,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: Some("budget-baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2001,6 +2438,8 @@ mod tests {
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            max_retry_attempts: None,
+            retry_backoff_secs: None,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -2015,11 +2454,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: None,
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2028,6 +2470,8 @@ mod tests {
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            max_retry_attempts: None,
+            retry_backoff_secs: None,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -2045,11 +2489,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,
@@ -2058,6 +2505,8 @@ mod tests {
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            max_retry_attempts: None,
+            retry_backoff_secs: None,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),

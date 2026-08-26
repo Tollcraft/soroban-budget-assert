@@ -4,7 +4,7 @@
 
 Every Soroban transaction runs against a resource budget. If the budget is exhausted on-chain, the transaction fails. Local tests estimate these costs, but the estimate depends on *how* the contract executes locally — and the error can point in either direction. Measured on the example contract's `do_expensive_work(10_000)`, built with the standard Soroban release profile (`opt-level = "z"`, LTO):
 
-The raw figures and deltas are recorded in the [measurements file](../../MEASUREMENTS.md), which is the single source of truth for empirical cost data across the project. The same page documents the methodology, the build profiles tested, and the operation types not yet measured.
+The raw figures and deltas are recorded in the [measurements file](measurements.md), which is the single source of truth for empirical cost data across the project. The same page documents the methodology, the build profiles tested, and the operation types not yet measured.
 
 The standard profile is the full `[profile.release]` block used by this repository:
 
@@ -25,7 +25,7 @@ lto = true
 These settings materially change the WASM being measured. `opt-level = "z"` and LTO optimize the binary shape, `codegen-units = 1` gives LLVM a broader optimization view, `panic = "abort"` removes unwinding paths, `strip = "symbols"` and `debug = 0` remove non-runtime payload, `debug-assertions = false` keeps release behavior, and `overflow-checks = true` preserves checked arithmetic. Cost figures from another release profile are not comparable: the measurements file records 901,816 local WASM CPU instructions / 756,678 testnet instructions for the size-optimized profile, versus 767,049 local / 832,006 testnet for Cargo's default release profile.
 
 {% hint style="info" %}
-The direction of the WASM gap is not stable — see the two build profiles compared in the [existing measurements](../../MEASUREMENTS.md#cpu-instructions), and the [SDK version calibration](../../MEASUREMENTS.md#sdk-version-calibration) which tracks how the gap shifts across soroban-sdk versions.
+The direction of the WASM gap is not stable — see the two build profiles compared in the [existing measurements](measurements.md#cpu-instructions), and the [SDK version calibration](measurements.md#sdk-version-calibration) which tracks how the gap shifts across soroban-sdk versions.
 {% endhint %}
 
 Two conclusions drive the tool's design:
@@ -104,9 +104,9 @@ The fourth reported row, `Memory Bytes`, does not come from the `SorobanTransact
 
 ## How the tiers work together
 
-Tier B tells you what a function really costs on the network. Tier A pins the *local* estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract's gated test uses exactly this pattern: local WASM estimate 2,654,615, asserted limit 2,800,000, real testnet cost (placeholder — see [SDK version calibration](../../MEASUREMENTS.md#sdk-version-calibration)).
+Tier B tells you what a function really costs on the network. Tier A pins the *local* estimate into your test suite: measure once, assert a limit a few percent above the measured local number, and any change that pushes execution cost past it fails CI before it reaches the network. The example contract's gated test uses exactly this pattern: local WASM estimate 2,654,615, asserted limit 2,800,000, real testnet cost (placeholder — see [SDK version calibration](measurements.md#sdk-version-calibration)).
 
-> **Warning:** The local WASM estimate shifts with soroban-sdk version. The SDK version calibration table in [MEASUREMENTS.md](../../MEASUREMENTS.md#sdk-version-calibration) should be regenerated on every SDK bump so Tier A limits are based on current numbers, not stale ones.
+> **Warning:** The local WASM estimate shifts with soroban-sdk version. The SDK version calibration table in [MEASUREMENTS.md](measurements.md#sdk-version-calibration) should be regenerated on every SDK bump so Tier A limits are based on current numbers, not stale ones.
 
 ## ⚙️ Supported Versions & Compatibility
 

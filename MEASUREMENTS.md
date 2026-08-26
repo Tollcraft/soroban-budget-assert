@@ -274,7 +274,6 @@ The native Rust and WASM local estimates are reported by `Env::cost_estimate().b
 **How the estimates behave.** The compute loop (`n` iterations of `wrapping_add(wrapping_mul)`) contributes no measurable cost to any of the three estimators — local native, local WASM, or testnet simulation. All three return constant values once the storage loop saturates at `n.min(100)` (i.e. for n ≥ 100). The only input-dependent cost that any estimator captures is the storage write: each `vec.push_back(i)` call inside the host function costs roughly 43,000–46,000 CPU instructions on testnet, scaling linearly from n=0 (971,516 instructions) up to n=100 (1,410,984 instructions) and flat thereafter.
 
 **Implication for Tier A margins.** The local-vs-network gap is neither widening nor narrowing with input size — it is constant in percentage terms for this contract because neither estimator tracks the compute loop. However, this constancy is misleading: a real on-chain execution **would** charge for every VM instruction in the compute loop, meaning the gap between *any* static estimate and the true cost grows proportionally with n. Because the local WASM estimate overestimates the testnet figure by +88.6% for all measured sizes, a Tier A margin set above this ceiling (e.g. 2× the local estimate) would pass all tested inputs. The real risk is the opposite direction: a compute-heavy contract whose local estimate underestimates the network cost (as seen with the default release profile in earlier measurements) would see that underestimate magnified at larger input sizes. Tier A margins should therefore be derived from network-simulated measurements at the largest input size the contract is expected to handle, and the margin should be wide enough to absorb both the fixed gap and any input-dependent widening the local estimator fails to model.
- 6669d03 (chore: measure local-vs-network gap across input sizes (1k-100k) for CPU instructions)
 
 ## Unmeasured operation types
 
@@ -290,18 +289,9 @@ For the isolated VM benchmark, the delta is calculated as:
 
 | Operation type | Issue | Status |
 |---|---|---|
-| TTL extension | TBD | In progress — calibration test at `amm-pool-contract/tests/calibrate_extend_ttl.rs` |
-| Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
-| Storage-write operations | [#44](https://github.com/Tollcraft/soroban-budget-assert/issues/44) | Open |
-| VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Open |
-
-
-
-
-<!-- # Soroban Budget Assert: Audit & Roadmap
-
-Based on open source repository standards, this document serves as a guide to bring the `soroban-budget-assert` project up to the required standard for an open source repository -->
 | Storage-write operations | [#44](https://github.com/Tollcraft/soroban-budget-assert/issues/44) | Measured in the existing mixed-operation fixtures |
 | Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
 | VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Measured above |
-| Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | Open |
+| Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | In progress |
+| TTL extension | TBD | In progress — calibration test at `amm-pool-contract/tests/calibrate_extend_ttl.rs` |
+

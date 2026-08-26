@@ -7,14 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-### Fixed
-
-- **Pre-commit hook installer parity between `scripts/install-hooks.sh` and `scripts/install-hooks.ps1` (issue #476).** Both installers now validate that `scripts/pre-commit` exists before copying it (a clear error instead of a raw `cp` / `Copy-Item` failure), create the `.git/hooks` directory when it is missing instead of failing, and print the same success message describing what the hook checks and how to recover from a blocked commit. `install-hooks.ps1` also prints an explicit note that the hook is a bash script executed via the bash bundled with Git for Windows, so it runs correctly from PowerShell without a separate Git Bash terminal. `cargo-budget-report/tests/pre_commit_hook.rs` gains coverage for the missing-hooks-directory, double-run, subdirectory, and missing-source states on the shell path, plus a PowerShell-path test that runs when `pwsh` / `powershell` is available on `PATH` and otherwise reports that it was skipped.
-
 ### Added
 
+- **Tier A `#[budget_read_bytes_lt]` macro (issue #498).** Asserts that ledger read bytes during test execution do not exceed a specified threshold. Follows `budget_write_bytes_lt` parity, supporting static integer limits, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, `config = "KEY"`, and `baseline = EXPR` forms.
 - **CI/CD integration example documentation (`docs/src/ci_cd_integration.md`).** Adds a reference-style page showing how to integrate `soroban-budget-assert` into a GitHub Actions workflow, covering the complete workflow YAML, step-by-step explanations, customization guidance, best practices, and troubleshooting.
-
 - **Tier A limit derivation from a Tier B report (`feat/derive-tier-a-limits-from-tier-b`).** `cargo budget-report --derive-limits <OUT> --from <TIER_B_JSON>` reads the JSON emitted by `cargo budget-report --json` (or stdin), applies per-metric `cpu` / `memory` / `read` / `write` margins supplied on the CLI or via a `[margin]` block in `budget.toml`, and emits a `KEY=VALUE` artifact whose env keys a Tier A test can read directly. A sidecar `<OUT>.provenance.md` records each `tier_b_value × margin = tier_a_limit` row alongside a header in `<OUT>` itself. Both writes are atomic. The derivation does not need the `stellar` CLI, a built WASM, or network access, so it slots into CI alongside `--record-baseline` / `--check-baseline`.
 - **`env_file = "PATH"` form of the budget macros.** Companion to the existing `env = "VAR"` / `config = "key"` / integer-literal forms. Tests can read a checked-in `KEY=VALUE` file at runtime, so a single `tier-a-limits.env` at the workspace root drives every Tier A assertion without per-test env-var plumbing. Per-assertion reads make this form thread-safe in concurrent test runners, no `unsafe std::env::set_var` is needed.
 - **`[scenarios.<name>]` block in `budget.toml`.** Maps a single Tier A scenario (e.g. "full_workflow = deposit + swap + withdraw") to the component functions whose Tier B values are summed into one Tier A limit. The derived key prefixes with `SCENARIO__<name>` so it cannot collide with a per-function limit on the same package.
@@ -24,25 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Memory Bytes metric in `cargo budget-report` (issue #122).** The CLI now extracts `result.cost.memBytes` from the Soroban Protocol 22 `simulateTransaction` JSON-RPC payload alongside the existing XDR-derived CPU / read-bytes / write-bytes figures, reporting it as a `Memory Bytes` row in the table, JSON, and CSV outputs. Both integer and string forms of the field are accepted (Soroban JSON-RPC stringifies numeric fields to avoid `u64` precision loss), and absence is propagated as "no row" rather than a zero that would silently pass a check. `[functions.<name>]`.`mem_limit` becomes a valid `budget.toml` field, surfaces in `--check` the same way `cpu_limit` / `read_limit` / `write_limit` do, and is documented in the `--init` template. Five unit tests cover integer form, string form, unparseable value, missing `cost` object, and missing `memBytes` field.
 - **Pure-allocation fixture `allocate_vec` on `amm-pool-contract`** for the local-vs-network memory-bytes gap measurement series (issue #122). The function pushes `n` elements into a host-resident `Vec<u32>` with no storage or authorization side-effects, isolating the memory cost of allocation so the simulation's reported `result.cost.memBytes` is dominated by allocation. A companion test `test_measure_memory_bytes_local_for_issue_122` registers the WASM, calls the fixture, asserts the `budget_mem_lt` env-file limit, and prints the measured `MEM_LOCAL` figure for capture into `MEASUREMENTS.md`.
 - Local-vs-network gap row for memory bytes in `MEASUREMENTS.md`, mirroring the existing `Authorization (require_auth)` row shape (Local / Network columns plus delta and fixture). The Memory bytes row is removed from the `## Unmeasured operation types` table.
-
-### Changed
-
-- Tier A reconciliation comments in `amm-pool-contract/tests/budget_test.rs` are now auto-generated from `tier-a-limits.provenance.md`, not transcribed by hand. Re-derive the artifact instead of editing the test inline when a limit needs to change.
-- `src/lib.rs` re-exports `module_25` alongside the existing `module_1`.
-
-### Notes
-
-- The per-metric split (cpu / memory / read / write), not per-operation-type, is the grain of this change. **Issue #45** (per-operation-type margin) would slot in alongside `[scenarios]` as `keys: HashMap<FunctionKey, Margin>` in `DerivationConfig`; no macro change required.
-- **Issue #10** (baseline / regression mode) already coexists: `--record-baseline` captures the Tier B pin, `--check-baseline` enforces tolerance, `--derive-limits` produces the Tier A artifact consumers. The suggested workflow is `--derive-limits` first (Tier A), then `--record-baseline` once the Tier A lands so the next rerun sees both sides.
-
-## Unreleased (prior)
-
-### Added
-
 - Retry mechanism for friendbot funding during contract deployment: `cargo budget-report` now automatically retries `stellar contract deploy` up to 3 additional times (4 total attempts) with exponential backoff (2s → 4s → 8s) when friendbot funding is suspected to have failed transiently due to rate-limiting or network latency. This reduces CI flakes and manual re-runs when using testnet.
-
 - Share of network limits in `cargo budget-report`: each metric now shows its value as a percentage of the corresponding Soroban network resource limit (fetched live via `getNetworkLimits` RPC, or documented Protocol v21 fallbacks for unreachable networks). Functions exceeding a configurable `--share-threshold` are visually marked with `⚠` in the table. The `--json` output carries `resource_limit` and `share_pct` fields for programmatic threshold checking.
-
 - `cargo budget-report --csv` flag: emits the budget report as CSV instead of a table or JSON. Without `--check`, produces four columns (`package`, `function`, `metric`, `value`); with `--check`, produces six columns (`package`, `function`, `metric`, `value`, `limit`, `pass`). Includes simulation-failure rows in `--check` mode so CI consumers see every configured function. Composes with `--check` and can replace `--json` in shell pipelines that prefer CSV. enforces per-function `cpu_limit`, `read_limit`, and `write_limit` declared in `budget.toml` against network-verified simulation costs. Prints a pass/fail line per function+metric and exits non-zero on any breach (or on any configured function whose simulation fails). Compiles with `--json` so entries gain `limit` and `pass` fields; the plain text and JSON output stay byte-for-byte identical to previous releases when `--check` is not passed.
 - Per-function `cpu_limit`, `read_limit`, and `write_limit` fields on `[functions.<name>]` entries in `budget.toml`. Any field omitted means the metric is reported but not enforced.
 - Single-page landing site under `site/` with empirical cost-gap breakdown, two-tier architecture overview, quick-start guide, asciinema demo embed, and project resources.
@@ -53,19 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Budget assertion tests for `require_auth` host calls: isolated `require_auth_only` contract function with CPU/memory budget assertions, plus per-operation deposit/swap/withdraw granular budget checks.
 - Budget assertion tests for `extend_ttl` operations: isolated `extend_instance_ttl` contract function with CPU/memory budget assertions and deliberate-regression fixtures, demonstrating how to budget-test ledger-rent operations.
 
+### Removed
+
+- **`audit_and_roadmap.md` (issue #448).** The file was an archive of finished audit/roadmap work with only three live items left, none of which belong in a tracked-down file: the missing `v0.1.0` release tag and two GitHub repository settings (branch protection, topics) that cannot be verified from the working tree. Each leftover now has its own issue; nothing else in the repository links to the file.
+
 ### Changed
 
+- Tier A reconciliation comments in `amm-pool-contract/tests/budget_test.rs` are now auto-generated from `tier-a-limits.provenance.md`, not transcribed by hand. Re-derive the artifact instead of editing the test inline when a limit needs to change.
+- `src/lib.rs` re-exports `module_25` alongside the existing `module_1`.
 - **JSON output schema**: `CostReport` entries now include a `status` field (`"success"` or `"failed"`) and an optional `failure_reason` field. Previously, simulation failures were silently omitted from the report; now they appear with `status: "failed"` and a human-readable reason. In `--check` mode, failure entries additionally carry `pass: Some(false)` and the configured limit per metric. Existing consumers that check `typeof row.value === 'number'` remain compatible because failed entries carry `value: null` (omitted from serialization).
-
 - **Table output**: Failed simulations now appear in a `--- FAILED SIMULATIONS ---` section below the main budget table. The summary line now reports both the number of successfully simulated functions and the number of failed ones.
-
 - **CSV output**: The `--csv` output now includes `status` and `failure_reason` columns. Without `--check`, the header is `status,package,function,metric,value,failure_reason`; with `--check`, it adds `limit,pass`.
-
 - **`SimulationFailure` enum**: Added `label()` and `detail()` methods for producing consistent, human-readable failure descriptions across all three failure paths (invoke failure, RPC error, metrics extraction failure).
 
 ### Fixed
 
+- **Pre-commit hook installer parity between `scripts/install-hooks.sh` and `scripts/install-hooks.ps1` (issue #476).** Both installers now validate that `scripts/pre-commit` exists before copying it (a clear error instead of a raw `cp` / `Copy-Item` failure), create the `.git/hooks` directory when it is missing instead of failing, and print the same success message describing what the hook checks and how to recover from a blocked commit. `install-hooks.ps1` also prints an explicit note that the hook is a bash script executed via the bash bundled with Git for Windows, so it runs correctly from PowerShell without a separate Git Bash terminal. `cargo-budget-report/tests/pre_commit_hook.rs` gains coverage for the missing-hooks-directory, double-run, subdirectory, and missing-source states on the shell path, plus a PowerShell-path test that runs when `pwsh` / `powershell` is available on `PATH` and otherwise reports that it was skipped.
 - Dynamic env-var budget limits (`env = "VAR"`) now panic with a clear message when the variable is set but contains an unparseable value (e.g. `1_000_000` or `"800000 "`), instead of silently falling back to `u64::MAX` and disabling the assertion.
+
+### Notes
+
+- The per-metric split (cpu / memory / read / write), not per-operation-type, is the grain of this change. **Issue #45** (per-operation-type margin) would slot in alongside `[scenarios]` as `keys: HashMap<FunctionKey, Margin>` in `DerivationConfig`; no macro change required.
+- **Issue #10** (baseline / regression mode) already coexists: `--record-baseline` captures the Tier B pin, `--check-baseline` enforces tolerance, `--derive-limits` produces the Tier A artifact consumers. The suggested workflow is `--derive-limits` first (Tier A), then `--record-baseline` once the Tier A lands so the next rerun sees both sides.
 
 ## [0.1.0] - 2026-07-24
 

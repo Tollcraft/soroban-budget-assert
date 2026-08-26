@@ -14,12 +14,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           toolchain: 1.91.0
           targets: wasm32v1-none wasm32-unknown-unknown
@@ -48,7 +48,7 @@ jobs:
           # Optionally, this uses budget.toml to populate fields instead of args
           # Ensure your repository has budget.toml configured for this to work
           # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-          # cargo run --bin cargo-budget-report -- budget-report --format md >> "$GITHUB_STEP_SUMMARY"
+          # cargo run --bin cargo-budget-report -- budget-report >> "$GITHUB_STEP_SUMMARY"
           # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
 
           # Mocking the JSON output for the demo so CI passes without testnet secrets:
@@ -68,7 +68,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Budget Report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: budget-report
           path: current_report.json
@@ -84,47 +84,145 @@ jobs:
       contents: write
 
     steps:
-    - uses: actions/checkout@v7
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         fetch-depth: 0
 
     - name: Download Budget Report
-      uses: actions/download-artifact@v8
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
       with:
         name: budget-report
 
+    # Appends one point to history.json on gh-pages ONLY when the uploaded
+    # report is a genuine network measurement. The mocked Tier B step in
+    # budget-check currently echoes a hardcoded placeholder; without this gate
+    # the published cost chart accumulates identical fabricated points stamped
+    # with real commit SHAs and timestamps — indistinguishable from real data.
+    # Historical entries that fail the same gate are purged. Declining to
+    # record is not a failure: the job exits successfully either way.
     - name: Record History Dataset
       run: |
+        set -euo pipefail
+
         # Configure Git for the bot
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        
+
         # Save report to temp location so it survives the checkout
         cp current_report.json /tmp/current_report.json
-        
+
+        # ── Measurement gate ─────────────────────────────────────────----
+        # Whether this report gets recorded is decided by inspecting the
+        # report itself, never by assuming which step produced it. A genuine
+        # `cargo budget-report --json` run emits every successfully simulated
+        # function with ALL FOUR metric rows (CPU Instructions, Read Bytes,
+        # Write Bytes, WASM Bytes), each carrying a numeric value; simulation
+        # failures emit null-valued stubs or no rows at all. Both producer
+        # shapes are accepted: the bare array emitted today and the
+        # {schema_version, snapshots} wrapped form. On top of those structural
+        # checks, the exact demo payload echoed by the mocked Tier B step is
+        # fingerprint-matched, so even a structurally complete copy of it
+        # stays blocked.
+        cat > /tmp/measurement_gate.jq <<'JQDEFS'
+        def rows:
+          if type == "object" and ((.snapshots | type) == "array")
+          then .snapshots else . end;
+
+        def fingerprint:
+          [ rows[] | [.package, .function, .metric, .value] ] | sort | tostring;
+
+        def known_placeholder_fingerprint:
+          [
+            ["amm-pool-contract", "do_expensive_work", "CPU Instructions", 1000000],
+            ["amm-pool-contract", "do_expensive_work", "Read Bytes", 4096]
+          ] | sort | tostring;
+
+        def complete_metric_sets:
+          [ (rows
+             | group_by((.package // "") + "\u0000" + (.function // ""))[]
+             | [.[].metric] | unique | sort) ]
+          | all(. == ["CPU Instructions", "Read Bytes", "WASM Bytes", "Write Bytes"]);
+
+        def is_real_measurement:
+          (rows | type) == "array"
+          and (rows | length) > 0
+          and all(rows[]; (.value | type) == "number")
+          and complete_metric_sets
+          and ((fingerprint) != known_placeholder_fingerprint);
+
+        # Sanitize past entries with the same gate the new report must pass,
+        # then append the new point only when it is a real measurement.
+        # ($incoming is the slurpfile wrapper around the single report.)
+        . as $old
+        | ([ $old[] | select(.data | is_real_measurement) ]) as $clean
+        | ($incoming[0] | is_real_measurement) as $recorded
+        | {
+            purged: (($old | length) - ($clean | length)),
+            recorded: $recorded,
+            history: (
+              $clean +
+              (if $recorded
+               then [{ commit: $commit, timestamp: $time, data: $incoming[0] }]
+               else [] end)
+            )
+          }
+        JQDEFS
+
         # Clean up any modified files from testing before switching branches
         git reset --hard
         git clean -fd
-        
+
         # Fetch and checkout the gh-pages branch, or create it if missing
         git fetch origin gh-pages || true
         git checkout gh-pages || git checkout -b gh-pages
         git pull origin gh-pages || true
-        
+
         # Initialize history.json if it doesn't exist
         if [ ! -f history.json ]; then
-          echo "[]" > history.json
+          echo '[]' > history.json
         fi
-        
-        # Append the new report to history.json using jq
-        jq --arg commit "${{ github.sha }}" \
+
+        # Sanitize + append in one atomic pass. Every pre-existing entry must
+        # clear the same gate as the new report; anything else was recorded
+        # from a placeholder and is removed rather than left looking like a
+        # real measurement. This lands as a normal forward commit on gh-pages:
+        # no force-push, no rewrite of published history.
+        jq --arg commit "$GITHUB_SHA" \
            --arg time "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-           --slurpfile report /tmp/current_report.json \
-           '. + [{commit: $commit, timestamp: $time, data: $report[0]}]' history.json > history_new.json
-           
+           --slurpfile incoming /tmp/current_report.json \
+           -f /tmp/measurement_gate.jq \
+           history.json > /tmp/history_result.json
+
+        purged=$(jq '.purged' /tmp/history_result.json)
+        if jq -e '.recorded' /tmp/history_result.json > /dev/null; then
+          recorded=1
+          echo "Report passed the measurement gate; recording it."
+        else
+          recorded=0
+          echo "::notice::current_report.json failed the measurement gate (not a network-measured report). Declining to append it to history.json — this is not a failure."
+        fi
+        if [ "$purged" -gt 0 ]; then
+          echo "::notice::Purged $purged historical entries whose payloads fail the measurement gate (pre-existing placeholder/mock points)."
+        fi
+
+        jq '.history' /tmp/history_result.json > history_new.json
         mv history_new.json history.json
-        
-        # Commit and push to gh-pages branch
+
+        # Commit and push to gh-pages branch. Declining to record still pushes
+        # any purge that happened; if neither happened there is nothing to do.
         git add history.json
-        git commit -m "chore: record budget history for ${{ github.sha }}" || echo "No changes to commit"
+        if git diff --cached --quiet; then
+          echo "history.json unchanged; nothing to commit."
+        else
+          if [ "$recorded" -eq 1 ]; then
+            msg="chore: record budget history for $GITHUB_SHA"
+          else
+            msg="chore: decline non-measured report for $GITHUB_SHA"
+          fi
+          if [ "$purged" -gt 0 ]; then
+            git commit -m "$msg" -m "Purged $purged historical entries whose payloads fail the measurement gate (they were recorded from the mocked Tier B placeholder before this job was gated; see https://github.com/Tollcraft/soroban-budget-assert/issues/442)."
+          else
+            git commit -m "$msg"
+          fi
+        fi
         git push origin gh-pages

@@ -24,7 +24,7 @@
 The tool is split into two primary components:
 
 1. **`budget-macros` (Tier A - Local, Fast, CI-Blocking)**
-   - Rust macros (`#[budget_cpu_lt(N)]`, `#[budget_mem_lt(N)]`) applied directly to your test functions.
+   - Rust macros (`#[budget_cpu_lt(N)]`, `#[budget_mem_lt(N)]`, `#[budget_read_bytes_lt(N)]`, `#[budget_write_bytes_lt(N)]`) applied directly to your test functions.
    - Fails the test the moment measured cost crosses your pinned limit, so cost regressions are caught in CI instead of on the network.
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
@@ -49,10 +49,10 @@ The fixture is a benchmark, not a product. It implements `initialize`, `deposit`
 
 ## 📊 Cost-over-time Dashboard
 
-Every push to `main` runs [`budget.yml`](.github/workflows/budget.yml), whose `record-history` job appends a `{commit, timestamp, data}` entry to `history.json` on the `gh-pages` branch. The static dashboard at [`site/dashboard.html`](site/dashboard.html) (published by [`deploy-site.yml`](.github/workflows/deploy-site.yml)) fetches that file at page load and plots per-function trend lines, so a regression like "`do_expensive_work` got 12% more expensive over the last ten commits" is visible at a glance.
+Every push to `main` runs [`budget.yml`](.github/workflows/budget.yml), whose `record-history` job appends a `{commit, timestamp, data}` entry to `history.json` on the `gh-pages` branch — but only when the uploaded report is a genuine network-measured measurement. The job inspects the report itself (every recorded function must carry all four metric rows with numeric values, and the known demo placeholder is rejected verbatim); anything else is declined without failing the run. Entries already in `history.json` that fail the same check (legacy mocked points) are purged on the next push to `main`. The static dashboard at [`site/dashboard.html`](site/dashboard.html) (published by [`deploy-site.yml`](.github/workflows/deploy-site.yml)) fetches that file at page load and plots per-function trend lines, so a regression like "`do_expensive_work` got 12% more expensive over the last ten commits" is visible at a glance — and every point on it is real.
 
 **How the pieces fit together:**
-1. `record-history` job → appends to `history.json` on `gh-pages`.
+1. `record-history` job → verifies the report is a real measurement, purges non-measured legacy entries, then appends to `history.json` on `gh-pages`.
 2. `deploy-site.yml` → publishes `site/**` to `gh-pages` with `keep_files: true`, so `history.json` is never wiped.
 3. The dashboard page fetches `history.json` same-origin and pivots it client-side into `package → function → metric` series — no backend, no build-time data baking.
 
@@ -194,10 +194,10 @@ cargo budget-report --check --fail-fast
 
 **Use Macros in Tests:**
 
-The macros (`budget_cpu_lt`, `budget_mem_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
+The macros (`budget_cpu_lt`, `budget_mem_lt`, `budget_read_bytes_lt`, `budget_write_bytes_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
 
 ```rust
-use budget_macros::{budget_cpu_lt, budget_mem_lt};
+use budget_macros::{budget_cpu_lt, budget_mem_lt, budget_read_bytes_lt, budget_write_bytes_lt};
 use soroban_sdk::Env;
 
 // CPU instruction assertion. The limit is read at test runtime from a

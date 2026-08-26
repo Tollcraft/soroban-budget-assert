@@ -10,7 +10,7 @@
 //! `Send + Sync`), so it can be converted to `anyhow::Error` via the `?`
 //! operator when the caller returns `anyhow::Result`.  The `main()`
 //! function is the natural place to keep that outer `anyhow::Result` return
-//! type; all intermediate functions use [`crate::module_10::Result`].
+//! type; all intermediate functions use [`crate::error::Result`].
 
 use std::fmt;
 

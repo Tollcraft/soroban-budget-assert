@@ -142,4 +142,44 @@ pub struct BudgetReportArgs {
     /// `tier-a-limits.provenance.md` for `tier-a-limits.env`).
     #[arg(long, value_name = "PATH")]
     pub provenance_out: Option<String>,
+
+    /// Maximum number of attempts (including the first) for deploy,
+    /// invoke-build, and simulate-RPC calls before giving up. `1`
+    /// disables retry entirely. Overrides `retry.max_attempts` in
+    /// `budget.toml`; defaults to 4.
+    #[arg(long, value_name = "N")]
+    pub max_retry_attempts: Option<u32>,
+
+    /// Initial backoff, in seconds, before the first retry. Doubles on
+    /// each subsequent attempt (2 → 4 → 8). Overrides
+    /// `retry.initial_backoff_secs` in `budget.toml`; defaults to 2.
+    #[arg(long, value_name = "SECS")]
+    pub retry_backoff_secs: Option<u64>,
+
+    /// Emit the report as a single self-contained HTML page instead of a
+    /// table, JSON, or CSV.
+    ///
+    /// The page has no external CSS, scripts, or fonts, so it renders
+    /// correctly from a `file://` URL and from a downloaded CI artifact.
+    /// Each row shows the same values as `--json` for the same run; in
+    /// `--check` mode rows also show their limit and pass/fail status.
+    #[arg(long, default_value_t = false)]
+    pub html: bool,
+
+    /// Record every transport response (deploy, invoke-build, and
+    /// simulate RPC) into a replayable fixture file at this path.
+    ///
+    /// The run itself still talks to the network; the fixture it writes
+    /// lets a later `--replay` run reproduce the same report offline.
+    #[arg(long, value_name = "PATH", conflicts_with = "replay")]
+    pub record: Option<String>,
+
+    /// Replay a run from a fixture file written by `--record`.
+    ///
+    /// The whole report pipeline runs offline: no `stellar` CLI, no
+    /// `curl`, no network access. Deploy, invoke-build and simulate RPC
+    /// responses are served from the fixture. `--record` and `--replay`
+    /// are mutually exclusive.
+    #[arg(long, value_name = "PATH", conflicts_with = "record")]
+    pub replay: Option<String>,
 }

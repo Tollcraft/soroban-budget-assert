@@ -26,32 +26,32 @@ sequenceDiagram
     participant Report as Budget Report
 
     Dev->>CLI: cargo budget-report [--check] [--json]
-    CLI->>Cargo: cargo build -p <contract> --release\n--target wasm32-unknown-unknown
+    CLI->>Cargo: cargo build -p <contract> --release<br/>--target wasm32-unknown-unknown
     Cargo-->>WASM: amm_pool_contract.wasm (cdylib)
 
     CLI->>Parser: wasmparser: scan exports
     Parser-->>CLI: exported function names list
 
-    CLI->>CLI: Read budget.toml\n(network, source, per-function args/limits)
+    CLI->>CLI: Read budget.toml<br/>(network, source, per-function args/limits)
 
     loop For each exported function in budget.toml
-        CLI->>Stellar: stellar contract invoke\n--function <fn> --args <args>
+        CLI->>Stellar: stellar contract invoke<br/>--function <fn> --args <args>
         Stellar->>RPC: simulateTransaction (XDR)
-        RPC-->>Stellar: SimulateTransactionResponse\n(transactionData XDR)
+        RPC-->>Stellar: SimulateTransactionResponse<br/>(transactionData XDR)
         Stellar-->>CLI: stdout JSON response
 
-        CLI->>CLI: Decode transactionData XDR\nExtract: CPU instructions,\nread bytes, write bytes
+        CLI->>CLI: Decode transactionData XDR<br/>Extract: CPU instructions,<br/>read bytes, write bytes
 
         alt --check mode and limit configured
-            CLI->>CLI: Compare value vs cpu_limit /\nread_limit / write_limit
+            CLI->>CLI: Compare value vs cpu_limit /<br/>read_limit / write_limit
             CLI-->>Report: PASS or FAIL per metric
         else report-only mode
             CLI-->>Report: Record value (no enforcement)
         end
     end
 
-    CLI->>Report: Render table (tabled) or\nemit JSON (--json flag)
-    Report-->>Dev: Console output +\ncurrent_report.json artifact
+    CLI->>Report: Render table (tabled) or<br/>emit JSON (--json flag)
+    Report-->>Dev: Console output +<br/>current_report.json artifact
 
     alt Any limit breached or simulation failed
         CLI-->>Dev: exit code 1 (CI fails)
@@ -74,31 +74,31 @@ regression.
 
 ```mermaid
 graph TD
-    A["#[budget_cpu_lt(N)] or\n#[budget_cpu_lt(env = \"VAR\")]"]
-    A --> B[Proc-macro invoked at compile time\nby rustc]
+    A["#[budget_cpu_lt(N)] or<br/>#[budget_cpu_lt(env = \"VAR\")]"]
+    A --> B["Proc-macro invoked at compile time<br/>by rustc"]
 
     B --> C{Parse attribute tokens}
 
-    C -->|Integer literal| D["BudgetLimit::Int(N)\nlimit_expr = quote! { N }"]
-    C -->|env = \"VAR\" syntax| E["BudgetLimit::EnvVar(VAR)\nlimit_expr = quote! {\n  match budget_env_resolve(VAR) { … }\n}"]
+    C -->|Integer literal| D["BudgetLimit::Int(N)<br/>limit_expr = quote! { N }"]
+    C -->|env = \"VAR\" syntax| E["BudgetLimit::EnvVar(VAR)<br/>limit_expr = quote! {<br/>  match budget_env_resolve(VAR) { … }<br/>}"]
 
     D --> F[Parse test fn body via syn::ItemFn]
     E --> F
 
-    F --> G[Inject preamble into fn body:\nlet budget_env_resolve = |var| std::env::var(var).ok()]
+    F --> G["Inject preamble into fn body:<br/>let budget_env_resolve = |var| std::env::var(var).ok()"]
 
-    G --> H[Append cost-check epilogue:\nlet budget = env.cost_estimate().budget();\nlet cpu_cost = budget.cpu_instruction_cost();\nlet limit_u64: u64 = limit_expr;\nassert!(cpu_cost < limit_u64, …)]
+    G --> H["Append cost-check epilogue:<br/>let budget = env.cost_estimate().budget();<br/>let cpu_cost = budget.cpu_instruction_cost();<br/>let limit_u64: u64 = limit_expr;<br/>assert!(cpu_cost < limit_u64, …)"]
 
-    H --> I[Emit rewritten fn tokens\nback to rustc]
+    H --> I["Emit rewritten fn tokens<br/>back to rustc"]
 
     I --> J{Runtime: test executes}
 
     J -->|cpu_cost < limit_u64| K["Test passes ✅"]
-    J -->|cpu_cost >= limit_u64| L["panic! with message:\n'CPU instruction cost N exceeded limit M\n- local estimate, real network cost\nmay differ significantly in either direction'"]
+    J -->|cpu_cost >= limit_u64| L["panic! with message:<br/>'CPU instruction cost N exceeded limit M<br/>- local estimate, real network cost<br/>may differ significantly in either direction'"]
 
     L --> M{#[should_panic] present?}
-    M -->|Yes — deliberate regression fixture| N["Test passes ✅\n(expected failure documented)"]
-    M -->|No — real regression| O["Test fails ❌\nCI exits non-zero"]
+    M -->|Yes — deliberate regression fixture| N["Test passes ✅<br/>(expected failure documented)"]
+    M -->|No — real regression| O["Test fails ❌<br/>CI exits non-zero"]
 
     style A fill:#1e3a5f,color:#fff,stroke:#4a90d9
     style K fill:#1a4731,color:#fff,stroke:#2d7a4f

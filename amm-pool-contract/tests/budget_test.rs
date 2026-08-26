@@ -3,7 +3,9 @@
 use std::sync::{Mutex, PoisonError};
 
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient};
-use budget_macros::{budget_cpu_lt, budget_lt, budget_mem_lt, budget_write_bytes_lt};
+use budget_macros::{
+    budget_cpu_lt, budget_lt, budget_mem_lt, budget_read_bytes_lt, budget_write_bytes_lt,
+};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Serialises all JSON-config tests so they never read stale `budget.json`
@@ -488,6 +490,42 @@ fn test_macro_hygiene_write_bytes_shadows_budget_and_limit() {
     assert_eq!(budget, "i_am_a_string_not_a_budget");
     assert_eq!(write_bytes_cost, "also_string_not_cost");
     assert_eq!(limit_u64, 777);
+}
+
+#[test]
+#[budget_read_bytes_lt(5_000_000)]
+fn test_macro_hygiene_read_bytes_shadows_budget_and_limit() {
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+
+    // Deliberately shadow the macro's injected identifiers.
+    let budget = "i_am_a_string_not_a_budget";
+    let read_bytes_cost = "also_string_not_cost";
+    let limit_u64 = 777;
+
+    client.do_read_heavy_work(&50);
+
+    assert_eq!(budget, "i_am_a_string_not_a_budget");
+    assert_eq!(read_bytes_cost, "also_string_not_cost");
+    assert_eq!(limit_u64, 777);
+}
+
+#[test]
+#[budget_read_bytes_lt(
+    env_file = TIER_A_LIMITS_FILE,
+    env = "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__READ",
+    baseline = baseline_mem()
+)]
+fn test_budget_read_bytes_full_workflow() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
 }
 
 /// Fixture: contract invocation stays within the read bytes budget.

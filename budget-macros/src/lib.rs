@@ -3,6 +3,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{quote, ToTokens};
+use syn::visit_mut::{self, VisitMut};
 use syn::{
     parse::Parse, parse::ParseStream, parse_quote, Attribute, Expr, Ident, ItemFn, LitFloat,
     LitInt, LitStr, Token,
@@ -36,7 +37,7 @@ struct BudgetSpec {
 }
 
 /// A limit plus an optional baseline, for the single-metric attributes
-/// (`budget_cpu_lt`, `budget_mem_lt`, `budget_write_bytes_lt`).
+/// (`budget_cpu_lt`, `budget_mem_lt`, `budget_write_bytes_lt`, `budget_read_bytes_lt`).
 ///
 /// `budget_lt` takes its baselines as the separate `cpu_baseline` /
 /// `mem_baseline` keys instead, because it carries two metrics at once.
@@ -338,7 +339,23 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                 {
                     let env_file_path: &str = #path;
                     let env_file_key: &str = #var_name;
-                    let resolved = std::fs::read_to_string(env_file_path).ok().and_then(|content| {
+                    let mut content_opt = std::fs::read_to_string(env_file_path).ok();
+                    if content_opt.is_none() {
+                        let candidates = [
+                            format!("budget-macros/{}", env_file_path),
+                            format!("../budget-macros/{}", env_file_path),
+                            format!("../../budget-macros/{}", env_file_path),
+                            format!("../../../budget-macros/{}", env_file_path),
+                            format!("../../../../budget-macros/{}", env_file_path),
+                        ];
+                        for c in &candidates {
+                            if let Ok(c_content) = std::fs::read_to_string(c) {
+                                content_opt = Some(c_content);
+                                break;
+                            }
+                        }
+                    }
+                    let resolved = content_opt.and_then(|content| {
                         parse_env_file_value(&content, env_file_key)
                     });
                     resolved.map(|s| {
@@ -422,20 +439,212 @@ fn generate_metric_assert(
 /// test). Appending the budget assertion after that tail would not parse, so
 /// the tail is captured into a binding, the assertion runs, and the captured
 /// value is returned unchanged.
-fn split_tail_expr(
-    block: &syn::Block,
-) -> (
-    &[syn::Stmt],
-    Option<proc_macro2::TokenStream>,
-    Option<proc_macro2::TokenStream>,
-) {
-    match block.stmts.last() {
-        Some(tail @ syn::Stmt::Expr(_, None)) => (
-            &block.stmts[..block.stmts.len() - 1],
-            Some(quote! { let __budget_tail_value = #tail; }),
-            Some(quote! { __budget_tail_value }),
-        ),
-        _ => (&block.stmts[..], None, None),
+const MACRO_RETURN_ERROR: &str = "`return` inside a macro invocation is not supported by the \
+     budget macros: the assertion cannot be injected into macro tokens, so it would be skipped \
+     silently. Move the `return` out of the macro invocation, or end the test with a tail \
+     expression instead. (If this `return` belongs to a closure passed to the macro, lift the \
+     closure into a `let` binding before the macro call.)";
+
+/// Rewrites the test body so the budget assertion runs on every path that leaves
+/// the test function.
+///
+/// `return e` becomes `return { let v = e; <assertion>; v }`, which keeps the
+/// expression's `!` type (so `return` in value position still type-checks) and
+/// evaluates `e` before measuring, so the returned value's own cost is counted.
+///
+/// `return`s belonging to a nested closure, `async` block, or nested item exit
+/// that inner body rather than the test, so those are left untouched. `return`s
+/// hidden inside macro invocation tokens cannot be rewritten and are collected
+/// so the caller can report them.
+struct ReturnRewriter {
+    assertion: proc_macro2::TokenStream,
+    macro_returns: Vec<Span>,
+}
+
+impl VisitMut for ReturnRewriter {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        // A `return` in here leaves the closure/async body, not the test function.
+        if matches!(expr, Expr::Closure(_) | Expr::Async(_)) {
+            return;
+        }
+
+        // Rewrite inner expressions first so the injected assertion is not revisited.
+        visit_mut::visit_expr_mut(self, expr);
+
+        if let Expr::Return(ret) = expr {
+            let assertion = &self.assertion;
+            *expr = match ret.expr.take() {
+                Some(value) => parse_quote! {
+                    return {
+                        let __budget_returned = #value;
+                        #assertion
+                        __budget_returned
+                    }
+                },
+                None => parse_quote! {
+                    return {
+                        #assertion
+                    }
+                },
+            };
+        }
+    }
+
+    fn visit_item_mut(&mut self, _item: &mut syn::Item) {
+        // Nested items (e.g. helper `fn`s declared in the body) have their own returns.
+    }
+
+    fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+        if let Some(span) = find_return_token(mac.tokens.clone()) {
+            self.macro_returns.push(span);
+        }
+    }
+}
+
+/// Finds a `return` token anywhere in a macro's token stream.
+fn find_return_token(tokens: proc_macro2::TokenStream) -> Option<Span> {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Ident(ident) if ident == "return" => return Some(ident.span()),
+            proc_macro2::TokenTree::Group(group) => {
+                if let Some(span) = find_return_token(group.stream()) {
+                    return Some(span);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Rebuilds `input_fn`'s body as `prelude`, the original statements, and
+/// `assertion` on every path that leaves the function.
+///
+/// A trailing expression is bound before the assertion and yielded afterwards, so
+/// it stays the function's value and `-> Result<_, _>` bodies compile; early
+/// `return`s carry the assertion via [`ReturnRewriter`]. Returns the tokens to
+/// emit instead when the body has a `return` the rewrite cannot reach.
+fn instrument_exit_paths(
+    input_fn: &mut ItemFn,
+    prelude: proc_macro2::TokenStream,
+    assertion: proc_macro2::TokenStream,
+) -> Option<TokenStream> {
+    let mut rewriter = ReturnRewriter {
+        assertion: assertion.clone(),
+        macro_returns: Vec::new(),
+    };
+    let original_fn = input_fn.clone();
+    rewriter.visit_block_mut(&mut input_fn.block);
+
+    if !rewriter.macro_returns.is_empty() {
+        let errors = rewriter
+            .macro_returns
+            .iter()
+            .map(|span| syn::Error::new(*span, MACRO_RETURN_ERROR).to_compile_error());
+        // Emit the untouched function too, so the only error reported is ours.
+        return Some(TokenStream::from(quote! {
+            #(#errors)*
+            #original_fn
+        }));
+    }
+
+    // A trailing expression is the function's value (e.g. `Ok(())`), so it has to
+    // be bound before the assertion and yielded afterwards. A trailing `return`
+    // already carries the assertion from the rewrite above.
+    let tail = match input_fn.block.stmts.last() {
+        Some(syn::Stmt::Expr(expr, None)) if !matches!(expr, Expr::Return(_)) => {
+            match input_fn.block.stmts.pop() {
+                Some(syn::Stmt::Expr(expr, None)) => Some(expr),
+                _ => unreachable!("last statement was just matched as a trailing expression"),
+            }
+        }
+        _ => None,
+    };
+
+    let stmts = &input_fn.block.stmts;
+    let new_block = match tail {
+        Some(tail) => quote! {
+            {
+                #prelude
+
+                #(#stmts)*
+
+                let __budget_value = #tail;
+                #assertion
+                __budget_value
+            }
+        },
+        None => quote! {
+            {
+                #prelude
+
+                #(#stmts)*
+
+                #assertion
+            }
+        },
+    };
+
+    *input_fn.block = match syn::parse2(new_block) {
+        Ok(block) => block,
+        Err(e) => return Some(TokenStream::from(e.into_compile_error())),
+    };
+    // A body ending in `return`/`panic!` makes the trailing assertion unreachable;
+    // the paths that do reach an exit already asserted.
+    input_fn
+        .attrs
+        .push(syn::parse_quote!(#[allow(unreachable_code)]));
+
+    None
+}
+
+fn generate_prelude() -> proc_macro2::TokenStream {
+    quote! {
+        #[allow(unused_variables)]
+        let budget_env_resolve = |var: &str| -> Option<String> {
+            std::env::var(var).ok()
+        };
+
+        #[allow(unused_variables)]
+        let parse_config_value = |content: &str, key: &str| -> Option<u64> {
+            let key_pattern = format!("\"{}\"", key);
+            let key_start = content.find(&key_pattern)?;
+            let after_key = &content[key_start + key_pattern.len()..];
+            let colon_pos = after_key.find(':')?;
+            let after_colon = after_key[colon_pos + 1..].trim();
+            let num_end = after_colon
+                .find(|c: char| !c.is_ascii_digit() && c != ',' && c != '}')
+                .unwrap_or(after_colon.len());
+            let num_str = after_colon[..num_end]
+                .trim()
+                .trim_end_matches(',')
+                .trim_end_matches('}')
+                .trim_matches('"');
+            num_str.parse().ok()
+        };
+
+        #[allow(unused_variables)]
+        let parse_env_file_value = |content: &str, key: &str| -> Option<String> {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                let (lhs, rhs) = trimmed.split_once('=')?;
+                if lhs.trim() == key {
+                    let raw = rhs.trim();
+                    let unquoted = raw
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .or_else(|| {
+                            raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
+                        })
+                        .unwrap_or(raw);
+                    return Some(unquoted.to_string());
+                }
+            }
+            None
+        };
     }
 }
 
@@ -445,7 +654,6 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
-    let (stmts, tail_capture, tail_return) = split_tail_expr(&input_fn.block);
     let env_ident = spec
         .env_ident
         .unwrap_or_else(|| proc_macro2::Ident::new("env", proc_macro2::Span::call_site()));
@@ -478,75 +686,17 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
         ));
     }
 
-    let new_block = quote! {
+    let prelude = generate_prelude();
+    let assertion = quote! {
         {
-            #[allow(unused_variables)]
-            let budget_env_resolve = |var: &str| -> Option<String> {
-                std::env::var(var).ok()
-            };
-
-            #[allow(unused_variables)]
-            let parse_config_value = |content: &str, key: &str| -> Option<u64> {
-                let key_pattern = format!("\"{}\"", key);
-                let key_start = content.find(&key_pattern)?;
-                let after_key = &content[key_start + key_pattern.len()..];
-                let colon_pos = after_key.find(':')?;
-                let after_colon = after_key[colon_pos + 1..].trim();
-                let num_end = after_colon
-                    .find(|c: char| !c.is_ascii_digit() && c != ',' && c != '}')
-                    .unwrap_or(after_colon.len());
-                let num_str = after_colon[..num_end]
-                    .trim()
-                    .trim_end_matches(',')
-                    .trim_end_matches('}')
-                    .trim_matches('"');
-                num_str.parse().ok()
-            };
-
-            /// Parse a `KEY=VALUE` line out of an `.env`-shaped file body.
-            ///
-            /// Mirrors the shape used by `cargo budget-report
-            /// --derive-limits` and other `.env` producers: one
-            /// `KEY=VALUE` per non-comment, non-blank line, with `#`-led
-            /// comment lines and surrounding whitespace tolerated.
-            #[allow(unused_variables)]
-            let parse_env_file_value = |content: &str, key: &str| -> Option<String> {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        continue;
-                    }
-                    let (lhs, rhs) = trimmed.split_once('=')?;
-                    if lhs.trim() == key {
-                        // Strip optional surrounding quotes from the value;
-                        // `.env` producers commonly emit either form.
-                        let raw = rhs.trim();
-                        let unquoted = raw
-                            .strip_prefix('"')
-                            .and_then(|s| s.strip_suffix('"'))
-                            .or_else(|| {
-                                raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
-                            })
-                            .unwrap_or(raw);
-                        return Some(unquoted.to_string());
-                    }
-                }
-                None
-            };
-
-            #(#stmts)*
-            #tail_capture
-
             let budget = #env_ident.cost_estimate().budget();
             #(#asserts)*
-            #tail_return
         }
     };
 
-    *input_fn.block = match syn::parse2(new_block) {
-        Ok(block) => block,
-        Err(e) => return TokenStream::from(e.into_compile_error()),
-    };
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, prelude, assertion) {
+        return tokens;
+    }
 
     TokenStream::from(quote! {
         #input_fn
@@ -675,13 +825,11 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
-    let (stmts, tail_capture, tail_return) = split_tail_expr(&input_fn.block);
-
     let limit_expr = generate_limit_expr(&spec.limit, "budget_write_bytes_lt");
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
     let cost_ident = proc_macro2::Ident::new("write_bytes_cost", proc_macro2::Span::call_site());
-    let assertion = generate_metric_assert(
+    let assert_tokens = generate_metric_assert(
         &cost_ident,
         quote! { budget.memory_bytes_cost() },
         &limit_expr,
@@ -690,18 +838,114 @@ pub fn budget_write_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStrea
         "Write bytes cost (memory proxy) {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, underestimates real network cost",
     );
 
-    let new_block = quote! {
+    let prelude = generate_prelude();
+    let assertion = quote! {
         {
-            #(#stmts)*
-            #tail_capture
-
             let budget = #env_ident.cost_estimate().budget();
-            #assertion
-            #tail_return
+            #assert_tokens
         }
     };
 
-    *input_fn.block = syn::parse2(new_block).unwrap();
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, prelude, assertion) {
+        return tokens;
+    }
+
+    TokenStream::from(quote! {
+        #input_fn
+    })
+}
+
+/// Asserts that the ledger read bytes used by `env` are less than N.
+///
+/// Read bytes represent the total bytes read from ledger storage during
+/// contract execution. This macro measures the local `memory_bytes_cost` as a
+/// proxy, which correlates with storage access overhead even though the
+/// exact on-network read-bytes figure is only available via RPC simulation.
+/// Must be placed on a test function that has a local `env` variable.
+///
+/// # Local Estimates vs Network Costs
+///
+/// This attribute checks a **local estimate** of read byte consumption.
+/// Local estimates can underestimate real Testnet or Futurenet costs.
+/// Use local assertions as a fast local regression gate. For true network ground truth,
+/// use `cargo budget-report`.
+///
+/// # Usage Examples
+///
+/// ## Static Limit
+///
+/// ```rust,ignore
+/// use budget_macros::budget_read_bytes_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_read_bytes_lt(4_096)]
+/// fn test_read_bytes_budget() {
+///     let env = Env::default();
+///     // ...
+/// }
+/// ```
+///
+/// ## Dynamic Limit via Environment Variable (`env = "VAR_NAME"`)
+///
+/// ```rust,ignore
+/// use budget_macros::budget_read_bytes_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_read_bytes_lt(env = "MAX_READ_BYTES")]
+/// fn test_read_bytes_dynamic() {
+///     let env = Env::default();
+/// }
+/// ```
+///
+/// ## Limit from a `.env` File (`env_file = "PATH"` + `env = "VAR_NAME"`)
+///
+/// ```rust,ignore
+/// use budget_macros::budget_read_bytes_lt;
+/// use soroban_sdk::Env;
+///
+/// #[test]
+/// #[budget_read_bytes_lt(env_file = "../tier-a-limits.env", env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__READ")]
+/// fn test_deposit_read_budget() {
+///     let env = Env::default();
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn budget_read_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let spec = match syn::parse::<StandaloneSpec>(attr) {
+        Ok(s) => s,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+    let mut input_fn = match syn::parse::<ItemFn>(item) {
+        Ok(f) => f,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+
+    let limit_expr = generate_limit_expr(&spec.limit, "budget_read_bytes_lt");
+
+    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let cost_ident = proc_macro2::Ident::new("read_bytes_cost", proc_macro2::Span::call_site());
+    let assert_tokens = generate_metric_assert(
+        &cost_ident,
+        quote! { budget.memory_bytes_cost() },
+        &limit_expr,
+        spec.baseline.as_ref(),
+        "Read bytes cost (memory proxy) {} exceeded limit {} - local estimate, underestimates real network cost",
+        "Read bytes cost (memory proxy) {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, underestimates real network cost",
+    );
+
+    let prelude = generate_prelude();
+    let assertion = quote! {
+        {
+            let budget = #env_ident.cost_estimate().budget();
+            #assert_tokens
+        }
+    };
+
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, prelude, assertion) {
+        return tokens;
+    }
 
     TokenStream::from(quote! {
         #input_fn
