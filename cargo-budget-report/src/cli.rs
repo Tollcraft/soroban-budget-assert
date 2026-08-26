@@ -30,7 +30,7 @@ pub struct BudgetReportArgs {
     #[arg(long)]
     pub source: Option<String>,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
     /// Enforce per-function limits declared in `budget.toml`.
@@ -49,12 +49,12 @@ pub struct BudgetReportArgs {
     pub csv: bool,
 
     /// Write a new resource-usage baseline snapshot to this path and exit.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "check_baseline")]
     pub record_baseline: Option<String>,
 
     /// Check current measurements against an existing baseline snapshot at
     /// this path, applying the configured regression tolerance.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "record_baseline")]
     pub check_baseline: Option<String>,
 
     /// Override the regression tolerance (e.g. "0.10" for 10%). Takes
@@ -204,4 +204,43 @@ pub enum ColorChoice {
     Always,
     /// Never emit colour.
     Never,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn json_and_csv_are_mutually_exclusive() {
+        let err = CargoCli::try_parse_from(["cargo", "budget-report", "--json", "--csv"])
+            .expect_err("--json and --csv together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn json_alone_is_accepted() {
+        let result = CargoCli::try_parse_from(["cargo", "budget-report", "--json"]);
+        assert!(result.is_ok(), "--json alone should parse: {result:?}");
+    }
+
+    #[test]
+    fn csv_alone_is_accepted() {
+        let result = CargoCli::try_parse_from(["cargo", "budget-report", "--csv"]);
+        assert!(result.is_ok(), "--csv alone should parse: {result:?}");
+    }
+
+    #[test]
+    fn record_baseline_and_check_baseline_are_mutually_exclusive() {
+        let err = CargoCli::try_parse_from([
+            "cargo",
+            "budget-report",
+            "--record-baseline",
+            "out.json",
+            "--check-baseline",
+            "base.json",
+        ])
+        .expect_err("--record-baseline and --check-baseline together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
 }
