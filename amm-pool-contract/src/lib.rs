@@ -1,4 +1,9 @@
 #![no_std]
+// soroban-sdk 27 deprecates `Events::publish` in favour of the `#[contractevent]`
+// macro. This is a fixture/benchmark contract and the event payloads are not
+// asserted on anywhere; migrating the event model is out of scope for the SDK
+// bump (issue #382). Suppress the deprecation rather than half-migrate it.
+#![allow(deprecated)]
 use soroban_sdk::{
     contract, contractimpl, symbol_short, vec, Address, Bytes, Env, Symbol, Val, Vec,
 };
