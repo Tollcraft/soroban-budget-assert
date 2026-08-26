@@ -671,7 +671,7 @@ The section key `<name>` must match the **exported WASM function name exactly** 
 
 | Field | Type | Required | Default | Effect |
 |---|---|---|---|---|
-| `args` | array of strings | no | `[]` | Forwarded verbatim after the `--` separator to `stellar contract invoke -- <fn> <args>`. Functions without an entry are simulated with no arguments. |
+| `args` | array of strings **or** arg-spec tables | no | `[]` | Arguments for `stellar contract invoke -- <fn> …`. A bare string is forwarded verbatim; a table is a typed spec (see below). The two forms can be mixed in one list. Functions without an entry are simulated with no arguments. |
 | `cpu_limit` | integer (u64) | no | none | Inclusive upper bound on the measured `CPU Instructions` metric in `--check` mode. |
 | `read_limit` | integer (u64) | no | none | Inclusive upper bound on `Read Bytes`. |
 | `write_limit` | integer (u64) | no | none | Inclusive upper bound on `Write Bytes`. |
@@ -682,6 +682,32 @@ The section key `<name>` must match the **exported WASM function name exactly** 
 - There is deliberately no limit field for `WASM Bytes` — binary size is reported but can never be enforced through this file.
 - **Unknown keys inside a `[functions.*]` block produce a parse error** (e.g. a typo like `cpu_lmit` fails the run instead of silently doing nothing).
 - Under `--check`, a configured function whose *simulation fails* counts as a check failure even when none of its limits are set, so a broken invocation cannot masquerade as a pass.
+
+#### Typed argument specs
+
+A flat string list only works for functions taking scalars a human can type. For an entry point taking an address, a symbol, or a structured value, give a table instead:
+
+```toml
+[functions.transfer]
+args = [
+  { name = "from",   type = "address", generate = true },
+  { name = "to",     type = "address", value = "GAAAA…WHF" },
+  { name = "amount", type = "i128",    value = "1000000" },
+  { name = "memo",   type = "symbol",  value = "topup" },
+  { name = "opts",   type = "json",    value = { retries = 3, dry_run = false } },
+]
+```
+
+Each table renders to a `--<name> <value>` pair, so the result is identical to the string list you would otherwise write by hand.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | The parameter name; rendered as `--<name>`. |
+| `type` | yes | One of: `u32` `i32` `u64` `i64` `u128` `i128` `u256` `i256`, `bool`, `symbol`, `string`, `bytes` (hex, `0x` optional), `address`, `json` (alias `struct` / `vec` / `map`). |
+| `value` | usually | The literal value. Optional for `bool` (defaults `false`) and for `address` with `generate = true`. For `json`, an inline table/array forwarded to the CLI as JSON. |
+| `generate` | no | `address` only. Derives a deterministic valid `G…` strkey from `name` — for a function that needs *an* address but not a specific funded one. Not a real account; fine for `--build-only`, not for a run that must actually authorize. |
+
+An unknown `type`, or a missing required `value`, fails the run with an error naming the function and argument — never a silent skip.
 
 {% hint style="warning" %}
 A `[functions.<name>]` entry whose name does not match any exported function of any workspace package is **silently ignored** — no warning, no error, nothing measured. This is the file's main trap: a typo in a function name looks identical to a function you chose not to configure. Cross-check names against the export list (e.g. `stellar contract invoke --help` output or a passing report row) when limits mysteriously fail to apply.
