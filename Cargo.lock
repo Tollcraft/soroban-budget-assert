@@ -404,6 +404,7 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
+ "stellar-strkey 0.0.16",
  "stellar-xdr",
  "tabled",
  "tempfile",
