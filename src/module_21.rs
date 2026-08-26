@@ -66,8 +66,8 @@
 //!     }
 //! }
 //!
-//! let m = FunctionMetrics { name: "do_expensive_work", cpu: 750_000, mem: 300_000 };
-//! assert!(m.is_within_bounds().unwrap());
+//! let metrics = FunctionMetrics { name: "do_expensive_work", cpu: 750_000, mem: 300_000 };
+//! assert!(metrics.is_within_bounds().unwrap());
 //! ```
 //!
 //! ## Design notes
@@ -224,9 +224,9 @@ pub trait MemoryCost {
 ///     fn memory_limit(&self) -> Option<u64> { None }
 /// }
 ///
-/// let m = SwapMetrics { cpu: 1_500_000, mem: 100_000 };
+/// let metrics = SwapMetrics { cpu: 1_500_000, mem: 100_000 };
 /// // CPU is below limit (1_500_000 < 2_000_000) and memory has no limit.
-/// assert!(m.is_within_bounds().unwrap());
+/// assert!(metrics.is_within_bounds().unwrap());
 ///
 /// let exceeded = SwapMetrics { cpu: 3_000_000, mem: 100_000 };
 /// assert!(!exceeded.is_within_bounds().unwrap());
