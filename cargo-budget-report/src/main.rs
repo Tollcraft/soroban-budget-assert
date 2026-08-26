@@ -570,9 +570,7 @@ fn render_check_table(reports: &[CostReport], colour: bool) -> String {
         // Data rows start at table index 1; index 0 is the header row.
         for (idx, report) in valued.iter().enumerate() {
             if report.pass == Some(false) {
-                table.with(
-                    Modify::new(Rows::new((idx + 1)..(idx + 2))).with(TabledColor::FG_RED),
-                );
+                table.with(Modify::new(Rows::new((idx + 1)..(idx + 2))).with(TabledColor::FG_RED));
             }
         }
     }
