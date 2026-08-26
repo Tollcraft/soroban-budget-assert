@@ -1168,10 +1168,7 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
         let write = cli_parts[3].1.unwrap();
         Margin::new(cpu, memory, read, write)?
     } else {
-        match toml_config
-            .margin
-            .filter(|m| m.is_complete())
-        {
+        match toml_config.margin.filter(|m| m.is_complete()) {
             Some(m) => m.into_margin()?,
             None => {
                 return Err(Error::Message(
