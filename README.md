@@ -201,6 +201,41 @@ cargo budget-report --check --json
 cargo budget-report --check --fail-fast
 ```
 
+**Target a local / standalone RPC node (`--rpc-url`):**
+
+By default the tool simulates against the public `testnet` / `futurenet`
+endpoints. To point it at a local standalone Soroban RPC node instead — to
+avoid public-network rate limits, or to exercise custom network fee settings
+— pass `--rpc-url` together with `--network-passphrase` (both are required
+together):
+
+```bash
+cargo budget-report \
+  --rpc-url http://localhost:8000/soroban/rpc \
+  --network-passphrase "Standalone Network ; February 2017"
+```
+
+When set, `simulateTransaction` is POSTed to that endpoint, and the
+`stellar` deploy / invoke-build calls are pointed at it with `--rpc-url` /
+`--network-passphrase` in place of `--network`. `--network` / the
+`budget.toml` `network` field are then optional; the passphrase is used as
+the network label (deploy-cache key).
+
+**Reuse deployments between runs (deploy cache):**
+
+Deployed contract ids are cached in `.budget-cache.toml` (git-ignored),
+keyed on the compiled wasm's SHA-256, the network, and the source account.
+An unchanged build is not redeployed; any change to the wasm/network/source
+redeploys automatically. Force a redeploy with `cargo budget-report
+--no-deploy-cache` or by deleting `.budget-cache.toml`.
+
+**Signing key without the CLI key store (`--source-secret`):**
+
+`--source-secret` (or the `STELLAR_SECRET_KEY` env var) supplies the source
+account's `S...` seed directly. It is validated at preflight. Deploy and
+invoke-build still go through the `stellar` CLI today; native RPC
+deploy/invoke that consume this key are a work in progress (issue #123).
+
 
 **Use Macros in Tests:**
 

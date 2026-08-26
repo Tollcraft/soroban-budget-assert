@@ -85,6 +85,12 @@ Install the Stellar CLI:
 cargo install --locked stellar-cli
 ```
 
+> `cargo-budget-report` still shells out to the `stellar` CLI for contract
+> deploy and invoke-build (checked at preflight). Moving these to native RPC
+> calls is tracked in [#123](https://github.com/Tollcraft/soroban-budget-assert/issues/123);
+> `--source-secret` / `STELLAR_SECRET_KEY` is the signing-key mechanism that
+> change will use.
+
 ### Windows
 
 On Windows, you can develop using **PowerShell** or **Git Bash** (included with Git for Windows).

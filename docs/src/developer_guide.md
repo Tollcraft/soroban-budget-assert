@@ -262,17 +262,24 @@ source = "bob"  # changed from "alice"
 
 **Reset the local environment** (use when a stale WASM build produces confusing numbers):
 
-`cargo budget-report` keeps no cache of its own — every run rebuilds the WASM and deploys it from scratch, so there are no cached deploy artifacts to remove. The only stale state that can affect results is the Cargo build output in `target/`, which Cargo normally rebuilds incrementally and correctly. If you want a guaranteed-clean run anyway:
+`cargo budget-report` caches deployed contract ids on disk in `.budget-cache.toml`
+(git-ignored) so an unchanged build is not redeployed on every run. An entry is
+keyed on the compiled wasm's SHA-256, the network, and the source account, so
+**any change to the wasm, network, or source redeploys automatically** — a
+cache hit can only ever reuse an id for a byte-identical build on the same
+network and account.
 
 ```bash
 # Force a from-scratch WASM build (removes all build output)
 cargo clean
 
-# Rebuild and re-deploy
-cargo budget-report
+# Redeploy every contract even on an unchanged build
+cargo budget-report --no-deploy-cache
+# ...or just drop the cache file
+rm -f .budget-cache.toml
 ```
 
-A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32-unknown-unknown` if you only want to invalidate the WASM artifacts. Note that each `cargo budget-report` run deploys a *new* contract instance on the target network; previously deployed contract IDs are not tracked or reused, so there is nothing to reset on that side.
+A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32-unknown-unknown` if you only want to invalidate the WASM artifacts. The deploy cache *trusts a hit* — it does not check that a cached id still resolves on-chain before reusing it. If a cached contract has been reclaimed by ledger state, use `--no-deploy-cache` (or delete `.budget-cache.toml`) to force a redeploy.
 
 ### Best practices
 

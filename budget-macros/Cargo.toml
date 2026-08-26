@@ -19,3 +19,8 @@ proc-macro2 = "1.0"
 
 [dev-dependencies]
 trybuild = "1.0"
+# Property tests for the four hand-rolled attribute `Parse` impls (#71).
+# `proptest` (over `quickcheck`) for its shrinking and persisted-regression
+# file, which the issue asks for: a shrunk counterexample stays tested after
+# the run that found it.
+proptest = "1.5"
