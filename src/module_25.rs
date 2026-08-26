@@ -91,16 +91,16 @@ impl CostSnapshot {
 /// currently recorded operations. Implementations are **not** required to
 /// preserve insertion order when iterating.
 pub trait StateTracker {
-    /// Inserts or updates the snapshot for `op`. If `op` already exists,
+    /// Inserts or updates the snapshot for `operation`. If `operation` already exists,
     /// the previous snapshot is overwritten.
-    fn record(&mut self, op: &str, snapshot: CostSnapshot);
+    fn record(&mut self, operation: &str, snapshot: CostSnapshot);
 
-    /// Returns the snapshot for `op`, or `None` if it has not been recorded.
-    fn lookup(&self, op: &str) -> Option<&CostSnapshot>;
+    /// Returns the snapshot for `operation`, or `None` if it has not been recorded.
+    fn lookup(&self, operation: &str) -> Option<&CostSnapshot>;
 
-    /// Returns `true` if `op` has been recorded.
-    fn contains(&self, op: &str) -> bool {
-        self.lookup(op).is_some()
+    /// Returns `true` if `operation` has been recorded.
+    fn contains(&self, operation: &str) -> bool {
+        self.lookup(operation).is_some()
     }
 
     /// Returns the number of distinct operations tracked.
@@ -168,27 +168,27 @@ impl LinearStateTracker {
     /// `HashedStateTracker::record` semantics.
     pub fn into_hashed(self) -> HashedStateTracker {
         let mut out = HashedStateTracker::with_capacity(self.entries.len());
-        for (op, snap) in self.entries {
-            out.record(&op, snap);
+        for (operation, snap) in self.entries {
+            out.record(&operation, snap);
         }
         out
     }
 }
 
 impl StateTracker for LinearStateTracker {
-    fn record(&mut self, op: &str, snapshot: CostSnapshot) {
+    fn record(&mut self, operation: &str, snapshot: CostSnapshot) {
         for entry in self.entries.iter_mut() {
-            if entry.0 == op {
+            if entry.0 == operation {
                 entry.1 = snapshot;
                 return;
             }
         }
-        self.entries.push((op.to_string(), snapshot));
+        self.entries.push((operation.to_string(), snapshot));
     }
 
-    fn lookup(&self, op: &str) -> Option<&CostSnapshot> {
+    fn lookup(&self, operation: &str) -> Option<&CostSnapshot> {
         for entry in self.entries.iter() {
-            if entry.0 == op {
+            if entry.0 == operation {
                 return Some(&entry.1);
             }
         }
@@ -254,16 +254,16 @@ impl HashedStateTracker {
 }
 
 impl StateTracker for HashedStateTracker {
-    fn record(&mut self, op: &str, snapshot: CostSnapshot) {
-        self.entries.insert(op.to_string(), snapshot);
+    fn record(&mut self, operation: &str, snapshot: CostSnapshot) {
+        self.entries.insert(operation.to_string(), snapshot);
     }
 
-    fn lookup(&self, op: &str) -> Option<&CostSnapshot> {
-        self.entries.get(op)
+    fn lookup(&self, operation: &str) -> Option<&CostSnapshot> {
+        self.entries.get(operation)
     }
 
-    fn contains(&self, op: &str) -> bool {
-        self.entries.contains_key(op)
+    fn contains(&self, operation: &str) -> bool {
+        self.entries.contains_key(operation)
     }
 
     fn len(&self) -> usize {
