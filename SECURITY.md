@@ -22,3 +22,20 @@ For general questions and community discussions, you can reach out via Telegram 
 **DISCLAIMER**: This project is an MVP developer tool and is **UNAUDITED**. 
 Do not use this software in production environments to govern significant financial value without conducting your own independent security review and audit.
 
+## Dependency Auditing
+
+Every dependency change is checked against the [RustSec Advisory Database](https://rustsec.org) by [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny), run in CI via [`.github/workflows/security.yml`](.github/workflows/security.yml):
+
+- **On every push and pull request** that touches `Cargo.lock`, any `Cargo.toml`, or the audit configuration itself.
+- **On a daily schedule**, since most vulnerabilities are disclosed after the code that depends on them has already merged — a schedule-only trigger is the only way to catch that case.
+- **On manual dispatch**, for an on-demand check outside those triggers.
+
+Policy lives in the committed [`deny.toml`](deny.toml): it fails the build on any RustSec vulnerability, unsoundness, or notice advisory; on yanked crates; and on dependency licenses outside the MIT/Apache-2.0-compatible allow-list. A finding is either fixed by updating the dependency, or explicitly accepted by adding its advisory ID to `deny.toml`'s `[advisories].ignore` list with a comment explaining why it does not apply — findings are never silenced just to get CI green.
+
+Run the same check locally with:
+
+```bash
+cargo install cargo-deny --locked
+cargo deny check
+```
+

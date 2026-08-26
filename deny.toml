@@ -1,0 +1,99 @@
+# deny.toml — cargo-deny configuration for soroban-budget-assert
+#
+# This configuration audits dependencies for:
+#  - Security vulnerabilities via the RustSec advisory database
+#  - License compliance (MIT OR Apache-2.0 ecosystem standard)
+#  - Unmaintained or banned crates
+#
+# Run locally with: cargo deny check
+# CI uses EmbarkStudios/cargo-deny-action@v2 in .github/workflows/security.yml
+#
+# Modeled on the equivalent file in the sibling soroban-cost-linter repo,
+# adjusted for this workspace's dependency graph (no git dependencies here,
+# so [sources] denies all of them rather than allow-listing one).
+
+[graph]
+# Scan all workspace members with all features enabled to ensure local runs
+# match CI dependency auditing.
+all-features = true
+no-default-features = false
+
+# ------------------------------------ Advisories ------------------------------------
+# Security and maintenance checks via the RustSec Advisory Database
+# https://rustsec.org
+[advisories]
+# Vulnerability, unsound and notice advisories no longer have configurable lint
+# levels — cargo-deny always errors on them, and the only way to accept one is
+# to list its ID in `ignore` below with a justification.
+#
+# Which unmaintained crates to flag. "workspace" covers direct dependencies;
+# "all" additionally covers transitive ones, which pulls in advisories this
+# project cannot act on directly.
+unmaintained = "workspace"
+# A yanked crate is a supply-chain risk.
+yanked = "deny"
+# Advisory IDs to ignore. Each entry must carry a comment explaining why the
+# advisory does not apply, per this project's own audit policy (see
+# SECURITY.md): a finding is fixed or explicitly accepted with a reason, never
+# silenced to get a green tick.
+ignore = [
+    # Add entries like "RUSTSEC-2024-XXXX" with a comment explaining why the
+    # advisory does not apply to this project.
+]
+
+# ------------------------------------ Licenses ------------------------------------
+# Audit dependency licenses for compliance with ecosystem policies.
+# The Rust ecosystem standard is MIT OR Apache-2.0 — copyleft licenses like
+# GPL/AGPL are rejected to avoid encumbering downstream users.
+[licenses]
+# The `allow` list is exhaustive: anything not listed here is denied, and a
+# crate with no detectable license is denied too.
+#
+# This workspace pulls in the Soroban SDK and its crypto dependency tree
+# (ark-*, curve25519-dalek, ed25519-dalek, k256, p256, ...), which are all
+# MIT/Apache-2.0 dual-licensed in the current dependency graph — there is no
+# `ring`/`webpki`/`rustls` style ISC/OpenSSL license in this tree today. If
+# `cargo deny check` starts failing on a license not listed here, that is a
+# genuine new dependency to evaluate, not a config bug to route around.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # Unicode-3.0 — required by unicode-ident (transitive dep of syn/proc-macro2)
+    "Unicode-3.0",
+    # Apache-2.0 WITH LLVM-exception — reached transitively through the wasi
+    # crate. The LLVM exception only removes a restriction, so this is
+    # strictly more permissive than the plain Apache-2.0 already allowed above.
+    "Apache-2.0 WITH LLVM-exception",
+]
+# The precedence for determining which license applies when multiple are detected.
+confidence-threshold = 0.8
+
+# ------------------------------------ Sources ------------------------------------
+# Restrict where crates can be sourced from.
+[sources]
+# Allow crates from crates.io — the primary Rust package registry.
+unknown-registry = "deny"
+# This workspace has no git dependencies today; deny any that show up so a
+# supply-chain change of that shape gets caught rather than silently trusted.
+unknown-git = "deny"
+allow-git = []
+
+# ------------------------------------ Bans ------------------------------------
+# Block specific crates or versions known to be problematic.
+[bans]
+# Deny multiple versions of the same crate (encourages deduplication).
+multiple-versions = "warn"
+# Highlight crates that are widely duplicated — useful for keeping the
+# dependency graph lean.
+highlight = "all"
+# Wildcards are acceptable for dev/build dependencies, but production deps
+# should use precise versions.
+wildcards = "allow"
+
+# Crates denied outright. None currently, but add entries like:
+# { name = "some-crate", reason = "Explains why this crate is blocked" }
+deny = []
+
+# Specific version skips — use when one version of a crate is broken but
+# upgrading isn't immediately feasible.
+skip = []
