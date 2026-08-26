@@ -485,10 +485,13 @@ fn color_enabled_with(
     no_color_env_set: bool,
     stdout_is_terminal: bool,
 ) -> bool {
+    if no_color_env_set || !stdout_is_terminal {
+        return false;
+    }
     match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
-        ColorChoice::Auto => !no_color_env_set && stdout_is_terminal,
+        ColorChoice::Auto => true,
     }
 }
 
@@ -567,7 +570,7 @@ fn render_check_table(reports: &[CostReport], colour: bool) -> String {
         // Data rows start at table index 1; index 0 is the header row.
         for (idx, report) in valued.iter().enumerate() {
             if report.pass == Some(false) {
-                table.with(Modify::new(Rows::one(idx + 1)).with(TabledColor::FG_RED));
+                table.with(Modify::new(Rows::single(idx + 1)).with(TabledColor::FG_RED));
             }
         }
     }
@@ -2884,8 +2887,11 @@ write_limit = 1000
         assert!(!color_enabled_with(Auto, false, false));
         assert!(!color_enabled_with(Auto, true, true));
         assert!(!color_enabled_with(Auto, true, false));
-        // Explicit overrides ignore both signals.
-        assert!(color_enabled_with(Always, true, false));
+        // Explicit colour still cannot override NO_COLOR or non-terminal
+        // suppression.
+        assert!(!color_enabled_with(Always, true, false));
+        assert!(!color_enabled_with(Always, true, true));
+        assert!(color_enabled_with(Always, false, true));
         assert!(!color_enabled_with(Never, false, true));
     }
 
