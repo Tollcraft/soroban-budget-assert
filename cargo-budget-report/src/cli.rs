@@ -191,6 +191,21 @@ pub struct BudgetReportArgs {
     /// disabled. CSV, JSON, and HTML output are never coloured.
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
+
+    /// Watch the workspace for file changes and re-measure on save.
+    ///
+    /// When set, the tool enters a loop: it watches the workspace for
+    /// changes to source files, and on each change rebuilds and re-measures
+    /// only the affected packages. Each run prints a comparison against the
+    /// previous run so the delta is visible.
+    ///
+    /// Edits that arrive while a run is in flight are coalesced, not queued.
+    /// A build failure prints the error and keeps watching. Ctrl-C exits
+    /// cleanly.
+    ///
+    /// Refuses to start when stdout is not a terminal (CI guard).
+    #[arg(long, default_value_t = false)]
+    pub watch: bool,
 }
 
 /// Colour policy for the plain-text `--check` output.

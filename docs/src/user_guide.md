@@ -158,6 +158,69 @@ tolerance = 0.05                    # tighter override for a known-sensitive cal
 
 A single bad commit can no longer ride the `--check-baseline` gate; the rest of the workflow (tier-A macros, the textual report, `--json` for scripts) is unchanged.
 
+## Step 7 (optional): Watch mode for iterative development
+
+When iterating on a function that is over budget, you want to know whether each change moved the number — without running a full `cargo budget-report` by hand every time. Watch mode automates this loop:
+
+```bash
+cargo budget-report --watch
+```
+
+### What it does
+
+1. **Watches the workspace** for changes to source files (`.rs`, `.toml`, etc.).
+2. **On each change**, rebuilds and re-measures only the affected packages. A change confined to one package does not re-deploy every other package in the workspace.
+3. **Prints a delta** comparing the current measurements against the previous run, so you can see the impact of your edit immediately.
+4. **Coalesces rapid edits** — saving four times in ten seconds triggers one re-measurement, not four.
+5. **Handles build failures gracefully** — if a build fails, it prints the error and keeps watching.
+6. **Exits cleanly on Ctrl-C** without leaving deployed contracts or temp files behind.
+
+### Restrictions
+
+- **Interactive terminals only**: watch mode refuses to start when stdout is not a terminal (e.g. in CI). Run without `--watch` for CI.
+- **Not usable in pipelines**: the progress output goes to stderr so it does not pollute stdout, but the tool is designed for human-in-the-loop use.
+
+### What counts as a "relevant change"
+
+Only source files under workspace package directories trigger a re-measurement. The following are always excluded:
+
+- `target/` (build output — including the tool's own WASM builds)
+- `.git/` (version control metadata)
+- `node_modules/` (JavaScript dependencies)
+- `.github/` (CI configuration)
+
+This prevents the tool from retriggering on its own build output or on unrelated files.
+
+### Example session
+
+```
+$ cargo budget-report --watch
+Watch mode active. Watching for source changes...
+Press Ctrl-C to stop.
+
+Discovering workspace members...
+Building package 'amm-pool-contract' for wasm32...
+Contract deployed at: C...
+Simulating function 'do_expensive_work'...
+
+=== WORKSPACE BUDGET REPORT ===
+  amm-pool-contract::do_expensive_work [CPU Instructions] = 756,678 inst.
+  amm-pool-contract::do_expensive_work [Read Bytes] = 2,048 B
+  amm-pool-contract::do_expensive_work [Write Bytes] = 4,096 B
+Watching for changes...
+
+── Re-measuring workspace ──────────────────────────
+  amm-pool-contract::do_expensive_work [cpu_instructions] 756678 -> 720100 (-36578, -5%)
+
+=== WORKSPACE BUDGET REPORT ===
+  amm-pool-contract::do_expensive_work [CPU Instructions] = 720,100 inst.
+  amm-pool-contract::do_expensive_work [Read Bytes] = 2,048 B
+  amm-pool-contract::do_expensive_work [Write Bytes] = 4,096 B
+Watching for changes...
+```
+
+The delta line shows the direction and percentage of the change, so you can see at a glance whether your optimization moved the needle.
+
 ## ⚙️ Supported Versions & Compatibility
 
 * **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
