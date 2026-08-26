@@ -4,6 +4,7 @@
 
 ## Getting Started
 - [End-User Guide](user_guide.md)
+- [Testnet Troubleshooting](testnet_troubleshooting.md)
 - [Protocol Mechanics](mechanics.md)
 - [Cost Terms Glossary](glossary.md)
 
