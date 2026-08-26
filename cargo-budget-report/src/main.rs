@@ -33,6 +33,8 @@ use wasmparser::Parser as WasmParser;
 
 mod derive;
 mod error;
+mod sarif;
+mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
@@ -49,7 +51,7 @@ const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 /// Both fields are optional; missing values fall back to the built-in
 /// defaults (`MAX_DEPLOY_ATTEMPTS` / `INITIAL_RETRY_DELAY_SECS`).
 #[derive(serde::Deserialize, Default, Debug, Clone, Copy)]
-struct RetryToml {
+pub(crate) struct RetryToml {
     #[serde(default)]
     max_attempts: Option<u32>,
     #[serde(default)]
@@ -62,7 +64,7 @@ struct RetryToml {
 /// from this struct: `initial_backoff * (2^(max_attempts - 1) - 1)`.
 /// With the defaults (4 attempts, 2 s initial) that is 2 + 4 + 8 = 14 s.
 #[derive(Debug, Clone, Copy)]
-struct RetryConfig {
+pub(crate) struct RetryConfig {
     /// Total attempts including the first. A value of 1 disables retry.
     max_attempts: u32,
     initial_backoff: Duration,
@@ -86,7 +88,7 @@ impl RetryConfig {
 
 /// Resolves the effective retry policy: CLI flags win over the
 /// `budget.toml` `[retry]` section, which wins over the defaults.
-fn resolve_retry_config(
+pub(crate) fn resolve_retry_config(
     cli_max_attempts: Option<u32>,
     cli_backoff_secs: Option<u64>,
     toml_retry: Option<RetryToml>,
@@ -250,7 +252,7 @@ write_limit = 1000
 /// Contains optional network and source-account overrides, plus a map of
 /// per-function budget configurations keyed by exported function name.
 #[derive(serde::Deserialize, Default, Debug)]
-struct BudgetToml {
+pub(crate) struct BudgetToml {
     network: Option<String>,
     source: Option<String>,
     /// Global default tolerance, used unless overridden per function or by `--tolerance`.
@@ -279,7 +281,7 @@ struct BudgetToml {
 /// `cargo budget-report --derive-limits` flow propagates that error so
 /// a half-set `[margin]` block cannot silently degrade to no margin.
 #[derive(serde::Deserialize, Default, Debug, Clone, Copy)]
-struct MarginToml {
+pub(crate) struct MarginToml {
     #[serde(default)]
     cpu_margin: Option<f64>,
     #[serde(default)]
@@ -322,7 +324,7 @@ impl MarginToml {
 
 /// One scenario declaration in the `[[scenarios]]` table.
 #[derive(serde::Deserialize, Default, Debug, Clone)]
-struct ScenarioToml {
+pub(crate) struct ScenarioToml {
     /// (package, scenario_name) namespace prefix used to scope this
     /// scenario. Without a package, the scenario is treated as package
     /// `""`, which is rarely what callers want — the error path
@@ -341,7 +343,7 @@ struct ScenarioToml {
 /// object decoded from the RPC response.
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug)]
-struct Resources {
+pub(crate) struct Resources {
     instructions: u64,
     disk_read_bytes: u64,
     write_bytes: u64,
@@ -354,7 +356,7 @@ struct Resources {
 /// changing the extraction call-site.
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug)]
-struct TransactionData {
+pub(crate) struct TransactionData {
     #[serde(alias = "resources")]
     resources: Resources,
 }
@@ -375,7 +377,7 @@ impl TransactionData {
 /// and which resource limits are enforced in `--check` mode.
 #[derive(serde::Deserialize, Default, Debug)]
 #[serde(deny_unknown_fields)]
-struct FunctionConfig {
+pub(crate) struct FunctionConfig {
     #[serde(default)]
     args: Vec<String>,
     /// Inclusive upper bound on the measured CPU `Instructions` metric. `None`
@@ -392,7 +394,7 @@ struct FunctionConfig {
 }
 
 #[derive(Clone, Copy)]
-struct MeasuredResources {
+pub(crate) struct MeasuredResources {
     instructions: u64,
     read_bytes: u64,
     write_bytes: u64,
@@ -414,7 +416,7 @@ impl MeasuredResources {
 /// In `--check` mode the `limit` and `pass` fields are populated so that
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
 #[derive(Serialize)]
-struct CostReport {
+pub(crate) struct CostReport {
     package: String,
     function: String,
     metric: &'static str,
@@ -578,7 +580,7 @@ fn render_check_table(reports: &[CostReport], colour: bool) -> String {
 }
 
 /// Returns the configured limit (if any) for the given metric name.
-fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
+pub(crate) fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
     match metric {
         "CPU Instructions" => func_config.cpu_limit,
         "Read Bytes" => func_config.read_limit,
@@ -595,7 +597,7 @@ fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
 /// * Limit configured and value is within it → `(Some(limit), Some(true))`.
 /// * Limit configured and value exceeds it → `(Some(limit), Some(false))`;
 ///   the caller should mark the check as failed.
-fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
+pub(crate) fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
     match limit {
         Some(limit_value) => (Some(limit_value), Some(u64::from(value) <= limit_value)),
         None => (None, None),
@@ -616,7 +618,7 @@ fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>)
 /// The caller has already set the `checks_failed` flag for the function as a
 /// whole, so emitting one entry per metric — even metrics without a limit —
 /// does not change the exit-code semantics.
-fn emit_check_failure_entries(
+pub(crate) fn emit_check_failure_entries(
     reports: &mut Vec<CostReport>,
     package_name: &str,
     function: &str,
@@ -643,7 +645,7 @@ fn emit_check_failure_entries(
 /// * `value` - The raw numeric value to format.
 /// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
 ///   `B`, otherwise `inst.`.
-fn format_with_commas_and_units(value: u64, metric: &str) -> String {
+pub(crate) fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let value_str = value.to_string();
     let mut result = String::new();
     let mut digit_count = 0;
@@ -779,7 +781,7 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 /// field, or an undecodable response) is reported as
 /// `Ok(SimulationOutcome::Failed(..))` so the caller can move on to the next
 /// function instead of aborting the whole report.
-fn simulate_function(
+pub(crate) fn simulate_function(
     transport: &mut impl transport::Transport,
     contract_id: &str,
     source: &str,
@@ -846,7 +848,7 @@ fn simulate_function(
 /// # Errors
 ///
 /// Returns an error if the file exists but cannot be read or parsed.
-fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
+pub(crate) fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
             let trimmed = contents.trim();
@@ -865,7 +867,10 @@ fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     }
 }
 
-fn resolve_tolerance(cli_override: Option<&str>, config: &BudgetToml) -> Result<Tolerance> {
+pub(crate) fn resolve_tolerance(
+    cli_override: Option<&str>,
+    config: &BudgetToml,
+) -> Result<Tolerance> {
     if let Some(raw) = cli_override {
         return parse_tolerance(raw).map_err(|e| Error::Message(e.to_string()));
     }
@@ -1088,7 +1093,7 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
 /// exponential backoff and skips retrying deterministic failures. All this
 /// function does is report the outcome with the familiar "source account is
 /// funded" hint.
-fn deploy_contract_with_retry(
+pub(crate) fn deploy_contract_with_retry(
     transport: &mut impl transport::Transport,
     wasm_path: &Path,
     source: &str,
@@ -1408,15 +1413,6 @@ fn main() -> anyhow::Result<()> {
 
     let mode = Mode::from_args(&args);
 
-    let network = args
-        .network
-        .or(toml_config.network.clone())
-        .context("missing --network or budget.toml network field")?;
-    let source = args
-        .source
-        .or(toml_config.source.clone())
-        .context("missing --source or budget.toml source field")?;
-
     let retry_config = resolve_retry_config(
         args.max_retry_attempts,
         args.retry_backoff_secs,
@@ -1426,6 +1422,45 @@ fn main() -> anyhow::Result<()> {
     if retry_config.disabled() && !args.quiet {
         eprintln!("Retry is disabled (--max-retry-attempts 1): each call gets a single attempt.");
     }
+
+    // ── Watch mode: delegate to the watch loop and exit ────────────────
+    if args.watch {
+        if !args.quiet {
+            eprintln!("Discovering workspace members...");
+        }
+        let metadata = MetadataCommand::new()
+            .no_deps()
+            .exec()
+            .context("failed to execute cargo metadata")?;
+        let network = args
+            .network
+            .clone()
+            .or(toml_config.network.clone())
+            .context("missing --network or budget.toml network field")?;
+        let source = args
+            .source
+            .clone()
+            .or(toml_config.source.clone())
+            .context("missing --source or budget.toml source field")?;
+        return watch::watch_loop(
+            &args,
+            metadata,
+            toml_config,
+            default_tolerance,
+            network,
+            source,
+            retry_config,
+        );
+    }
+
+    let network = args
+        .network
+        .or(toml_config.network.clone())
+        .context("missing --network or budget.toml network field")?;
+    let source = args
+        .source
+        .or(toml_config.source.clone())
+        .context("missing --source or budget.toml source field")?;
 
     if !args.quiet {
         eprintln!("Discovering workspace members...");
@@ -1928,6 +1963,29 @@ fn main() -> anyhow::Result<()> {
             println!("Summary: {} check(s) passed, {} failed", passed, failed);
         }
     }
+    // ── SARIF output ────────────────────────────────────────────────
+    // When --sarif is set, write a SARIF 2.1.0 document to the given
+    // path. The exit code is unchanged — SARIF is an additional output.
+    if let Some(sarif_path) = &args.sarif {
+        let metadata = MetadataCommand::new()
+            .no_deps()
+            .exec()
+            .context("failed to execute cargo metadata for SARIF source lookup")?;
+        let sarif_doc = sarif::build_sarif(&reports, Some(&metadata));
+        let json = sarif::to_json(&sarif_doc);
+        std::fs::write(sarif_path, &json)
+            .with_context(|| format!("failed to write SARIF to {}", sarif_path))?;
+        if !args.quiet {
+            let breach_count = sarif_doc.runs[0].results.len();
+            eprintln!(
+                "Wrote SARIF to {} ({} finding{})",
+                sarif_path,
+                breach_count,
+                if breach_count == 1 { "" } else { "s" }
+            );
+        }
+    }
+
     // PR #195: `--check` exits non-zero when any limit was breached so CI can
     // gate on the result. Mirrors the empty-measurements branch above.
     if (args.check && checks_failed) || validation_failed {
@@ -2548,6 +2606,8 @@ mod tests {
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
+            watch: false,
+            sarif: None,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -2581,6 +2641,8 @@ mod tests {
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
+            watch: false,
+            sarif: None,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -2614,6 +2676,8 @@ mod tests {
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
+            watch: false,
+            sarif: None,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -2650,6 +2714,8 @@ mod tests {
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
+            watch: false,
+            sarif: None,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),
