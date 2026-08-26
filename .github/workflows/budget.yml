@@ -24,6 +24,22 @@ jobs:
           toolchain: 1.91.0
           targets: wasm32v1-none wasm32-unknown-unknown
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Pin the cache identity instead of taking the action's default key,
+          # which embeds the job name (`budget-check`). Renaming the job would
+          # otherwise silently discard every existing cache entry and pay a
+          # full cold compile again — see the sibling `soroban-cost-linter`
+          # repo's `lint.yml`, which hit the same problem.
+          shared-key: budget-check-wasm
+          # No `cache-directories` entry is needed here, unlike the sibling
+          # repo: `amm-pool-contract` builds via plain `cargo build --target
+          # wasm32v1-none`, with no `CARGO_TARGET_DIR` or per-crate target-dir
+          # override, so its wasm32v1-none output lands under the workspace's
+          # default `target/` — which this action already caches — rather
+          # than a separate directory the action wouldn't otherwise see.
+
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
