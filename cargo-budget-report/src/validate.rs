@@ -188,8 +188,8 @@ pub fn validate_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stellar_xdr::curr::{ExtensionPoint, LedgerFootprint, VecM};
-    use stellar_xdr::curr::{Limits, SorobanTransactionData, WriteXdr};
+    use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
+    use stellar_xdr::{Limits, SorobanTransactionData, WriteXdr};
 
     const FIXTURE_INSTRUCTIONS: u32 = 1_000_000;
     const FIXTURE_READ_BYTES: u32 = 2_048;
@@ -197,14 +197,14 @@ mod tests {
 
     fn make_fixture_tx_data() -> SorobanTransactionData {
         SorobanTransactionData {
-            ext: ExtensionPoint::V0,
-            resources: stellar_xdr::curr::SorobanResources {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
                 footprint: LedgerFootprint {
                     read_only: VecM::default(),
                     read_write: VecM::default(),
                 },
                 instructions: FIXTURE_INSTRUCTIONS,
-                read_bytes: FIXTURE_READ_BYTES,
+                disk_read_bytes: FIXTURE_READ_BYTES,
                 write_bytes: FIXTURE_WRITE_BYTES,
             },
             resource_fee: 0,
