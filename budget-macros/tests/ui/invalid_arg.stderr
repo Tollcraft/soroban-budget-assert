@@ -1,4 +1,4 @@
-error: expected `env`, `env_file`, or `config`, got `wrong`
+error: expected `env`, `env_file`, `config`, or `pct`, got `wrong`
  --> tests/ui/invalid_arg.rs:5:17
   |
 5 | #[budget_cpu_lt(wrong = "500")]

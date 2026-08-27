@@ -63,6 +63,8 @@ cargo test -p amm-pool-contract test_storage_read_wasm_local -- --nocapture
 
 The network figure is collected via `cargo budget-report` on Soroban testnet against the same WASM. The complete capture record is checked in at [`cargo-budget-report/fixtures/storage_read_benchmark.json`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/fixtures/storage_read_benchmark.json).
 
+The host-function row uses the dedicated [`host-function-contract`](https://github.com/Tollcraft/soroban-budget-assert/tree/main/host-function-contract) fixture crate, which isolates 1,000 calls to `env.ledger().sequence()` with zero storage side-effects. See [`host-function-contract/README.md`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/host-function-contract/README.md) for build, execution, and reproduction instructions.
+
 ---
 
 ## SDK version calibration

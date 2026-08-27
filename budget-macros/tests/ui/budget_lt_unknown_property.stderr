@@ -1,0 +1,5 @@
+error: unknown property: unknown_prop
+ --> tests/ui/budget_lt_unknown_property.rs:5:13
+  |
+5 | #[budget_lt(unknown_prop = 1000)]
+  |             ^^^^^^^^^^^^

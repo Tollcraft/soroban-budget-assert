@@ -25,6 +25,15 @@ enum BudgetLimit {
         path: proc_macro2::TokenStream,
         var_name: String,
     },
+    /// A limit expressed as a percentage of a reference limit.
+    ///
+    /// `pct` is the percentage (1–100). `of` is the source for the
+    /// reference limit (typically `env_file` + `env` pointing at a
+    /// network-wide limit in `tier-a-limits.env`).
+    Percentage {
+        pct: u64,
+        of: Box<BudgetLimit>,
+    },
 }
 
 #[derive(Default)]
@@ -70,8 +79,11 @@ impl Parse for StandaloneSpec {
 
         if !input.is_empty() {
             return Err(syn::Error::new(
-                Span::call_site(),
-                "unexpected trailing tokens after `baseline = …`",
+                input.span(),
+                format!(
+                    "unexpected token(s) after `baseline = …` — expected end of attribute, got `{}`",
+                    input
+                ),
             ));
         }
 
@@ -95,7 +107,12 @@ fn peeks_limit_source_key(input: ParseStream) -> bool {
     }
     ahead
         .parse::<Ident>()
-        .map(|i| matches!(i.to_string().as_str(), "env" | "env_file" | "config"))
+        .map(|i| {
+            matches!(
+                i.to_string().as_str(),
+                "env" | "env_file" | "config" | "pct"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -120,6 +137,13 @@ impl Parse for BudgetLimit {
         let mut env_var: Option<String> = None;
         let mut env_file: Option<proc_macro2::TokenStream> = None;
         let mut config_key: Option<String> = None;
+        let mut pct_value: Option<u64> = None;
+        let mut pct_of: Option<Box<BudgetLimit>> = None;
+        let mut pct_span: Option<Span> = None;
+        // Spans of the key tokens, for precise error pointers.
+        let mut env_span: Option<Span> = None;
+        let mut env_file_span: Option<Span> = None;
+        let mut config_span: Option<Span> = None;
         // First identifier seen that is not a limit-source key. Only used to
         // improve the error when nothing valid was parsed at all.
         let mut unknown_key: Option<Ident> = None;
@@ -137,7 +161,7 @@ impl Parse for BudgetLimit {
             if peeks_limit_source_key(input) {
                 return Err(syn::Error::new(
                     lit.span(),
-                    "integer literal cannot be combined with env / config / env_file",
+                    "integer literal cannot be combined with env / config / env_file / pct",
                 ));
             }
             return Ok(BudgetLimit::Int(lit.base10_parse()?));
@@ -157,7 +181,7 @@ impl Parse for BudgetLimit {
                 if !(ahead.peek(Ident)
                     && matches!(
                         ahead.fork().parse::<Ident>().unwrap().to_string().as_str(),
-                        "env" | "env_file" | "config"
+                        "env" | "env_file" | "config" | "pct"
                     ))
                 {
                     break;
@@ -166,7 +190,10 @@ impl Parse for BudgetLimit {
             } else if input.peek(Ident) {
                 let ahead = input.fork();
                 let key: Ident = ahead.parse().unwrap();
-                if !matches!(key.to_string().as_str(), "env" | "env_file" | "config") {
+                if !matches!(
+                    key.to_string().as_str(),
+                    "env" | "env_file" | "config" | "pct"
+                ) {
                     // Remember it: if no limit source turns up at all, this is
                     // the token the user got wrong, and naming it beats a
                     // generic "expected one of …" pointed at the whole
@@ -182,6 +209,7 @@ impl Parse for BudgetLimit {
             input.parse::<Token![=]>()?;
             let ident_str = ident.to_string();
             if ident_str == "env_file" {
+                env_file_span = Some(ident.span());
                 // Accept either a string literal or an identifier/const path
                 // for env_file, so callers can write `env_file = "path"` or
                 // `env_file = CONST_NAME`.
@@ -193,11 +221,79 @@ impl Parse for BudgetLimit {
                     expr.into_token_stream()
                 };
                 env_file = Some(path);
+            } else if ident_str == "pct" {
+                // Parse: `pct = <number>` followed by optional `, of = <source>`.
+                // The `of` source is parsed as a nested BudgetLimit.
+                pct_span = Some(ident.span());
+                if pct_value.is_some() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "`pct` cannot be specified more than once",
+                    ));
+                }
+                let pct_lit: LitInt = input.parse()?;
+                let pct: u64 = pct_lit.base10_parse()?;
+                if !(1..=100).contains(&pct) {
+                    return Err(syn::Error::new(
+                        pct_lit.span(),
+                        format!("percentage must be between 1 and 100, got {pct}"),
+                    ));
+                }
+                pct_value = Some(pct);
+
+                // Parse optional `, of = <source>` where <source> is itself a
+                // BudgetLimit (typically `env_file = "..."` + `env = "..."`).
+                if input.peek(Token![,]) {
+                    let ahead = input.fork();
+                    let _ = ahead.parse::<Token![,]>();
+                    if ahead.peek(Ident) {
+                        let ahead_key: Ident = ahead.parse().unwrap();
+                        if ahead_key == "of" {
+                            input.parse::<Token![,]>()?;
+                            input.parse::<Ident>()?; // consume `of`
+                            input.parse::<Token![=]>()?;
+                            let of_limit: BudgetLimit = input.parse()?;
+                            pct_of = Some(Box::new(of_limit));
+                        }
+                    }
+                }
+
+                // Reject trailing `env` or `config` keys — they provide an
+                // absolute value and are meaningless alongside `pct`.
+                if input.peek(Token![,]) {
+                    let ahead = input.fork();
+                    let _ = ahead.parse::<Token![,]>();
+                    if ahead.peek(Ident) {
+                        let ahead_key: Ident = ahead.parse().unwrap();
+                        let key_name = ahead_key.to_string();
+                        if matches!(key_name.as_str(), "env" | "config") {
+                            return Err(syn::Error::new(
+                                ahead_key.span(),
+                                format!(
+                                    "`pct` cannot be combined with `{}` \
+                             — use `pct = N, of = env_file = \"...\", env = \"...\"` instead",
+                                    key_name
+                                ),
+                            ));
+                        }
+                    }
+                }
+
+                // After parsing pct (+ optional of), stop: remaining tokens
+                // belong to the caller (a sibling `baseline = …`, or the
+                // enclosing spec).
+                break;
             } else {
                 let lit: LitStr = input.parse()?;
                 match ident_str.as_str() {
-                    "env" => env_var = Some(lit.value()),
-                    "config" => config_key = Some(lit.value()),
+                    "env" => {
+                        env_span = Some(ident.span());
+                        env_var = Some(lit.value())
+                    }
+                    "config" => {
+                        config_span = Some(ident.span());
+                        config_key = Some(lit.value())
+                    }
                     other => {
                         return Err(syn::Error::new(
                             ident.span(),
@@ -209,10 +305,23 @@ impl Parse for BudgetLimit {
         }
 
         // Combine the collected parts into the right `BudgetLimit` variant.
-        // Precedence: `env_file` + `env` → `EnvFile`; `env` only → `EnvVar`;
-        // `config` → `Config`. Mixing types is rejected to avoid silent
-        // confusion: `env_file` is meaningless without a key, and `env` is
-        // meaningless without a file when `env_file` is set.
+        // Precedence: `pct` → `Percentage`; `env_file` + `env` → `EnvFile`;
+        // `env` only → `EnvVar`; `config` → `Config`. Mixing types is
+        // rejected to avoid silent confusion.
+        if let Some(pct) = pct_value {
+            // `pct` requires `of = <source>` to know which reference limit
+            // to take the percentage of.
+            let of = pct_of.ok_or_else(|| {
+                syn::Error::new(
+                    pct_span.unwrap_or_else(Span::call_site),
+                    format!(
+                        "`pct` requires `of = <source>` — e.g. \
+                         `pct = {pct}, of = env_file = \"tier-a-limits.env\", env = \"NETWORK__CPU\"`"
+                    ),
+                )
+            })?;
+            return Ok(BudgetLimit::Percentage { pct, of });
+        }
         match (env_file, env_var, config_key) {
             (Some(path), Some(var), None) => Ok(BudgetLimit::EnvFile {
                 path,
@@ -220,22 +329,30 @@ impl Parse for BudgetLimit {
             }),
             (None, Some(var), None) => Ok(BudgetLimit::EnvVar(var)),
             (None, None, Some(key)) => Ok(BudgetLimit::Config(key)),
-            (Some(_), None, _) | (Some(_), _, Some(_)) => Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`env_file` must be paired with `env = \"VAR_NAME\"` and not with `config`",
+            (Some(_), None, None) => Err(syn::Error::new(
+                env_file_span.unwrap_or_else(Span::call_site),
+                "`env_file` must be paired with `env = \"VAR_NAME\"`",
+            )),
+            (Some(_), _, Some(_)) => Err(syn::Error::new(
+                env_file_span.unwrap_or_else(Span::call_site),
+                "`env_file` cannot be paired with `config` — use `env_file = \"PATH\", env = \"VAR_NAME\"` instead",
             )),
             (None, Some(_), Some(_)) => Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "`env` and `config` cannot be combined; pick one",
+                config_span
+                    .or(env_span)
+                    .unwrap_or_else(Span::call_site),
+                "`env` and `config` cannot be combined — pick one",
             )),
             (None, None, None) => Err(match unknown_key {
                 Some(key) => syn::Error::new(
                     key.span(),
-                    format!("expected `env`, `env_file`, or `config`, got `{key}`"),
+                    format!(
+                        "expected `env`, `env_file`, `config`, or `pct`, got `{key}`"
+                    ),
                 ),
                 None => syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    "expected an integer literal, `env = \"VAR\"`, `env_file = \"PATH\"` + `env = \"VAR\"`, or `config = \"KEY\"`",
+                    "expected an integer literal, `env = \"VAR\"`, `env_file = \"PATH\"` + `env = \"VAR\"`, `config = \"KEY\"`, or `pct = N, of = <source>`",
                 ),
             }),
         }
@@ -384,6 +501,64 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                 }
             }
         }
+        BudgetLimit::Percentage { pct, of } => {
+            // The `of` source must be an EnvFile — the only form that reads
+            // a named key from a checked-in file. Generate code that reads
+            // the reference limit, computes `reference × pct / 100`, and
+            // returns it.
+            let ref_expr = match of.as_ref() {
+                BudgetLimit::EnvFile { path, var_name } => quote! {
+                    {
+                        let __pct_env_path: &str = #path;
+                        let __pct_env_key: &str = #var_name;
+                        let mut __pct_content_opt = std::fs::read_to_string(__pct_env_path).ok();
+                        if __pct_content_opt.is_none() {
+                            let __pct_candidates = [
+                                format!("budget-macros/{}", __pct_env_path),
+                                format!("../budget-macros/{}", __pct_env_path),
+                                format!("../../budget-macros/{}", __pct_env_path),
+                                format!("../../../budget-macros/{}", __pct_env_path),
+                                format!("../../../../budget-macros/{}", __pct_env_path),
+                            ];
+                            for __c in &__pct_candidates {
+                                if let Ok(__c_content) = std::fs::read_to_string(__c) {
+                                    __pct_content_opt = Some(__c_content);
+                                    break;
+                                }
+                            }
+                        }
+                        __pct_content_opt
+                            .and_then(|__c| parse_env_file_value(&__c, __pct_env_key))
+                            .map(|__s| {
+                                __s.trim().parse::<u64>().unwrap_or_else(|_| {
+                                    panic!(
+                                        "{}: percentage_of env_file {} key {}={:?} is not a valid u64",
+                                        #metric_label,
+                                        __pct_env_path,
+                                        __pct_env_key,
+                                        __s
+                                    )
+                                })
+                            })
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "{}: percentage_of env_file {} missing key {} (or file cannot be read)",
+                                    #metric_label,
+                                    __pct_env_path,
+                                    __pct_env_key,
+                                )
+                            })
+                    }
+                },
+                _ => unreachable!("the parser ensures `of` is an env_file when used with `pct`"),
+            };
+            quote! {
+                {
+                    let __pct_ref_limit: u64 = #ref_expr;
+                    __pct_ref_limit * #pct / 100
+                }
+            }
+        }
     }
 }
 
@@ -401,6 +576,11 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
 /// The raw measurement is taken *before* the baseline expression is evaluated,
 /// so a baseline helper that spins up its own `Env` cannot perturb the number
 /// being asserted on.
+///
+/// `plain_msg` is used when there is no baseline; `marginal_msg` when there
+/// is. Both expect format placeholders `{}` in the order:
+/// - Plain: `{cost} {limit}`
+/// - Marginal: `{marginal} {limit} {cost} {baseline}`
 fn generate_metric_assert(
     cost_ident: &proc_macro2::Ident,
     cost_expr: proc_macro2::TokenStream,
@@ -675,26 +855,74 @@ fn generate_budget_assert(spec: BudgetSpec, item: TokenStream) -> TokenStream {
     if let Some(limit) = spec.cpu {
         let limit_expr = generate_limit_expr(&limit, "budget_cpu_lt");
         let cost_ident = proc_macro2::Ident::new("cpu_cost", proc_macro2::Span::call_site());
+        let (msg, marginal_msg) = match &limit {
+            BudgetLimit::Percentage { pct, .. } => (
+                format!(
+                    "CPU instruction cost {{}} exceeded limit {{}} \
+                     ({pct}% of network limit) \
+                     - local estimate, real network cost may differ significantly in either direction"
+                ),
+                format!(
+                    "CPU instruction cost {{}} exceeded limit {{}} \
+                     (marginal: {{}} measured - {{}} baseline, \
+                      {pct}% of network limit) \
+                     - local estimate, real network cost may differ significantly in either direction"
+                ),
+            ),
+            _ => (
+                "CPU instruction cost {} exceeded limit {} \
+                 - local estimate, real network cost may differ significantly in either direction"
+                    .to_string(),
+                "CPU instruction cost {} exceeded limit {} \
+                 (marginal: {} measured - {} baseline) \
+                 - local estimate, real network cost may differ significantly in either direction"
+                    .to_string(),
+            ),
+        };
         asserts.push(generate_metric_assert(
             &cost_ident,
             quote! { budget.cpu_instruction_cost() },
             &limit_expr,
             spec.cpu_baseline.as_ref(),
-            "CPU instruction cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
-            "CPU instruction cost {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, real network cost may differ significantly in either direction",
+            &msg,
+            &marginal_msg,
         ));
     }
 
     if let Some(limit) = spec.mem {
         let limit_expr = generate_limit_expr(&limit, "budget_mem_lt");
         let cost_ident = proc_macro2::Ident::new("mem_cost", proc_macro2::Span::call_site());
+        let (msg, marginal_msg) = match &limit {
+            BudgetLimit::Percentage { pct, .. } => (
+                format!(
+                    "Memory bytes cost {{}} exceeded limit {{}} \
+                     ({pct}% of network limit) \
+                     - local estimate, real network cost may differ significantly in either direction"
+                ),
+                format!(
+                    "Memory bytes cost {{}} exceeded limit {{}} \
+                     (marginal: {{}} measured - {{}} baseline, \
+                      {pct}% of network limit) \
+                     - local estimate, real network cost may differ significantly in either direction"
+                ),
+            ),
+            _ => (
+                "Memory bytes cost {} exceeded limit {} \
+                 - local estimate, real network cost may differ significantly in either direction"
+                    .to_string(),
+                "Memory bytes cost {} exceeded limit {} \
+                 (marginal: {} measured - {} baseline) \
+                 - local estimate, real network cost may differ significantly in either direction"
+                    .to_string(),
+            ),
+        };
         asserts.push(generate_metric_assert(
             &cost_ident,
             quote! { budget.memory_bytes_cost() },
             &limit_expr,
             spec.mem_baseline.as_ref(),
-            "Memory bytes cost {} exceeded limit {} - local estimate, real network cost may differ significantly in either direction",
-            "Memory bytes cost {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, real network cost may differ significantly in either direction",
+            &msg,
+            &marginal_msg,
         ));
     }
 

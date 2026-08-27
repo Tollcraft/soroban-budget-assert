@@ -248,6 +248,20 @@ impl ConstantProductPool {
         env.storage().instance().extend_ttl(threshold, extend_to);
     }
 
+    /// Extends the TTL of a single persistent storage entry so it is not
+    /// evicted from the ledger before `extend_to` ledgers from now,
+    /// provided the current TTL is below `threshold` ledgers.
+    ///
+    /// Writes a dummy value on first call so the key exists, then extends.
+    /// Isolated for measurement — same pattern as `extend_instance_ttl`.
+    pub fn extend_persistent_ttl(env: Env, threshold: u32, extend_to: u32) {
+        let key = symbol_short!("pttl");
+        env.storage().persistent().set(&key, &0i128);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
+    }
+
     pub fn do_expensive_work(env: Env, n: u32) -> u32 {
         let mut result: u32 = 0;
 

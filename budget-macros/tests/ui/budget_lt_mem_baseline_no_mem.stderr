@@ -1,0 +1,7 @@
+error: `mem_baseline` requires a `mem` limit
+ --> tests/ui/budget_lt_mem_baseline_no_mem.rs:6:1
+  |
+6 | #[budget_lt(cpu = 1000, mem_baseline = 50)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

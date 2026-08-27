@@ -13,6 +13,18 @@ sub-command regenerates that file from a network-verified `cargo
 budget-report --json` output, with the margin recorded as data instead of
 buried in human reasoning.
 
+{% hint style="info" %}
+**Baselines and marginal cost.** Tier A macro assertions use the
+`baseline = <expr>` parameter to subtract WASM instantiation overhead from
+the raw local measurement before comparing against the limit. The Tier B
+network limits derived by `--derive-limits` do *not* include this floor, so
+the two are already aligned: the derived limit is compared against the
+marginal cost, not the raw measurement. See
+[Marginal-cost baseline subtraction](reference.md#marginal-cost-baseline-subtraction)
+in the Tool Reference for the full explanation of what the baseline is, how
+it is measured, and what the resulting number represents.
+{% endhint %}
+
 ### One-time setup
 
 Add a `[margin]` block to `budget.toml` so the derivation tool can read the
@@ -93,6 +105,12 @@ following changes, in roughly decreasing order of urgency:
    calibration).
 4. The margin values in `budget.toml` — usually because a new operation
    type lands with a different local-vs-network gap.
+5. The target protocol version — network-wide resource limits (CPU
+   instructions, memory, disk read/write bytes) are set by validator
+   consensus and may change across protocol upgrades. The
+   `NETWORK__*` keys in `tier-a-limits.env` record these limits; see
+   [Network limits and percentage-based assertions](#network-limits-and-percentage-based-assertions)
+   below.
 
 For routine maintenance, treat the margin block as a stable input: change a
 margin once, in a PR that explains why, and let the resulting Tier B → Tier
@@ -141,4 +159,39 @@ consume the same primitives:
   ground-truth Tier B measurement, then use `--record-baseline` to
   pin the Tier B that the artisan decision was based on, so a future
   rerun can detect when the Tier B itself moves.
+
+### Network limits and percentage-based assertions
+
+`tier-a-limits.env` also records the Soroban network-wide resource limits
+under `NETWORK__*` keys. These are per-transaction caps set by validator
+consensus and may change across protocol versions:
+
+| Key | Description | Protocol 23 value |
+|---|---|---|
+| `NETWORK__CPU` | Max CPU instructions per transaction | 100,000,000 |
+| `NETWORK__MEM` | Max memory bytes per transaction | 41,943,040 |
+| `NETWORK__DISK_READ_BYTES` | Max bytes read per transaction | 200,000 |
+| `NETWORK__DISK_WRITE_BYTES` | Max bytes written per transaction | 132,096 |
+
+These limits are documented in the Stellar Lab
+[Network Limits](https://lab.stellar.org/network-limits) page and can be
+queried via `stellar network settings`.
+
+The budget macros' `pct = N, of = ...` form reads these values to resolve
+percentage-based limits. Instead of hard-coding an absolute number that
+goes stale when the protocol upgrades, you express intent:
+
+```rust
+#[test]
+#[budget_cpu_lt(pct = 25, of = env_file = "tier-a-limits.env", env = "NETWORK__CPU")]
+fn test_cpu_stays_under_quarter_of_network() {
+    let env = Env::default();
+    // ... the assertion resolves to 25% of NETWORK__CPU at test runtime
+}
+```
+
+When the target protocol changes, update the `NETWORK__*` values in
+`tier-a-limits.env` (or re-run `cargo budget-report --derive-limits` if
+the toolchain fetches live network limits) and every percentage-based
+assertion automatically adapts — no test annotations need updating.
 

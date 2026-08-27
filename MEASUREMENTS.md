@@ -37,9 +37,10 @@ These figures were produced during the initial tool development and are publishe
 | Storage write (WASM) | 36,840 | 44,512 | −17.2% | `amm-pool-contract::write_bytes(1,024 bytes)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2026-07-26 |
 | Storage read (WASM) | — | — | — | `amm-pool-contract::do_read_heavy_work(100)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85 | 2026-07-27 |
 | Host-function calls (WASM) | 1,280,000 | 1,600,000 | −20.0% | `host-function-contract::repeated_sequence(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
-| TTL extension (WASM) | — | — | — | `amm-pool-contract::extend_instance_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | — |
+| TTL extension — instance (WASM) | 444,536 | — | — | `amm-pool-contract::extend_instance_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+| TTL extension — persistent (WASM) | 458,090 | — | — | `amm-pool-contract::extend_persistent_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
 
-> **TTL extension note.** The TTL extension fixture registers the contract as WASM, initializes it (creating instance storage entries), then calls `extend_instance_ttl(threshold=100, extend_to=10_000)`. Local estimate collected via `cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture`. The complete capture record is checked in at [`cargo-budget-report/fixtures/ttl_extension_benchmark.json`](cargo-budget-report/fixtures/ttl_extension_benchmark.json). Network figure requires a `simulateTransaction` run on Soroban testnet (see fixture for exact commands).
+> **TTL extension note.** The TTL extension fixture registers the contract as WASM, initializes it (creating instance storage entries), then calls `extend_instance_ttl(threshold=100, extend_to=10_000)` or `extend_persistent_ttl(threshold=100, extend_to=10_000)`. Local estimates collected via `cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture`. The complete capture record is checked in at [`cargo-budget-report/fixtures/ttl_extension_benchmark.json`](cargo-budget-report/fixtures/ttl_extension_benchmark.json). Network figure requires a `simulateTransaction` run on Soroban testnet (see the TTL extension section below for exact commands).
 
 The native Rust row is included solely to illustrate that native estimates are unreliable for budget decisions. Only WASM-mode estimates should be used for assertions.
 
@@ -200,7 +201,7 @@ To reproduce this measurement:
 4. Deploy the WASM to Soroban testnet and run `cargo run --bin cargo-budget-report -- --network testnet`.
 5. Read `Memory Bytes` from the per-function row in the resulting report (or from `--json` output), and update the `Network mem` column.
 6. Compute delta = `(local − network) / network` and add it to the table.
-The host-function row uses a separate fixture that performs 1,000 calls to `env.ledger().sequence()`. It does not perform storage operations, so the reported values isolate the repeated host-function-call workload. The local estimate was obtained from the WASM-registered contract's `cost_estimate().budget()`, and the network figure was obtained from the corresponding testnet `simulateTransaction` response.
+The host-function row uses the dedicated [`host-function-contract`](host-function-contract/README.md) fixture crate that performs 1,000 calls to `env.ledger().sequence()`. It does not perform storage operations or compute loops, so the reported values isolate the repeated host-function-call workload from other billing components. The local estimate was obtained from the WASM-registered contract's `cost_estimate().budget()`, and the network figure was obtained from the corresponding testnet `simulateTransaction` response. For build and reproduction instructions, see [`host-function-contract/README.md`](host-function-contract/README.md).
 | VM-instruction-only (WASM) | 689,312 | 634,912 | +8.6% | `amm-pool-contract::do_vm_instruction_work(10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
 
 The native Rust row is included solely to illustrate that native estimates are unreliable for budget decisions. Only WASM-mode estimates should be used for assertions.
@@ -281,6 +282,64 @@ The native Rust and WASM local estimates are reported by `Env::cost_estimate().b
 
 **Implication for Tier A margins.** The local-vs-network gap is neither widening nor narrowing with input size — it is constant in percentage terms for this contract because neither estimator tracks the compute loop. However, this constancy is misleading: a real on-chain execution **would** charge for every VM instruction in the compute loop, meaning the gap between *any* static estimate and the true cost grows proportionally with n. Because the local WASM estimate overestimates the testnet figure by +88.6% for all measured sizes, a Tier A margin set above this ceiling (e.g. 2× the local estimate) would pass all tested inputs. The real risk is the opposite direction: a compute-heavy contract whose local estimate underestimates the network cost (as seen with the default release profile in earlier measurements) would see that underestimate magnified at larger input sizes. Tier A margins should therefore be derived from network-simulated measurements at the largest input size the contract is expected to handle, and the margin should be wide enough to absorb both the fixed gap and any input-dependent widening the local estimator fails to model.
 
+## TTL extension
+
+This section records the local-vs-network cost gap for TTL extension operations — both instance-storage and persistent-storage variants. TTL extension is the operation whose local cost is least likely to resemble its network cost, because extending an entry's lifetime is fundamentally a ledger-state operation and the local test environment models ledger state differently from a real network.
+
+### Methodology
+
+The local estimate is collected by the `calibrate_extend_ttl` tests in `amm-pool-contract/tests/calibrate_extend_ttl.rs`, which register the contract as WASM, initialize it (creating instance storage entries), then call `extend_instance_ttl` or `extend_persistent_ttl`:
+
+```
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture
+```
+
+Instance TTL extension calls `env.storage().instance().extend_ttl(threshold, extend_to)` which extends the TTL of all instance storage entries and the contract's WASM code. Persistent TTL extension writes a dummy key to persistent storage, then calls `env.storage().persistent().extend_ttl(&key, threshold, extend_to)` to extend that single entry's TTL.
+
+Three `extend_to` values are measured (1,000, 10,000, and 50,000 ledgers) with a fixed `threshold` of 100 ledgers to check whether the cost scales with the extension amount.
+
+### Figures — instance TTL extension
+
+| extend_to | Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| 1,000 | 444,536 | 1,339,397 | — | — | — | `amm-pool-contract::extend_instance_ttl(100, 1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+| 10,000 | 444,536 | 1,339,397 | — | — | — | `amm-pool-contract::extend_instance_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+| 50,000 | 444,536 | 1,339,397 | — | — | — | `amm-pool-contract::extend_instance_ttl(100, 50_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+
+### Figures — persistent TTL extension
+
+| extend_to | Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---:|---:|---:|---:|---:|---:|---|---|---|---|
+| 1,000 | 458,090 | 1,345,373 | — | — | — | `amm-pool-contract::extend_persistent_ttl(100, 1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+| 10,000 | 458,090 | 1,345,373 | — | — | — | `amm-pool-contract::extend_persistent_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+| 50,000 | 458,090 | 1,345,373 | — | — | — | `amm-pool-contract::extend_persistent_ttl(100, 50_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08 |
+
+The network figures and deltas are pending — they require `simulateTransaction` calls against Soroban testnet with the same WASM and contract state. The complete capture record is at [`cargo-budget-report/fixtures/ttl_extension_benchmark.json`](cargo-budget-report/fixtures/ttl_extension_benchmark.json).
+
+### Gap stability across extension amounts
+
+Both instance and persistent TTL extension costs are **constant** with respect to `extend_to`. The local CPU estimate does not change between 1,000, 10,000, and 50,000 ledgers. This is expected: the Soroban budget meters the `extend_ttl` host-function call itself, not the number of ledgers the extension covers. The `threshold` and `extend_to` parameters affect which entries are extended and by how much, but the metering cost of the call is fixed.
+
+Instance TTL extension costs **444,536 CPU / 1,339,397 mem**, while persistent TTL extension costs **458,090 CPU / 1,345,373 mem** — a modest +3.0% CPU / +0.4% mem difference. The persistent variant is slightly more expensive because it writes a key to persistent storage before extending, while the instance variant extends all existing instance entries without a write.
+
+### Instance vs persistent: equivalence
+
+The two storage types produce similar but distinguishable measurements. Instance TTL extension is cheaper because it operates on entries that already exist (created during `initialize()`). Persistent TTL extension incurs the additional cost of a `storage.persistent().set()` call before the `extend_ttl`. Both costs are dominated by the host-function call overhead rather than the number of entries extended, so a single Tier A margin can cover both variants with the persistent-row limit set ~3% higher than the instance-row limit.
+
+### Comparison with Tier B estimate
+
+The Tier B estimate for `extend_instance_ttl` is 22,000 CPU instructions (see `tier-a-limits.env`). The local WASM measurement of **444,536** is approximately **20× higher** than the Tier B figure. This discrepancy is expected: the Tier B estimate was derived from a previous toolchain/SDK combination and may not reflect the current SDK 27 + rustc 1.91.0 environment. The local measurement should be treated as the current baseline until a network figure is collected.
+
+### Reproduction
+
+To reproduce this measurement:
+
+1. Build the WASM: `cargo build --target wasm32v1-none --release -p amm-pool-contract`
+2. Run the measurement tests: `cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture`
+3. Extract the `CALIBRATE_CPU` and `CALIBRATE_MEM` values from the test output for each of the six test functions.
+4. For the network figure, deploy the WASM to Soroban testnet and run `cargo run --bin cargo-budget-report -- --network testnet` with a `budget.toml` entry for `extend_instance_ttl` and `extend_persistent_ttl`.
+
 ## Unmeasured operation types
 
 The first three rows measure `do_expensive_work(10_000)`, which combines an arithmetic loop with a vector construction and instance-storage write. The fourth row uses `do_vm_instruction_work(10_000)`, an isolated version of the same wrapping arithmetic loop. It performs no storage access, event publication, or cross-contract invocation, so its measured gap represents the VM-instruction-heavy operation rather than an aggregate operation cost.
@@ -299,5 +358,5 @@ For the isolated VM benchmark, the delta is calculated as:
 | Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
 | VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Measured above |
 | Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | In progress |
-| TTL extension | TBD | In progress — calibration test at `amm-pool-contract/tests/calibrate_extend_ttl.rs` |
+| TTL extension | TBD | Local measured — network figure pending (see [TTL extension](#ttl-extension) section) |
 

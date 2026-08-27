@@ -66,7 +66,7 @@ The first block defines the vocabulary this project itself coined — tiers, mar
 - **Where you'll see it**: macro assertion messages ("marginal: N measured − M baseline"), the `baseline` argument on `budget_cpu_lt` / `budget_mem_lt` / `budget_read_bytes_lt` / `budget_write_bytes_lt`, and `cpu_baseline` / `mem_baseline` on `budget_lt`
 - **What it is**: The cost model where a baseline probe's measurement is subtracted from a raw measurement and the difference — not the raw figure — is compared against the limit. The subtraction saturates at zero, so noise below the probe reports honestly as no measurable marginal cost rather than wrapping to a huge value; the raw measurement is taken before the probe expression is evaluated so the probe cannot perturb it.
 
-**Docs**: `generate_metric_assert` in `budget-macros/src/lib.rs`; usage in `amm-pool-contract/tests/budget_test.rs`.
+**Docs**: [Marginal-cost baseline subtraction](reference.md#marginal-cost-baseline-subtraction) in the Tool Reference for the full mechanics; `generate_metric_assert` in `budget-macros/src/lib.rs` for the implementation; usage in `amm-pool-contract/tests/budget_test.rs`.
 
 ---
 

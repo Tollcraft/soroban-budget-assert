@@ -1,4 +1,4 @@
-error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, or `config = "KEY"`
+error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, `config = "KEY"`, or `pct = N, of = <source>`
  --> tests/ui/no_arg.rs:4:1
   |
 4 | #[budget_cpu_lt]
