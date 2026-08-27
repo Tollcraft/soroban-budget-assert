@@ -612,6 +612,68 @@ fn generate_metric_assert(
     }
 }
 
+/// Builds the ledger-entry measurement + assertion for `#[budget_ledger_entries_lt]`.
+///
+/// `Budget` does not expose a combined "entries" getter, so the read and write
+/// entry counts are read separately from the cost tracker (`DiskReadEntries`
+/// and `DiskWriteEntries`) and summed. The total is what the network enforces as
+/// its single combined entry limit, but the failure message always reports the
+/// read/write breakdown so a breach is never ambiguous about which side blew the
+/// budget.
+///
+/// `ContractCostType` is referenced unqualified, so it must be in scope at the
+/// call site (e.g. `use soroban_sdk::ContractCostType;`).
+fn generate_ledger_assert(
+    cost_ident: &proc_macro2::Ident,
+    env_ident: &proc_macro2::Ident,
+    limit_expr: &proc_macro2::TokenStream,
+    baseline: Option<&Expr>,
+) -> proc_macro2::TokenStream {
+    let read_entries = quote! {
+        #env_ident.cost_estimate().budget().tracker(ContractCostType::DiskReadEntries).iterations()
+    };
+    let write_entries = quote! {
+        #env_ident.cost_estimate().budget().tracker(ContractCostType::DiskWriteEntries).iterations()
+    };
+    match baseline {
+        None => quote! {
+            let __read_entries = #read_entries;
+            let __write_entries = #write_entries;
+            let #cost_ident = __read_entries.saturating_add(__write_entries);
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                #cost_ident < limit_u64,
+                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {} \
+                 - local estimate, real network entry counts may differ",
+                __read_entries,
+                __write_entries,
+                #cost_ident,
+                limit_u64
+            );
+        },
+        Some(baseline_expr) => quote! {
+            let __read_entries = #read_entries;
+            let __write_entries = #write_entries;
+            let #cost_ident = __read_entries.saturating_add(__write_entries);
+            let __budget_baseline: u64 = #baseline_expr;
+            let __budget_marginal: u64 = #cost_ident.saturating_sub(__budget_baseline);
+            let limit_u64: u64 = #limit_expr;
+            assert!(
+                __budget_marginal < limit_u64,
+                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {} \
+                 (marginal: {} measured - {} baseline) \
+                 - local estimate, real network entry counts may differ",
+                __read_entries,
+                __write_entries,
+                #cost_ident,
+                limit_u64,
+                __budget_marginal,
+                __budget_baseline
+            );
+        },
+    }
+}
+
 /// Splits a test body into its leading statements and an optional trailing
 /// expression.
 ///
@@ -1167,6 +1229,119 @@ pub fn budget_read_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream
     let assertion = quote! {
         {
             let budget = #env_ident.cost_estimate().budget();
+            #assert_tokens
+        }
+    };
+
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, prelude, assertion) {
+        return tokens;
+    }
+
+    TokenStream::from(quote! {
+        #input_fn
+    })
+}
+
+/// Asserts that the number of events emitted by `env` stays under `N`.
+///
+/// Events are metered by Soroban and are the resource most likely to grow
+/// accidentally: a contract that emits one event per loop iteration passes
+/// every CPU and memory assertion while producing an unbounded number of
+/// events, and nothing else in the macro set catches it.
+///
+/// The count is obtained **directly** from the SDK's test environment via
+/// `env.events().all().events().len()` — it is a real event count, not a proxy
+/// for another metric. (Confirmed: `soroban_sdk::Env::events()` returns an
+/// `Events` whose `all()` yields the emitted `ContractEvent`s, so the count is
+/// exact under `feature = "testutils"`.)
+///
+/// Supports the same limit forms as the other macros — literal, `env = "VAR"`,
+/// `env_file = "PATH", env = "KEY"`, `config = "KEY"`, and `pct = N, of = …`.
+///
+/// Must be placed on a test function that has a local `env` variable (a
+/// `soroban_sdk::Env`).
+#[proc_macro_attribute]
+pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let spec = match syn::parse::<StandaloneSpec>(attr) {
+        Ok(s) => s,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+    let mut input_fn = match syn::parse::<ItemFn>(item) {
+        Ok(f) => f,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+
+    let limit_expr = generate_limit_expr(&spec.limit, "budget_events_lt");
+
+    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let cost_ident = proc_macro2::Ident::new("event_count", proc_macro2::Span::call_site());
+    let assert_tokens = generate_metric_assert(
+        &cost_ident,
+        quote! { #env_ident.events().all().events().len() as u64 },
+        &limit_expr,
+        spec.baseline.as_ref(),
+        "Event count {} exceeded limit {} - local estimate, real network event counts may differ",
+        "Event count {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, real network event counts may differ",
+    );
+
+    let prelude = generate_prelude();
+    let assertion = quote! {
+        {
+            #assert_tokens
+        }
+    };
+
+    if let Some(tokens) = instrument_exit_paths(&mut input_fn, prelude, assertion) {
+        return tokens;
+    }
+
+    TokenStream::from(quote! {
+        #input_fn
+    })
+}
+
+/// Asserts that the number of ledger entries accessed by `env` stays under `N`.
+///
+/// Soroban limits the number of ledger entries a transaction may read or write
+/// separately from the byte counts. A contract can sit well inside its read and
+/// write byte budgets while touching too many distinct entries — reading fifty
+/// small entries is cheap in bytes and expensive in entry count.
+///
+/// The total asserted is **reads + writes** (the network enforces a single
+/// combined entry limit), but the failure message always reports the read and
+/// write breakdown so a breach is never ambiguous about which side blew the
+/// budget. Read and write are deliberately summed rather than silently picked:
+/// the macro reports both.
+///
+/// Counts come from `env.cost_estimate().budget().tracker(ContractCostType::DiskReadEntries)`
+/// and `…DiskWriteEntries`, summed. `ContractCostType` must be in scope at the
+/// call site (e.g. `use soroban_sdk::ContractCostType;`).
+///
+/// Supports the same limit forms as the other macros.
+///
+/// Must be placed on a test function that has a local `env` variable (a
+/// `soroban_sdk::Env`).
+#[proc_macro_attribute]
+pub fn budget_ledger_entries_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let spec = match syn::parse::<StandaloneSpec>(attr) {
+        Ok(s) => s,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+    let mut input_fn = match syn::parse::<ItemFn>(item) {
+        Ok(f) => f,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
+
+    let limit_expr = generate_limit_expr(&spec.limit, "budget_ledger_entries_lt");
+
+    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let cost_ident = proc_macro2::Ident::new("ledger_entries", proc_macro2::Span::call_site());
+    let assert_tokens =
+        generate_ledger_assert(&cost_ident, &env_ident, &limit_expr, spec.baseline.as_ref());
+
+    let prelude = generate_prelude();
+    let assertion = quote! {
+        {
             #assert_tokens
         }
     };

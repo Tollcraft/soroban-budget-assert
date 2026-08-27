@@ -1499,6 +1499,11 @@ fn main() -> anyhow::Result<()> {
         TransportKind::Live(live::LiveTransport::new(retry_config, args.quiet))
     };
 
+    // Union of every function exported by every contract in the workspace.
+    // Used at the end of the run (issue #399) to validate that every function
+    // configured in `budget.toml` actually exists.
+    let mut all_exported: HashSet<String> = HashSet::new();
+
     for package in metadata.packages {
         let is_cdylib = package
             .targets
@@ -1575,7 +1580,8 @@ fn main() -> anyhow::Result<()> {
                         let name = export_item.name.to_string();
                         // Ignore internal and common exports
                         if !name.starts_with('_') && name != "memory" {
-                            exported_fns.insert(name);
+                            exported_fns.insert(name.clone());
+                            all_exported.insert(name);
                         }
                     }
                 }
@@ -1773,6 +1779,24 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             _ => unreachable!("--record always constructs a RecordingTransport"),
+        }
+    }
+
+    // Issue #399: validate budget.toml against the schema before reporting, so
+    // a misspelled function name or unknown key fails loudly instead of
+    // silently producing a report that omits the function. Runs in every mode
+    // that reached this point (Report / Record / Check).
+    {
+        let available: Vec<String> = all_exported.into_iter().collect();
+        if let Ok(content) = std::fs::read_to_string("budget.toml") {
+            if let Err(errs) = validate::validate_budget_toml(&content, &available) {
+                let report = errs
+                    .iter()
+                    .map(|e| format!("  - [{}] {}", e.location, e.message))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                anyhow::bail!("budget.toml validation failed:\n{report}");
+            }
         }
     }
 

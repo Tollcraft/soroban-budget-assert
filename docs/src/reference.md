@@ -256,6 +256,70 @@ fn test_read_bytes_with_env_file() {
 }
 ```
 
+### `#[budget_events_lt(N)]`
+
+Asserts that the number of contract events emitted by `env` is strictly less than `N`.
+
+Unlike the byte-count macros, which measure `memory_bytes_cost` as a proxy, the event count is read directly from the local test environment's recorded event set (`env.events().all().events().len()`), so it is a real measurement rather than an estimate.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_events_lt;
+
+#[test]
+#[budget_events_lt(10)]
+fn test_emits_few_events() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Dynamic limit (env var / `.env` file):**
+
+```rust
+#[test]
+#[budget_events_lt(env = "MAX_EVENTS")]
+fn test_emits_few_events_env() {
+    let env = Env::default();
+    // ...
+}
+```
+
+All of the limit forms supported by the other single-metric macros work here too: a literal `N`, `env = "VAR"`, `env_file = "file.env", env = "VAR"`, `config = "key"`, and `pct = P, of = env_file = "file.env", env = "VAR"`.
+
+### `#[budget_ledger_entries_lt(N)]`
+
+Asserts that the total number of ledger entries touched by `env` (disk reads plus disk writes) is strictly less than `N`.
+
+The entry count is read directly from the local test environment's cost tracker (`ContractCostType::DiskReadEntries` + `ContractCostType::DiskWriteEntries`), so it is a real measurement of storage-access breadth rather than an estimate. On assertion failure the error message reports the read, write, and total entry counts separately.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_ledger_entries_lt;
+
+#[test]
+#[budget_ledger_entries_lt(32)]
+fn test_touches_few_entries() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Dynamic limit:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(env = "MAX_LEDGER_ENTRIES")]
+fn test_touches_few_entries_env() {
+    let env = Env::default();
+    // ...
+}
+```
+
+As with `budget_events_lt`, every limit form (literal, `env`, `env_file`, `config`, `pct`) is accepted.
+
 ### `#[budget_scaling(…)]` — growth-model assertion
 
 Asserts that the CPU cost *grows* according to a declared model as input size
@@ -616,7 +680,8 @@ CPU instruction cost 2698250 exceeded limit 2100000
 #### Syntax
 
 Single-metric macros (`budget_cpu_lt`, `budget_mem_lt`,
-`budget_write_bytes_lt`, `budget_read_bytes_lt`):
+`budget_write_bytes_lt`, `budget_read_bytes_lt`, `budget_events_lt`,
+`budget_ledger_entries_lt`):
 
 ```rust
 #[budget_cpu_lt(N, baseline = baseline_expr)]
@@ -718,6 +783,37 @@ This section is the **complete** flag reference: every `#[arg(...)]` field decla
 ### `budget.toml` fields vs. CLI flags: which one wins
 
 Every flag in the table above that has a `budget.toml` equivalent column entry follows the same rule unless noted: **the CLI flag wins when both are present.** The one documented exception is per-function `tolerance` (see above). The full precedence table, including the margin all-or-nothing rule, lives at [Value precedence](#value-precedence) later in this page — it is not repeated per-flag here to avoid two sources of truth drifting apart.
+
+### `budget.toml` schema validation
+
+`budget.toml` is validated against the schema the tool understands **before any
+report is produced** (in Report, Record, and Check modes). Validation fails
+loudly instead of silently ignoring mistakes — the damaging case being a
+misspelled function name, which previously yielded a report that simply omitted
+the function with no indication anything was wrong (issue #399).
+
+Every problem found is reported at once, so a misconfigured file takes one
+round trip to fix rather than five. The error classes are:
+
+- **Unknown top-level key** — a key that is a plausible typo of a known key is
+  rejected with the key name, its location, and the closest valid key as a
+  suggestion. For example, `tolernce = 0.1` reports
+  `unknown top-level key \`tolernce\` (did you mean \`tolerance\`?)`. Arbitrary
+  foreign sections — such as `[lints]`, consumed by the sibling
+  `soroban-cost-linter` tool — are silently accepted so a single shared
+  `budget.toml` can serve multiple tools without errors.
+- **Type error** — names the offending field and the type that was expected
+  (e.g. `cpu_limit = "high"` fails because `cpu_limit` must be a `u64`).
+- **Misspelled limit key** — `FunctionConfig` denies unknown fields, so a typo
+  such as `cpu_lmit = 5_000_000` is reported as a schema error naming the field.
+- **Configured function does not exist** — a `[functions.<name>]` whose name is
+  not an exported function of the workspace is reported as an error that lists
+  the available functions (with a closest-match suggestion), e.g.
+  `function \`do_expensive_wrk\` is configured in budget.toml but does not exist
+  in the workspace (did you mean \`do_expensive_work\`?). Available functions: ...`.
+
+The known top-level keys are `network`, `source`, `tolerance`, `margin`,
+`scenarios`, `functions`, and `retry`.
 
 ### Output-format precedence when flags combine
 
