@@ -86,6 +86,54 @@ When the variable is unset, the limit defaults to `u64::MAX`, making the asserti
 
 The CLI measures ground truth. One invocation walks this pipeline:
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as Developer
+    participant CLI as cargo budget-report
+    participant Cargo as Cargo / rustc
+    participant WASM as WASM Binary
+    participant Parser as WASM Parser
+    participant Stellar as Stellar CLI
+    participant RPC as Soroban RPC
+    participant Report as Budget Report
+
+    Dev->>CLI: cargo budget-report [--check] [--json]
+    CLI->>Cargo: cargo build -p <contract> --release<br/>--target wasm32-unknown-unknown
+    Cargo-->>WASM: amm_pool_contract.wasm (cdylib)
+
+    CLI->>Parser: wasmparser: scan exports
+    Parser-->>CLI: exported function names list
+
+    CLI->>CLI: Read budget.toml<br/>(network, source, per-function args/limits)
+
+    loop For each exported function in budget.toml
+        CLI->>Stellar: stellar contract invoke<br/>--function <fn> --args <args>
+        Stellar->>RPC: simulateTransaction (XDR)
+        RPC-->>Stellar: SimulateTransactionResponse<br/>(transactionData XDR)
+        Stellar-->>CLI: stdout JSON response
+
+        CLI->>CLI: Decode transactionData XDR<br/>Extract: CPU instructions,<br/>read bytes, write bytes
+
+        alt --check mode and limit configured
+            CLI->>CLI: Compare value vs cpu_limit /<br/>read_limit / write_limit
+            CLI-->>Report: PASS or FAIL per metric
+        else report-only mode
+            CLI-->>Report: Record value (no enforcement)
+        end
+    end
+
+    CLI->>Report: Render table (tabled) or<br/>emit JSON (--json flag)
+    Report-->>Dev: Console output +<br/>current_report.json artifact
+
+    alt Any limit breached or simulation failed
+        CLI-->>Dev: exit code 1 (CI fails)
+    else All checks pass
+        CLI-->>Dev: exit code 0 (CI passes)
+    end
+```
+
+
 1. **Discover** — runs `cargo metadata` and selects every workspace package with a `cdylib` target (i.e., every Soroban contract).
 2. **Build** — compiles each contract with `cargo build --target wasm32-unknown-unknown --release`, using the workspace's `[profile.release]`.
 3. **Scan exports** — parses the `.wasm` binary with `wasmparser` and collects every exported function, skipping internals (names starting with `_`, and `memory`).
