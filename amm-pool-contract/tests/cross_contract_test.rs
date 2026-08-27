@@ -32,6 +32,7 @@ fn test_cross_contract_wasm() {
     let client = ConstantProductPoolClient::new(&env, &contract_address);
 
     env.cost_estimate().budget().reset_unlimited();
+    env.cost_estimate().disable_resource_limits();
 
     client.do_cross_contract_work(&helper_address, &100);
 
@@ -68,6 +69,7 @@ fn test_cross_contract_macro_gated() {
     let client = ConstantProductPoolClient::new(&env, &contract_address);
 
     env.cost_estimate().budget().reset_unlimited();
+    env.cost_estimate().disable_resource_limits();
 
     client.do_cross_contract_work(&helper_address, &100);
 }

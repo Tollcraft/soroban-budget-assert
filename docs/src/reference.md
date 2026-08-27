@@ -256,6 +256,70 @@ fn test_read_bytes_with_env_file() {
 }
 ```
 
+### `#[budget_events_lt(N)]`
+
+Asserts that the number of contract events emitted by `env` is strictly less than `N`.
+
+Unlike the byte-count macros, which measure `memory_bytes_cost` as a proxy, the event count is read directly from the local test environment's recorded event set (`env.events().all().events().len()`), so it is a real measurement rather than an estimate.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_events_lt;
+
+#[test]
+#[budget_events_lt(10)]
+fn test_emits_few_events() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Dynamic limit (env var / `.env` file):**
+
+```rust
+#[test]
+#[budget_events_lt(env = "MAX_EVENTS")]
+fn test_emits_few_events_env() {
+    let env = Env::default();
+    // ...
+}
+```
+
+All of the limit forms supported by the other single-metric macros work here too: a literal `N`, `env = "VAR"`, `env_file = "file.env", env = "VAR"`, `config = "key"`, and `pct = P, of = env_file = "file.env", env = "VAR"`.
+
+### `#[budget_ledger_entries_lt(N)]`
+
+Asserts that the total number of ledger entries touched by `env` (disk reads plus disk writes) is strictly less than `N`.
+
+The entry count is read directly from the local test environment's cost tracker (`ContractCostType::DiskReadEntries` + `ContractCostType::DiskWriteEntries`), so it is a real measurement of storage-access breadth rather than an estimate. On assertion failure the error message reports the read, write, and total entry counts separately.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_ledger_entries_lt;
+
+#[test]
+#[budget_ledger_entries_lt(32)]
+fn test_touches_few_entries() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Dynamic limit:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(env = "MAX_LEDGER_ENTRIES")]
+fn test_touches_few_entries_env() {
+    let env = Env::default();
+    // ...
+}
+```
+
+As with `budget_events_lt`, every limit form (literal, `env`, `env_file`, `config`, `pct`) is accepted.
+
 ### `#[budget_scaling(…)]` — growth-model assertion
 
 Asserts that the CPU cost *grows* according to a declared model as input size
@@ -616,7 +680,8 @@ CPU instruction cost 2698250 exceeded limit 2100000
 #### Syntax
 
 Single-metric macros (`budget_cpu_lt`, `budget_mem_lt`,
-`budget_write_bytes_lt`, `budget_read_bytes_lt`):
+`budget_write_bytes_lt`, `budget_read_bytes_lt`, `budget_events_lt`,
+`budget_ledger_entries_lt`):
 
 ```rust
 #[budget_cpu_lt(N, baseline = baseline_expr)]
@@ -704,6 +769,7 @@ This section is the **complete** flag reference: every `#[arg(...)]` field decla
 | `--provenance-out <PATH>` | — | `<OUT>` with `.env` replaced by `.md` | Only meaningful with `--derive-limits`: where to write the Markdown provenance table documenting how each derived limit was computed. Defaults from `--derive-limits`'s own `OUT` path (e.g. `tier-a-limits.env` → `tier-a-limits.provenance.md`), so it rarely needs to be set explicitly. |
 | `--record <PATH>` | — | none | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` run reproduce the same report offline. Mutually exclusive with `--replay` (rejected by clap's `conflicts_with` at parse time, before any network call happens). |
 | `--replay <PATH>` | — | none | Replay a run from a fixture file written by `--record`. The whole report pipeline runs offline: no `stellar` CLI, no `curl`, no network access, and preflight checks for those tools are skipped entirely. Mutually exclusive with `--record`. |
+| `--watch` | — | `false` | Watch the workspace for file changes and re-measure on save. Refuses to start when stdout is not a terminal. |
 
 ### Flags that interact
 
@@ -718,6 +784,37 @@ This section is the **complete** flag reference: every `#[arg(...)]` field decla
 ### `budget.toml` fields vs. CLI flags: which one wins
 
 Every flag in the table above that has a `budget.toml` equivalent column entry follows the same rule unless noted: **the CLI flag wins when both are present.** The one documented exception is per-function `tolerance` (see above). The full precedence table, including the margin all-or-nothing rule, lives at [Value precedence](#value-precedence) later in this page — it is not repeated per-flag here to avoid two sources of truth drifting apart.
+
+### `budget.toml` schema validation
+
+`budget.toml` is validated against the schema the tool understands **before any
+report is produced** (in Report, Record, and Check modes). Validation fails
+loudly instead of silently ignoring mistakes — the damaging case being a
+misspelled function name, which previously yielded a report that simply omitted
+the function with no indication anything was wrong (issue #399).
+
+Every problem found is reported at once, so a misconfigured file takes one
+round trip to fix rather than five. The error classes are:
+
+- **Unknown top-level key** — a key that is a plausible typo of a known key is
+  rejected with the key name, its location, and the closest valid key as a
+  suggestion. For example, `tolernce = 0.1` reports
+  `unknown top-level key \`tolernce\` (did you mean \`tolerance\`?)`. Arbitrary
+  foreign sections — such as `[lints]`, consumed by the sibling
+  `soroban-cost-linter` tool — are silently accepted so a single shared
+  `budget.toml` can serve multiple tools without errors.
+- **Type error** — names the offending field and the type that was expected
+  (e.g. `cpu_limit = "high"` fails because `cpu_limit` must be a `u64`).
+- **Misspelled limit key** — `FunctionConfig` denies unknown fields, so a typo
+  such as `cpu_lmit = 5_000_000` is reported as a schema error naming the field.
+- **Configured function does not exist** — a `[functions.<name>]` whose name is
+  not an exported function of the workspace is reported as an error that lists
+  the available functions (with a closest-match suggestion), e.g.
+  `function \`do_expensive_wrk\` is configured in budget.toml but does not exist
+  in the workspace (did you mean \`do_expensive_work\`?). Available functions: ...`.
+
+The known top-level keys are `network`, `source`, `tolerance`, `margin`,
+`scenarios`, `functions`, and `retry`.
 
 ### Output-format precedence when flags combine
 
@@ -921,20 +1018,67 @@ Each simulated function produces four rows (or four JSON objects) when its simul
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
-[Measurement scope](#measurement-scope). JSON output (`--json`) is an array suited to CI:
+[Measurement scope](#measurement-scope). JSON output (`--json`) is an object with a schema
+version and a `snapshots` array suited to CI:
 
 ```json
-[
-  {
-    "package": "amm-pool-contract",
-    "function": "do_expensive_work",
-    "metric": "CPU Instructions",
-    "value": 756678
-  }
-]
+{
+  "schema_version": 1,
+  "snapshots": [
+    {
+      "package": "amm-pool-contract",
+      "function": "do_expensive_work",
+      "metric": "CPU Instructions",
+      "value": 756678
+    }
+  ]
+}
 ```
 
 When `--check --json` is used, configured functions gain `limit` and `pass` (see [the `--check` section above](#check-enforcing-regression-limits-against-network-verified-costs)); the shape for unconfigured functions is unchanged.
+
+### JSON schema version
+
+Every JSON document emitted by `cargo budget-report --json` includes a
+`schema_version` integer at the top level.  The current version is **1**.
+
+#### Versioning policy
+
+- The version is incremented when the JSON structure changes in a way
+  that requires consumers to update their parsing logic.  Adding a new
+  optional field to snapshot entries does **not** require a version bump;
+  removing or renaming a field, changing a field's type, or restructuring
+  the document **does**.
+- The `schema_version` field itself must always be present and must always
+  be an integer.
+- Consumers should read `schema_version` to decide which parsing branch
+  to use.  Unknown version numbers should be rejected with a clear error
+  rather than silently parsed.
+
+#### Breaking schema changes
+
+The following are considered breaking changes that require incrementing
+`schema_version`:
+
+- Removing, renaming, or changing the type of an existing field.
+- Changing the meaning of an existing field.
+- Moving snapshot entries out of the `snapshots` array.
+- Changing `schema_version` from an integer to another type.
+
+The following are **not** breaking and do **not** require a version bump:
+
+- Adding a new optional field to snapshot entries.
+- Adding a new top-level field alongside `schema_version` and `snapshots`.
+- Extending the set of possible `metric` values.
+
+#### Pre-version historical records
+
+Records produced before `schema_version` was introduced (i.e. records
+where the JSON is a bare array rather than a `{schema_version, snapshots}`
+object) are treated as **implicit version 0**.  The `record-history` CI
+job's measurement gate already accepts both forms — the bare array and
+the wrapped object — so existing historical data remains compatible
+without migration.
 
 ### HTML output (`--html`)
 
@@ -1244,3 +1388,14 @@ Effects of this file:
 - `withdraw` has an entry but no `*_limit` fields, so its metrics are reported and it participates in `--check`'s fail-on-simulation-error rule, but no metric is enforced.
 - If `amm-pool-contract` were renamed tomorrow, every section above would keep working unchanged except `[scenarios.full_workflow]`, whose `package` value must match the annotation used by Tier A tests.
 - If `initialize` had been misspelled (e.g. `[functions.initialise]`), nothing would error and nothing would fail: the orphaned entry would be ignored, `initialize` would run unconfigured with no arguments, and none of its metrics would be enforced — the only symptom is missing rows in a later report.
+### `--rpc-url`
+Override the RPC URL for Soroban CLI invocation.
+
+### `--network-passphrase`
+Override the network passphrase for Soroban CLI invocation.
+
+### `--no-deploy-cache`
+Bypass deploying cache when running budget report.
+
+### `--source-secret`
+Supply a stellar secret key (S...) for deploy and invoke.

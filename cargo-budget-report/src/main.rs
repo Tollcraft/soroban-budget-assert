@@ -35,6 +35,7 @@ use wasmparser::Parser as WasmParser;
 
 mod derive;
 mod error;
+mod json_output;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -1036,10 +1037,7 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
         if !quiet {
             eprint!("Checking --source-secret... ");
         }
-        let ok = matches!(
-            stellar_strkey::Strkey::from_string(secret),
-            Ok(stellar_strkey::Strkey::PrivateKeyEd25519(_))
-        );
+        let ok = stellar_strkey::ed25519::PrivateKey::from_string(secret).is_ok();
         if !ok {
             return Err(Error::Message(
                 "--source-secret / STELLAR_SECRET_KEY is not a valid Stellar secret seed \
@@ -1089,7 +1087,7 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
     }
     // ── wasm32 target ───────────────────────────────────────────────────
     if !quiet {
-        eprint!("Checking wasm32-unknown-unknown target... ");
+        eprint!("Checking wasm32v1-none target... ");
     }
     let rustup_check = Command::new("rustup")
         .args(["target", "list", "--installed"])
@@ -1109,17 +1107,14 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
         }
         Ok(output) => {
             let installed = String::from_utf8_lossy(&output.stdout);
-            if installed
-                .lines()
-                .any(|line| line.trim() == "wasm32-unknown-unknown")
-            {
+            if installed.lines().any(|line| line.trim() == "wasm32v1-none") {
                 if !quiet {
                     eprintln!("found");
                 }
             } else {
                 return Err(Error::Message(
-                    "wasm32-unknown-unknown target is not installed.\n\
-                     Install it with:  rustup target add wasm32-unknown-unknown"
+                    "wasm32v1-none target is not installed.\n\
+                     Install it with:  rustup target add wasm32v1-none"
                         .to_string(),
                 ));
             }
@@ -1284,20 +1279,13 @@ fn build_utc_timestamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| Error::Message(format!("system time error: {e}")))
-        .map(|d| {
-            // Approximate UTC seconds-since-epoch using a 0-based
-            // bijection: 86400 seconds/day, 365.25 days/year. Good
-            // enough for an audit-trail timestamp; rounding to days
-            // would also be acceptable.
-            d.as_secs()
-        })
+        .map(|d| d.as_secs())
         .unwrap_or(0);
-    // The header timestamp is descriptive, not asserted, so it is
-    // fine to format it loosely. The string-form here is the
-    // seconds-since-epoch expressed in ISO-8601 by hand: the
-    // calendar math below is intentionally simple (no leap rules
-    // beyond the standard 4/100/400-year rule) and is sufficient
-    // for human-readable audit trail of when the derivation ran.
+    // The header timestamp is descriptive, not asserted. The string
+    // form is seconds-since-epoch expressed as ISO-8601 by hand using
+    // the proleptic Gregorian calendar and its standard 4/100/400-year
+    // leap-year rule, which is sufficient for this human-readable
+    // audit trail.
     format_unix_timestamp_as_iso8601(now)
 }
 
@@ -1573,6 +1561,11 @@ fn main() -> anyhow::Result<()> {
     // records fresh deploys so a later cached run stays warm.
     let mut deploy_cache = deploy_cache::DeployCache::load(std::path::Path::new("."));
 
+    // Union of every function exported by every contract in the workspace.
+    // Used at the end of the run (issue #399) to validate that every function
+    // configured in `budget.toml` actually exists.
+    let mut all_exported: HashSet<String> = HashSet::new();
+
     for package in metadata.packages {
         let is_cdylib = package
             .targets
@@ -1591,7 +1584,7 @@ fn main() -> anyhow::Result<()> {
                 "-p",
                 package.name.as_str(),
                 "--target",
-                "wasm32-unknown-unknown",
+                "wasm32v1-none",
                 "--profile",
                 build_profile,
             ])
@@ -1621,7 +1614,7 @@ fn main() -> anyhow::Result<()> {
         };
         let wasm_path = metadata
             .target_directory
-            .join("wasm32-unknown-unknown")
+            .join("wasm32v1-none")
             .join(build_profile)
             .join(format!("{}.wasm", wasm_name));
 
@@ -1649,7 +1642,8 @@ fn main() -> anyhow::Result<()> {
                         let name = export_item.name.to_string();
                         // Ignore internal and common exports
                         if !name.starts_with('_') && name != "memory" {
-                            exported_fns.insert(name);
+                            exported_fns.insert(name.clone());
+                            all_exported.insert(name);
                         }
                     }
                 }
@@ -1882,6 +1876,24 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Issue #399: validate budget.toml against the schema before reporting, so
+    // a misspelled function name or unknown key fails loudly instead of
+    // silently producing a report that omits the function. Runs in every mode
+    // that reached this point (Report / Record / Check).
+    {
+        let available: Vec<String> = all_exported.into_iter().collect();
+        if let Ok(content) = std::fs::read_to_string("budget.toml") {
+            if let Err(errs) = validate::validate_budget_toml(&content, &available) {
+                let report = errs
+                    .iter()
+                    .map(|e| format!("  - [{}] {}", e.location, e.message))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                anyhow::bail!("budget.toml validation failed:\n{report}");
+            }
+        }
+    }
+
     if measurements.is_empty() {
         // `--html` still produces a valid page so a consumer pointed at the
         // output sees an explicit empty state rather than an empty file.
@@ -1999,9 +2011,7 @@ fn main() -> anyhow::Result<()> {
         }
         csv_writer.flush().context("Failed to flush CSV writer")?;
     } else if args.json {
-        let json_output =
-            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
-        println!("{}", json_output);
+        println!("{}", json_output::render_json(&reports));
     } else if args.html {
         print!("{}", html_output::render_html(&reports, args.check));
     } else {
@@ -2714,7 +2724,11 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
-            profile: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
+                        profile: None,
             derive_limits: None,
             from: None,
             margin_cpu: None,
@@ -2748,7 +2762,11 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
-            profile: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
+                        profile: None,
             derive_limits: None,
             from: None,
             margin_cpu: None,
@@ -2782,7 +2800,11 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
-            profile: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
+                        profile: None,
             derive_limits: None,
             from: None,
             margin_cpu: None,
@@ -2819,7 +2841,11 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
-            profile: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
+                        profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,
             margin_cpu: None,

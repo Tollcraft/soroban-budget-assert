@@ -700,6 +700,7 @@ write_limit = 0
             "testnet",
             "transfer",
             &["--to".into(), "GBP".into(), "--amount".into(), "100".into()],
+            None
         );
         // Expected structure: [<11 standard args>, "--to", "GBP", "--amount", "100"]
         assert_eq!(args.len(), 15);
@@ -712,19 +713,19 @@ write_limit = 0
 
     #[test]
     fn build_invoke_args_empty_source_string() {
-        let args = build_invoke_args("C", "", "testnet", "f", &[]);
+        let args = build_invoke_args("C", "", "testnet", "f", &[], None);
         assert_eq!(args[5], ""); // source
     }
 
     #[test]
     fn build_invoke_args_empty_network_string() {
-        let args = build_invoke_args("C", "alice", "", "f", &[]);
+        let args = build_invoke_args("C", "alice", "", "f", &[], None);
         assert_eq!(args[7], ""); // network
     }
 
     #[test]
     fn build_invoke_args_function_name_with_hyphens() {
-        let args = build_invoke_args("C", "alice", "testnet", "do-something", &[]);
+        let args = build_invoke_args("C", "alice", "testnet", "do-something", &[], None);
         assert_eq!(args.last(), Some(&"do-something".to_string()));
     }
 
@@ -797,14 +798,14 @@ write_limit = 0
     fn build_invoke_args_zero_arguments_empty_slice() {
         // Function with no arguments — already tested in main.rs tests, but
         // included here for the focused edge-case module.
-        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "ping", &[]);
+        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "ping", &[], None);
         assert_eq!(args.len(), 11);
         assert_eq!(args.last(), Some(&"ping".to_string()));
     }
 
     #[test]
     fn build_invoke_args_single_argument_boundary() {
-        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &["--n".into()]);
+        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &["--n".into()], None);
         // After "--", we expect: ["do_work", "--n"]
         assert_eq!(args[args.len() - 2], "do_work");
         assert_eq!(args[args.len() - 1], "--n");
@@ -812,13 +813,13 @@ write_limit = 0
 
     #[test]
     fn build_invoke_args_zero_length_contract_id() {
-        let args = build_invoke_args("", "alice", "testnet", "f", &[]);
+        let args = build_invoke_args("", "alice", "testnet", "f", &[], None);
         assert_eq!(args[3], ""); // contract ID
     }
 
     #[test]
     fn build_invoke_args_zero_length_function_name() {
-        let args = build_invoke_args("C", "alice", "testnet", "", &[]);
+        let args = build_invoke_args("C", "alice", "testnet", "", &[], None);
         assert_eq!(args.last(), Some(&"".to_string()));
     }
 

@@ -83,6 +83,41 @@ soroban-budget-assert/
 
 ## Expansion Flow
 
+```mermaid
+graph TD
+    A["#[budget_cpu_lt(N)] or<br/>#[budget_cpu_lt(env = \"VAR\")]"]
+    A --> B["Proc-macro invoked at compile time<br/>by rustc"]
+
+    B --> C{Parse attribute tokens}
+
+    C -->|Integer literal| D["BudgetLimit::Int(N)<br/>limit_expr = quote! { N }"]
+    C -->|env = \"VAR\" syntax| E["BudgetLimit::EnvVar(VAR)<br/>limit_expr = quote! {<br/>  match budget_env_resolve(VAR) { … }<br/>}"]
+
+    D --> F[Parse test fn body via syn::ItemFn]
+    E --> F
+
+    F --> G["Inject preamble into fn body:<br/>let budget_env_resolve = |var| std::env::var(var).ok()"]
+
+    G --> H["Append cost-check epilogue:<br/>let budget = env.cost_estimate().budget();<br/>let cpu_cost = budget.cpu_instruction_cost();<br/>let limit_u64: u64 = limit_expr;<br/>assert!(cpu_cost < limit_u64, …)"]
+
+    H --> I["Emit rewritten fn tokens<br/>back to rustc"]
+
+    I --> J{Runtime: test executes}
+
+    J -->|cpu_cost < limit_u64| K["Test passes ✅"]
+    J -->|cpu_cost >= limit_u64| L["panic! with message:<br/>'CPU instruction cost N exceeded limit M<br/>- local estimate, real network cost<br/>may differ significantly in either direction'"]
+
+    L --> M{#[should_panic] present?}
+    M -->|Yes — deliberate regression fixture| N["Test passes ✅<br/>(expected failure documented)"]
+    M -->|No — real regression| O["Test fails ❌<br/>CI exits non-zero"]
+
+    style A fill:#1e3a5f,color:#fff,stroke:#4a90d9
+    style K fill:#1a4731,color:#fff,stroke:#2d7a4f
+    style N fill:#1a4731,color:#fff,stroke:#2d7a4f
+    style O fill:#5c1a1a,color:#fff,stroke:#c0392b
+    style L fill:#5c1a1a,color:#fff,stroke:#c0392b
+```
+
 ### 1. Attribute Macro Entry Point
 
 When rustc encounters:

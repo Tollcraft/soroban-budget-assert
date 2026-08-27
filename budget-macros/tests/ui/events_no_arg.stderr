@@ -1,0 +1,7 @@
+error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, `config = "KEY"`, or `pct = N, of = <source>`
+ --> tests/ui/events_no_arg.rs:4:1
+  |
+4 | #[budget_events_lt]
+  | ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_events_lt` (in Nightly builds, run with -Z macro-backtrace for more info)
