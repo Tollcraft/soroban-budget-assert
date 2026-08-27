@@ -486,17 +486,17 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                             )
                         })
                     }).unwrap_or_else(|| {
-                        // Missing key in env_file — default to u64::MAX ("no
-                        // limit"), matching the behaviour of a missing
-                        // process environment variable.  A warning is printed
-                        // so reviewers can see which limits are unbounded.
-                        eprintln!(
-                            "warning: {} env_file {} missing key {}; defaulting to u64::MAX (no limit)",
+                        // Missing key in env_file — panic with an actionable
+                        // message that names both the file and the key so a
+                        // contributor who broke the wiring can see both at
+                        // once.
+                        panic!(
+                            "{}: env_file '{}' is missing key '{}' — \
+                             add it to the file or use a fallback limit",
                             #metric_label,
                             env_file_path,
                             env_file_key,
                         );
-                        u64::MAX
                     })
                 }
             }

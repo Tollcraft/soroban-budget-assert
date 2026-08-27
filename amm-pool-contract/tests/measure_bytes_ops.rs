@@ -32,6 +32,7 @@ fn measure_bytes_append() {
         let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(&env, &contract_id);
         env.cost_estimate().budget().reset_unlimited();
+        env.cost_estimate().disable_resource_limits();
 
         client.bytes_append_bench(&n);
 
@@ -54,6 +55,7 @@ fn measure_bytes_slice() {
         let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(&env, &contract_id);
         env.cost_estimate().budget().reset_unlimited();
+        env.cost_estimate().disable_resource_limits();
 
         client.bytes_slice_bench(&n);
 
@@ -76,6 +78,7 @@ fn measure_bytes_concat() {
         let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(&env, &contract_id);
         env.cost_estimate().budget().reset_unlimited();
+        env.cost_estimate().disable_resource_limits();
 
         client.bytes_concat_bench(&n);
 
