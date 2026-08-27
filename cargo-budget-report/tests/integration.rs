@@ -114,9 +114,13 @@ fn json_output_reports_both_mock_contracts() {
 
     let output = assert.success().get_output().clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let reports: serde_json::Value =
+    let doc: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
-    let reports = reports.as_array().expect("report should be a JSON array");
+    // The --json output is the versioned envelope {schema_version, snapshots}.
+    assert_eq!(doc["schema_version"], 1, "schema_version should be 1");
+    let reports = doc["snapshots"]
+        .as_array()
+        .expect("snapshots should be a JSON array");
 
     let packages: std::collections::HashSet<&str> = reports
         .iter()

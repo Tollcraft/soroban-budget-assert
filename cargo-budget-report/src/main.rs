@@ -34,6 +34,7 @@ use wasmparser::Parser as WasmParser;
 
 mod derive;
 mod error;
+mod json_output;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -1046,7 +1047,7 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
     }
     // ── wasm32 target ───────────────────────────────────────────────────
     if !quiet {
-        eprint!("Checking wasm32-unknown-unknown target... ");
+        eprint!("Checking wasm32v1-none target... ");
     }
     let rustup_check = Command::new("rustup")
         .args(["target", "list", "--installed"])
@@ -1066,17 +1067,14 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
         }
         Ok(output) => {
             let installed = String::from_utf8_lossy(&output.stdout);
-            if installed
-                .lines()
-                .any(|line| line.trim() == "wasm32-unknown-unknown")
-            {
+            if installed.lines().any(|line| line.trim() == "wasm32v1-none") {
                 if !quiet {
                     eprintln!("found");
                 }
             } else {
                 return Err(Error::Message(
-                    "wasm32-unknown-unknown target is not installed.\n\
-                     Install it with:  rustup target add wasm32-unknown-unknown"
+                    "wasm32v1-none target is not installed.\n\
+                     Install it with:  rustup target add wasm32v1-none"
                         .to_string(),
                 ));
             }
@@ -1520,7 +1518,7 @@ fn main() -> anyhow::Result<()> {
                 "-p",
                 package.name.as_str(),
                 "--target",
-                "wasm32-unknown-unknown",
+                "wasm32v1-none",
                 "--profile",
                 build_profile,
             ])
@@ -1550,7 +1548,7 @@ fn main() -> anyhow::Result<()> {
         };
         let wasm_path = metadata
             .target_directory
-            .join("wasm32-unknown-unknown")
+            .join("wasm32v1-none")
             .join(build_profile)
             .join(format!("{}.wasm", wasm_name));
 
@@ -1896,9 +1894,7 @@ fn main() -> anyhow::Result<()> {
         }
         csv_writer.flush().context("Failed to flush CSV writer")?;
     } else if args.json {
-        let json_output =
-            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
-        println!("{}", json_output);
+        println!("{}", json_output::render_json(&reports));
     } else if args.html {
         print!("{}", html_output::render_html(&reports, args.check));
     } else {

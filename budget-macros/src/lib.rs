@@ -369,12 +369,17 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
                             )
                         })
                     }).unwrap_or_else(|| {
-                        panic!(
-                            "{}: env_file {} missing key {} (or file cannot be read)",
+                        // Missing key in env_file — default to u64::MAX ("no
+                        // limit"), matching the behaviour of a missing
+                        // process environment variable.  A warning is printed
+                        // so reviewers can see which limits are unbounded.
+                        eprintln!(
+                            "warning: {} env_file {} missing key {}; defaulting to u64::MAX (no limit)",
                             #metric_label,
                             env_file_path,
                             env_file_key,
-                        )
+                        );
+                        u64::MAX
                     })
                 }
             }
@@ -633,6 +638,13 @@ fn generate_prelude() -> proc_macro2::TokenStream {
                 let (lhs, rhs) = trimmed.split_once('=')?;
                 if lhs.trim() == key {
                     let raw = rhs.trim();
+                    // Strip inline comments ("  # provenance") that
+                    // cargo budget-report --derive-limits appends to
+                    // each KEY=VALUE line.
+                    let raw = match raw.find(" #") {
+                        Some(pos) => raw[..pos].trim(),
+                        None => raw,
+                    };
                     let unquoted = raw
                         .strip_prefix('"')
                         .and_then(|s| s.strip_suffix('"'))
