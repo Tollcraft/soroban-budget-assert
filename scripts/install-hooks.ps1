@@ -51,6 +51,14 @@ if (-not (Test-Path $hookTargetDir)) {
 
 Copy-Item -Path $hookSource -Destination $hookTarget -Force
 
+# On non-Windows platforms (Linux, macOS, WSL) the hook file must be
+# executable for git to invoke it.  On native Windows Git for Windows
+# uses its bundled bash which honours the #! line, so chmod is not
+# needed there.
+if ($IsLinux -or $IsMacOS -or $env:OS -ne 'Windows_NT') {
+    chmod +x $hookTarget
+}
+
 # Git on Windows (Git for Windows) uses its bundled bash to execute
 # hooks, which honours the #! line. The hook just needs to be readable;
 # chmod +x is not needed on native Windows. If you're running this
