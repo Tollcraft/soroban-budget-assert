@@ -35,6 +35,7 @@ use wasmparser::Parser as WasmParser;
 mod derive;
 mod error;
 mod json_output;
+mod markdown;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -416,25 +417,55 @@ impl MeasuredResources {
 ///
 /// In `--check` mode the `limit` and `pass` fields are populated so that
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
 pub(crate) struct CostReport {
-    package: String,
-    function: String,
-    metric: &'static str,
+    pub(crate) package: String,
+    pub(crate) function: String,
+    pub(crate) metric: String,
     /// The measured value, or `None` if the simulation failed to produce one
     /// (only emitted in `--check` mode for functions declared in
     /// `budget.toml`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) value: Option<u32>,
     /// Configured upper bound for the metric, if any. Emitted in `--check`
     /// mode only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) limit: Option<u64>,
     /// `true` if the measured value is within the configured limit, `false`
     /// if it exceeds the limit **or** the simulation failed for a configured
     /// function. Emitted in `--check` mode only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pass: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pass: Option<bool>,
+}
+
+fn load_cost_reports(path: &Path) -> Result<Vec<CostReport>> {
+    let contents = if path == Path::new("-") {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| Error::Message(format!("failed to read JSON from stdin: {e}")))?;
+        buf
+    } else {
+        std::fs::read_to_string(path)
+            .map_err(|e| Error::Message(format!("failed to read {}: {e}", path.display())))?
+    };
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum ReportShape {
+        Wrapped { snapshots: Vec<CostReport> },
+        Bare(Vec<CostReport>),
+    }
+
+    let parsed: ReportShape = serde_json::from_str(&contents).map_err(|e| {
+        Error::Message(format!("failed to parse report JSON: {e}"))
+    })?;
+
+    Ok(match parsed {
+        ReportShape::Wrapped { snapshots } => snapshots,
+        ReportShape::Bare(items) => items,
+    })
 }
 
 /// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
@@ -630,7 +661,7 @@ pub(crate) fn emit_check_failure_entries(
         reports.push(CostReport {
             package: package_name.to_string(),
             function: function.to_string(),
-            metric,
+            metric: metric.to_string(),
             value: None,
             limit,
             pass: Some(false),
@@ -1444,6 +1475,16 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    if args.markdown {
+        let from_path = args.from.as_deref().unwrap_or("current_report.json");
+        let pathbuf = PathBuf::from(from_path);
+        if pathbuf.exists() || from_path == "-" {
+            let reports = load_cost_reports(&pathbuf)?;
+            print!("{}", markdown::render_markdown(&reports));
+            return Ok(());
+        }
+    }
+
     let network = args
         .network
         .or(toml_config.network.clone())
@@ -1673,7 +1714,7 @@ fn main() -> anyhow::Result<()> {
                         reports.push(CostReport {
                             package: package.name.to_string(),
                             function: function.clone(),
-                            metric,
+                            metric: metric.to_string(),
                             value: Some(value),
                             limit: entry_limit,
                             pass,
@@ -1909,6 +1950,8 @@ fn main() -> anyhow::Result<()> {
         csv_writer.flush().context("Failed to flush CSV writer")?;
     } else if args.json {
         println!("{}", json_output::render_json(&reports));
+    } else if args.markdown {
+        print!("{}", markdown::render_markdown(&reports));
     } else if args.html {
         print!("{}", html_output::render_html(&reports, args.check));
     } else {
