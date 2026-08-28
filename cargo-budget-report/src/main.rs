@@ -1602,7 +1602,7 @@ fn run() -> Result<i32> {
         if pathbuf.exists() || from_path == "-" {
             let reports = load_cost_reports(&pathbuf)?;
             print!("{}", markdown::render_markdown(&reports));
-            return Ok(());
+            return Ok(EXIT_SUCCESS);
         }
     }
 
