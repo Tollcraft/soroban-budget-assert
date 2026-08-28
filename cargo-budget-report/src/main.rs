@@ -1439,7 +1439,8 @@ impl transport::Transport for TransportKind {
 }
 
 fn main() -> anyhow::Result<()> {
-    let CargoCli::BudgetReport(args) = CargoCli::parse();
+    let args = crate::cli::parse_args();
+
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {

@@ -225,6 +225,38 @@ pub enum ColorChoice {
     Never,
 }
 
+/// Parses CLI arguments, supporting both `cargo budget-report [OPTIONS]`
+/// (when invoked via Cargo as a subcommand) and `cargo-budget-report [OPTIONS]`
+/// (when invoked directly as a standalone binary).
+pub fn parse_args() -> BudgetReportArgs {
+    parse_args_from(std::env::args_os())
+}
+
+/// Helper for parsing arguments from an arbitrary iterator.
+pub fn parse_args_from<I, T>(args: I) -> BudgetReportArgs
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    try_parse_args_from(args).unwrap_or_else(|e| e.exit())
+}
+
+/// Fallible argument parser supporting both `cargo budget-report` and direct `cargo-budget-report` invocations.
+pub fn try_parse_args_from<I, T>(args: I) -> Result<BudgetReportArgs, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let args_vec: Vec<std::ffi::OsString> = args.into_iter().map(|a| a.into()).collect();
+    if let Some(first_arg) = args_vec.get(1) {
+        if first_arg == "budget-report" || first_arg == "budget_report" {
+            return CargoCli::try_parse_from(args_vec).map(|CargoCli::BudgetReport(a)| a);
+        }
+    }
+    BudgetReportArgs::try_parse_from(args_vec)
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,4 +294,32 @@ mod tests {
         .expect_err("--record-baseline and --check-baseline together should be rejected");
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
+
+    #[test]
+    fn direct_binary_invocation_parses_markdown_and_from() {
+        let args = try_parse_args_from([
+            "target/debug/cargo-budget-report",
+            "--markdown",
+            "--from",
+            "current_report.json",
+        ])
+        .expect("direct binary invocation with --markdown and --from should parse successfully");
+        assert!(args.markdown);
+        assert_eq!(args.from.as_deref(), Some("current_report.json"));
+    }
+
+    #[test]
+    fn cargo_subcommand_invocation_parses_markdown_and_from() {
+        let args = try_parse_args_from([
+            "cargo-budget-report",
+            "budget-report",
+            "--markdown",
+            "--from",
+            "current_report.json",
+        ])
+        .expect("cargo subcommand invocation with --markdown and --from should parse successfully");
+        assert!(args.markdown);
+        assert_eq!(args.from.as_deref(), Some("current_report.json"));
+    }
 }
+
