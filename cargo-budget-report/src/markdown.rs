@@ -64,7 +64,11 @@ mod tests {
 
         let md = render_markdown(&reports);
         assert!(md.contains("# Workspace Budget Report"));
-        assert!(md.contains("| amm-pool-contract | do_expensive_work | CPU Instructions | 2,654,615 |"));
-        assert!(md.contains("| amm-pool-contract | do_expensive_work | Read Bytes | N/A (testnet required) |"));
+        assert!(
+            md.contains("| amm-pool-contract | do_expensive_work | CPU Instructions | 2,654,615 |")
+        );
+        assert!(md.contains(
+            "| amm-pool-contract | do_expensive_work | Read Bytes | N/A (testnet required) |"
+        ));
     }
 }

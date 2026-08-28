@@ -458,9 +458,8 @@ fn load_cost_reports(path: &Path) -> Result<Vec<CostReport>> {
         Bare(Vec<CostReport>),
     }
 
-    let parsed: ReportShape = serde_json::from_str(&contents).map_err(|e| {
-        Error::Message(format!("failed to parse report JSON: {e}"))
-    })?;
+    let parsed: ReportShape = serde_json::from_str(&contents)
+        .map_err(|e| Error::Message(format!("failed to parse report JSON: {e}")))?;
 
     Ok(match parsed {
         ReportShape::Wrapped { snapshots } => snapshots,

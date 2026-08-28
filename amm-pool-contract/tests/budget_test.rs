@@ -680,26 +680,108 @@ fn test_export_tier_a_budget_report() {
     }
 
     let rows = vec![
-        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "CPU Instructions", value: Some(exp_cpu) },
-        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "Memory Bytes", value: Some(exp_mem) },
-        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "Read Bytes", value: None },
-        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "Write Bytes", value: None },
-        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "WASM Bytes", value: Some(wasm_size) },
-
-        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "CPU Instructions", value: Some(auth_cpu) },
-        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "Memory Bytes", value: Some(auth_mem) },
-        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "Read Bytes", value: None },
-        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "Write Bytes", value: None },
-
-        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "CPU Instructions", value: Some(alloc_cpu) },
-        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "Memory Bytes", value: Some(alloc_mem) },
-        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "Read Bytes", value: None },
-        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "Write Bytes", value: None },
-
-        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "CPU Instructions", value: Some(ev_cpu) },
-        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "Memory Bytes", value: Some(ev_mem) },
-        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "Read Bytes", value: None },
-        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "Write Bytes", value: None },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "CPU Instructions",
+            value: Some(exp_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Memory Bytes",
+            value: Some(exp_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "WASM Bytes",
+            value: Some(wasm_size),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "CPU Instructions",
+            value: Some(auth_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Memory Bytes",
+            value: Some(auth_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "CPU Instructions",
+            value: Some(alloc_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Memory Bytes",
+            value: Some(alloc_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "CPU Instructions",
+            value: Some(ev_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Memory Bytes",
+            value: Some(ev_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Write Bytes",
+            value: None,
+        },
     ];
 
     let snapshots: Vec<serde_json::Value> = rows
