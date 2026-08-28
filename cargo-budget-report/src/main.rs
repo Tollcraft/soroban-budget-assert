@@ -1,4 +1,4 @@
-use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
+use crate::cli::{BudgetReportArgs, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
 use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
 use anyhow::Context;
@@ -13,7 +13,7 @@ mod record;
 mod replay;
 mod transport;
 use cargo_metadata::{CrateType, MetadataCommand};
-use clap::Parser;
+
 use compare::{
     build_baseline, check_against_baseline, max_allowed as max_allowed_metric, parse_tolerance,
     render_report_text, Baseline, Measurement, Tolerance,
@@ -1444,7 +1444,6 @@ impl transport::Transport for TransportKind {
 fn main() -> anyhow::Result<()> {
     let args = crate::cli::parse_args();
 
-
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
         scaffold_init(args.force, args.quiet)?;
@@ -1460,6 +1459,16 @@ fn main() -> anyhow::Result<()> {
         let toml_config = load_budget_toml("budget.toml")?;
         run_derive_mode(&args, &toml_config)?;
         return Ok(());
+    }
+
+    if args.markdown {
+        let from_path = args.from.as_deref().unwrap_or("current_report.json");
+        let pathbuf = PathBuf::from(from_path);
+        if pathbuf.exists() || from_path == "-" {
+            let reports = load_cost_reports(&pathbuf)?;
+            print!("{}", markdown::render_markdown(&reports));
+            return Ok(());
+        }
     }
 
     // ── Preflight environment checks ──────────────────────────────────
@@ -1513,16 +1522,6 @@ fn main() -> anyhow::Result<()> {
             source,
             retry_config,
         );
-    }
-
-    if args.markdown {
-        let from_path = args.from.as_deref().unwrap_or("current_report.json");
-        let pathbuf = PathBuf::from(from_path);
-        if pathbuf.exists() || from_path == "-" {
-            let reports = load_cost_reports(&pathbuf)?;
-            print!("{}", markdown::render_markdown(&reports));
-            return Ok(());
-        }
     }
 
     let network = args

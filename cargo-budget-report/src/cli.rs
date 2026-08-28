@@ -256,7 +256,6 @@ where
     BudgetReportArgs::try_parse_from(args_vec)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,4 +321,3 @@ mod tests {
         assert_eq!(args.from.as_deref(), Some("current_report.json"));
     }
 }
-
