@@ -25,7 +25,7 @@ lto = true
 These settings materially change the WASM being measured. `opt-level = "z"` and LTO optimize the binary shape, `codegen-units = 1` gives LLVM a broader optimization view, `panic = "abort"` removes unwinding paths, `strip = "symbols"` and `debug = 0` remove non-runtime payload, `debug-assertions = false` keeps release behavior, and `overflow-checks = true` preserves checked arithmetic. Cost figures from another release profile are not comparable: the measurements file records 901,816 local WASM CPU instructions / 756,678 testnet instructions for the size-optimized profile, versus 767,049 local / 832,006 testnet for Cargo's default release profile.
 
 {% hint style="info" %}
-The direction of the WASM gap is not stable — see the two build profiles compared in the [existing measurements](measurements.md#cpu-instructions), and the [SDK version calibration](measurements.md#sdk-version-calibration) which tracks how the gap shifts across soroban-sdk versions.
+The direction of the WASM gap is not stable — see the user guide on [Local vs. Network Cost Gap](cost_gap.md) for practical safety margin guidance, the two build profiles compared in the [existing measurements](measurements.md#cpu-instructions), and the [SDK version calibration](measurements.md#sdk-version-calibration) which tracks how the gap shifts across soroban-sdk versions.
 {% endhint %}
 
 Two conclusions drive the tool's design:
