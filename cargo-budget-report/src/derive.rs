@@ -707,11 +707,17 @@ mod tests {
 
     #[test]
     fn scenario_limit_sums_components_with_margin() {
-        let measurements = vec![
-            tier_b("amm-pool-contract", "deposit", "CPU Instructions", 30_000),
-            tier_b("amm-pool-contract", "swap", "CPU Instructions", 50_000),
-            tier_b("amm-pool-contract", "withdraw", "CPU Instructions", 40_000),
-        ];
+        let mut measurements = Vec::new();
+        for metric in [
+            "CPU Instructions",
+            "Memory Bytes",
+            "Read Bytes",
+            "Write Bytes",
+        ] {
+            measurements.push(tier_b("amm-pool-contract", "deposit", metric, 30_000));
+            measurements.push(tier_b("amm-pool-contract", "swap", metric, 50_000));
+            measurements.push(tier_b("amm-pool-contract", "withdraw", metric, 40_000));
+        }
         let mut scenarios = BTreeMap::new();
         scenarios.insert(
             "amm-pool-contract::full_workflow".to_string(),
@@ -729,7 +735,7 @@ mod tests {
         let scenario = derivation
             .limits
             .iter()
-            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW"))
+            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW__CPU"))
             .expect("scenario row present");
         // (30k + 50k + 40k) × 1.25 = 150_000.
         assert_eq!(scenario.tier_a_limit, 150_000);

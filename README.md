@@ -158,7 +158,7 @@ cargo budget-report
 
 **Use the same release profile for comparable numbers:**
 
-`cargo budget-report` builds contracts with `cargo build --release --target wasm32-unknown-unknown`, so the workspace's `[profile.release]` changes the WASM that gets deployed and simulated. The figures published by this project use the Soroban size-optimized release profile below; copy it into the workspace root before comparing your results to this repo's measurements:
+`cargo budget-report` builds contracts with `cargo build --release --target wasm32v1-none`, so the workspace's `[profile.release]` changes the WASM that gets deployed and simulated. The figures published by this project use the Soroban size-optimized release profile below; copy it into the workspace root before comparing your results to this repo's measurements:
 
 ```toml
 [profile.release]

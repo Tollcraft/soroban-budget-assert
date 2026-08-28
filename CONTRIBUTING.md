@@ -77,7 +77,7 @@ brew install pkg-config dbus
 
 Add the WASM target:
 ```bash
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 ```
 
 Install the Stellar CLI:
@@ -97,7 +97,7 @@ Install prerequisites:
 Open **PowerShell** (or Git Bash) and run:
 ```powershell
 # Add the WASM target
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 
 # Install the Stellar CLI
 cargo install --locked stellar-cli
@@ -110,7 +110,7 @@ stellar keys generate alice --network testnet --fund
 
 Build the WASM contract and run tests:
 ```powershell
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+cargo build -p amm-pool-contract --release --target wasm32v1-none
 cargo test --workspace
 ```
 

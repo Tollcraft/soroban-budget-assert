@@ -4,7 +4,7 @@ This guide is for Soroban developers who want budget assertions in an existing c
 
 ## Prerequisites
 
-- Rust with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
+- Rust with the `wasm32v1-none` target (`rustup target add wasm32v1-none`)
 - The `stellar` CLI
 - A funded testnet identity: `stellar keys generate alice --network testnet --fund`
 
@@ -66,7 +66,7 @@ This is not your transaction fee. The three metrics are inputs to the non-refund
 
 ## Step 4: Pin the costs into tests
 
-Add the macro crate to your contract's dev-dependencies, then gate a test. The macro asserts the *local* WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:
+Add the macro crate to your contract's dev-dependencies, then gate a test. The macro asserts the *local* WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds. For detailed guidance on choosing safety margins and understanding operational gaps, see [Local vs. Network Cost Gap](cost_gap.md).
 
 ```rust
 use budget_macros::budget_cpu_lt;
@@ -101,6 +101,7 @@ fn test_expensive_function_budget() {
 Two details matter:
 
 {% hint style="warning" %}
+- **Local estimates differ from network costs.** A local check passing in CI does not guarantee network success. Read [Local vs. Network Cost Gap](cost_gap.md) to understand operation gaps and safety margins.
 - **Run the WASM, not raw Rust.** Raw Rust estimates ran ~81% below real network cost in our measurements; a limit asserted against them protects nothing.
 - **`reset_unlimited()` before the call**, so the default test budget doesn't cap the measurement.
 {% endhint %}
@@ -113,7 +114,7 @@ Build the WASM, then run the tests, on every push and pull request:
 
 ```yaml
 - name: Build contracts
-  run: cargo build -p my-contract --release --target wasm32-unknown-unknown
+  run: cargo build -p my-contract --release --target wasm32v1-none
 
 - name: Budget assertions
   run: cargo test

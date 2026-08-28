@@ -17,7 +17,7 @@
       .\amm-pool-contract\calibrate_gap.ps1
 
     Requirements:
-      - Rust toolchain with wasm32-unknown-unknown target
+      - Rust toolchain with wasm32v1-none target
       - PowerShell 5.1+
 #>
 
@@ -118,7 +118,7 @@ foreach ($ver in $VERSIONS) {
         $null = Invoke-Cargo "update -p soroban-env-host"
     }
 
-    if (-not (Invoke-Cargo "build --target wasm32-unknown-unknown --release -p $CRATE")) {
+    if (-not (Invoke-Cargo "build --target wasm32v1-none --release -p $CRATE")) {
         Write-Host "Skipping $ver due to build failure" -ForegroundColor Red
         continue
     }

@@ -27,7 +27,7 @@ sequenceDiagram
     participant Report as Budget Report
 
     Dev->>CLI: cargo budget-report [--check] [--json]
-    CLI->>Cargo: cargo build -p <contract> --release<br/>--target wasm32-unknown-unknown
+    CLI->>Cargo: cargo build -p <contract> --release<br/>--target wasm32v1-none
     Cargo-->>WASM: amm_pool_contract.wasm (cdylib)
 
     CLI->>Parser: wasmparser: scan exports
