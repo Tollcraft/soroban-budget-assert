@@ -8,6 +8,7 @@ mod compare;
 mod deploy_cache;
 mod fixture;
 mod html_output;
+mod json_output;
 mod live;
 mod record;
 mod replay;
@@ -35,7 +36,6 @@ use wasmparser::Parser as WasmParser;
 
 mod derive;
 mod error;
-mod json_output;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -47,6 +47,12 @@ const MAX_DEPLOY_ATTEMPTS: u32 = 4;
 /// Initial backoff delay between deployment retries. Doubles on each
 /// subsequent attempt (2 s → 4 s → 8 s).
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
+
+/// WASM target used for every contract build and measurement.
+///
+/// Keep this aligned with `rust-toolchain.toml` so a clean checkout has the
+/// target required by the report CLI without installing an additional target.
+const WASM_TARGET: &str = "wasm32v1-none";
 
 /// `[retry]` section of `budget.toml`.
 ///
@@ -1087,7 +1093,7 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
     }
     // ── wasm32 target ───────────────────────────────────────────────────
     if !quiet {
-        eprint!("Checking wasm32v1-none target... ");
+        eprint!("Checking {} target... ", WASM_TARGET);
     }
     let rustup_check = Command::new("rustup")
         .args(["target", "list", "--installed"])
@@ -1107,16 +1113,16 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
         }
         Ok(output) => {
             let installed = String::from_utf8_lossy(&output.stdout);
-            if installed.lines().any(|line| line.trim() == "wasm32v1-none") {
+            if installed.lines().any(|line| line.trim() == WASM_TARGET) {
                 if !quiet {
                     eprintln!("found");
                 }
             } else {
-                return Err(Error::Message(
-                    "wasm32v1-none target is not installed.\n\
-                     Install it with:  rustup target add wasm32v1-none"
-                        .to_string(),
-                ));
+                return Err(Error::Message(format!(
+                    "{} target is not installed.\n\
+                     Install it with:  rustup target add {}",
+                    WASM_TARGET, WASM_TARGET
+                )));
             }
         }
     }
@@ -1243,7 +1249,7 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
 
     // 4) Run the derivation and write the outputs atomically.
     let derivation = derive::Derivation::from_report(&measurements, &config)?;
-    let timestamp_utc = build_utc_timestamp();
+    let timestamp_utc = build_utc_timestamp(std::time::SystemTime::now())?;
     let provenance = out_provenance.unwrap_or_else(|| default_provenance_path(&out_env));
     derive::write_outputs(
         &out_env,
@@ -1273,20 +1279,18 @@ fn default_provenance_path(out_env: &std::path::Path) -> std::path::PathBuf {
     out_env.with_extension("provenance.md")
 }
 
-/// UTC ISO-8601 timestamp at second precision — enough granularity
-/// for the provenance header without depending on `chrono`.
-fn build_utc_timestamp() -> String {
-    let now = std::time::SystemTime::now()
+fn build_utc_timestamp(now: std::time::SystemTime) -> Result<String> {
+    let now = now
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| Error::Message(format!("system time error: {e}")))
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // The header timestamp is descriptive, not asserted. The string
-    // form is seconds-since-epoch expressed as ISO-8601 by hand using
-    // the proleptic Gregorian calendar and its standard 4/100/400-year
-    // leap-year rule, which is sufficient for this human-readable
-    // audit trail.
-    format_unix_timestamp_as_iso8601(now)
+        .map_err(|e| Error::Message(format!("system time error: {e}")))?
+        .as_secs();
+    // The header timestamp is descriptive, not asserted, so it is
+    // fine to format it loosely. The string-form here is the
+    // seconds-since-epoch expressed in ISO-8601 by hand: the
+    // calendar math below is intentionally simple (no leap rules
+    // beyond the standard 4/100/400-year rule) and is sufficient
+    // for human-readable audit trail of when the derivation ran.
+    Ok(format_unix_timestamp_as_iso8601(now))
 }
 
 fn format_unix_timestamp_as_iso8601(secs: u64) -> String {
@@ -1576,7 +1580,7 @@ fn main() -> anyhow::Result<()> {
         }
 
         if !args.quiet {
-            eprintln!("Building package '{}' for wasm32...", package.name);
+            eprintln!("Building package '{}' for {}...", package.name, WASM_TARGET);
         }
         let build_status = Command::new("cargo")
             .args([
@@ -1584,7 +1588,7 @@ fn main() -> anyhow::Result<()> {
                 "-p",
                 package.name.as_str(),
                 "--target",
-                "wasm32v1-none",
+                WASM_TARGET,
                 "--profile",
                 build_profile,
             ])
@@ -1614,7 +1618,7 @@ fn main() -> anyhow::Result<()> {
         };
         let wasm_path = metadata
             .target_directory
-            .join("wasm32v1-none")
+            .join(WASM_TARGET)
             .join(build_profile)
             .join(format!("{}.wasm", wasm_name));
 
@@ -3347,5 +3351,20 @@ write_limit = 1000
         let reports: Vec<CostReport> = vec![];
         let csv = reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
+    }
+
+    #[test]
+    fn build_utc_timestamp_success() {
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1700000000);
+        let ts = build_utc_timestamp(now).expect("should return timestamp");
+        assert_eq!(ts, "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn build_utc_timestamp_fails_before_epoch() {
+        let before_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(1);
+        let err = build_utc_timestamp(before_epoch).unwrap_err();
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("system time error"), "got {}", err_msg);
     }
 }

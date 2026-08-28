@@ -7,7 +7,7 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 ### Linux / macOS
 
 1. Clone the repository.
-2. Install Rust with the WASM target: `rustup target add wasm32-unknown-unknown`.
+2. Install Rust with the WASM target: `rustup target add wasm32v1-none`.
 3. Install the Stellar CLI: `cargo install --locked stellar-cli` (on Debian/Ubuntu, first `sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev`).
 4. Create and fund a testnet identity: `stellar keys generate alice --network testnet --fund`.
 
@@ -21,7 +21,7 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 
 ```powershell
 # Add the WASM target
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 
 # Install the Stellar CLI
 cargo install --locked stellar-cli
@@ -33,7 +33,7 @@ stellar keys generate alice --network testnet --fund
 6. Build the contract WASM and run tests:
 
 ```powershell
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+cargo build -p amm-pool-contract --release --target wasm32v1-none
 cargo test --workspace
 ```
 
@@ -68,7 +68,7 @@ $env:PATH -split ';' | Select-String '.cargo'
 The macro tests execute the compiled WASM, so build it first:
 
 ```bash
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+cargo build -p amm-pool-contract --release --target wasm32v1-none
 cargo test
 ```
 
@@ -233,7 +233,7 @@ Before opening an issue or asking for help, run through this checklist:
 4. **Is `budget.toml` present with correct values?** → Check that `network = "testnet"` and `source = "alice"` (or your chosen values) are set at the workspace root.
 5. **Is the RPC endpoint reachable?** → `curl -s -o /dev/null -w "%{http_code}" https://soroban-testnet.stellar.org:443`. Should return `200`.
 6. **Has the account been idle for more than a few days?** → Friendbot-funded testnet accounts are periodically reset. Re-fund with `stellar keys fund alice --network testnet` before investigating further.
-7. **Does the test build succeed?** → `cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown`. A build failure produces the same red CI check as a budget regression but has nothing to do with Friendbot — the error message will clearly name the build issue.
+7. **Does the test build succeed?** → `cargo build -p amm-pool-contract --release --target wasm32v1-none`. A build failure produces the same red CI check as a budget regression but has nothing to do with Friendbot — the error message will clearly name the build issue.
 
 ### Recovery steps
 
@@ -279,7 +279,7 @@ cargo budget-report --no-deploy-cache
 rm -f .budget-cache.toml
 ```
 
-A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32-unknown-unknown` if you only want to invalidate the WASM artifacts. The deploy cache *trusts a hit* — it does not check that a cached id still resolves on-chain before reusing it. If a cached contract has been reclaimed by ledger state, use `--no-deploy-cache` (or delete `.budget-cache.toml`) to force a redeploy.
+A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32v1-none` if you only want to invalidate the WASM artifacts. The deploy cache *trusts a hit* — it does not check that a cached id still resolves on-chain before reusing it. If a cached contract has been reclaimed by ledger state, use `--no-deploy-cache` (or delete `.budget-cache.toml`) to force a redeploy.
 
 ### Best practices
 

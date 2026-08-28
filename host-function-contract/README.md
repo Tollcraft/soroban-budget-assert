@@ -53,6 +53,7 @@ cargo build -p host-function-contract --target wasm32-unknown-unknown --release
 Or for newer Soroban toolchain targets (`wasm32v1-none`):
 
 ```bash
+cargo build --release --target wasm32v1-none
 cargo build -p host-function-contract --target wasm32v1-none --release
 ```
 

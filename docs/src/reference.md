@@ -21,7 +21,7 @@ fn unit_test() {
 #[budget_cpu_lt(850000)]
 fn result_test() -> Result<(), Box<dyn std::error::Error>> {
     let env = Env::default();
-    let wasm = std::fs::read("../target/wasm32-unknown-unknown/release/my_contract.wasm")?;
+    let wasm = std::fs::read("../target/wasm32v1-none/release/my_contract.wasm")?;
     // ... the check runs after `Ok(())` is evaluated, and it is still the test's value ...
     Ok(())
 }
@@ -55,7 +55,7 @@ fn test_expensive_function() {
     let env = Env::default();
 
     let wasm = std::fs::read(
-        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+        "../target/wasm32v1-none/release/my_contract.wasm",
     ).expect("build the WASM first");
     let contract_id = env.register_contract_wasm(None, wasm.as_slice());
     let client = MyContractClient::new(&env, &contract_id);
@@ -190,7 +190,7 @@ fn test_memory_budget() {
     let env = Env::default();
 
     let wasm = std::fs::read(
-        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+        "../target/wasm32v1-none/release/my_contract.wasm",
     ).expect("build the WASM first");
     let contract_id = env.register_contract_wasm(None, wasm.as_slice());
     let client = MyContractClient::new(&env, &contract_id);
@@ -846,11 +846,11 @@ The real failure mode here is drift, not the one-time gap this page used to have
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
-External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32-unknown-unknown` Rust target installed. `--replay` is the exception — it needs none of the network tooling (no `stellar`, no `curl`), only the workspace itself. `--derive-limits`, `--init`, and `--record-baseline`/`--check-baseline` need neither network tooling nor a funded identity either, since none of them build, deploy, or simulate anything.
+External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32v1-none` Rust target installed. `--replay` is the exception — it needs none of the network tooling (no `stellar`, no `curl`), only the workspace itself. `--derive-limits`, `--init`, and `--record-baseline`/`--check-baseline` need neither network tooling nor a funded identity either, since none of them build, deploy, or simulate anything.
 
 ### Required release profile for comparable measurements
 
-`cargo budget-report` builds each contract with `cargo build --target wasm32-unknown-unknown --release`, so the workspace `[profile.release]` is part of the measured input. To compare against the figures published by this project, use the same profile:
+`cargo budget-report` builds each contract with `cargo build --target wasm32v1-none --release`, so the workspace `[profile.release]` is part of the measured input. To compare against the figures published by this project, use the same profile:
 
 {% code title="Cargo.toml" %}
 ```toml
@@ -1110,7 +1110,7 @@ total.### In scope
 | `CPU Instructions` | `resources.instructions` — metered CPU instruction count |
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
-| `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
+| `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32v1-none --release` |
 | `Memory Bytes` (Protocol 22+) | `result.cost.memBytes` — memory-bytes cost from the Protocol 22 JSON-RPC `cost` block; absent on older protocol responses |
 
 These four (or five on Protocol 22+) quantities are *inputs* to the **non-refundable resource fee**. They are not the whole of it.

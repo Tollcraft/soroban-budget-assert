@@ -31,6 +31,12 @@
     "network": "Soroban testnet"
   },
   "measurements": {
+    "cpu_instructions": {
+      "local_estimate": null,
+      "network_figure": null,
+      "delta": null,
+      "delta_percent": null,
+      "note": "Run cargo build --target wasm32v1-none --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture to collect local_estimate. Run cargo run --bin cargo-budget-report -- --network testnet to collect network_figure."
     "instance_ttl": {
       "extend_to_1000": {
         "local_cpu": 444536,
