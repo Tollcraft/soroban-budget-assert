@@ -6,6 +6,7 @@ description = "Cargo subcommand that reports Soroban smart-contract resource cos
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
+default-run = "cargo-budget-report"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

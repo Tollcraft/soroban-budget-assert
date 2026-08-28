@@ -63,7 +63,7 @@ jobs:
 
       - name: Publish Step Summary
         run: |
-          cargo run -p cargo-budget-report -- --markdown --from current_report.json >> "$GITHUB_STEP_SUMMARY"
+          cargo run -p cargo-budget-report --bin cargo-budget-report -- --markdown --from current_report.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Budget Report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
