@@ -33,6 +33,10 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
+    /// Emit the report as Markdown instead of a table, JSON, or CSV.
+    #[arg(long, default_value_t = false)]
+    pub markdown: bool,
+
     /// Enforce per-function limits declared in `budget.toml`.
     ///
     /// When set, each measured metric is compared against its configured
