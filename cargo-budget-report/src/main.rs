@@ -417,24 +417,24 @@ impl MeasuredResources {
 ///
 /// In `--check` mode the `limit` and `pass` fields are populated so that
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
-#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(Serialize)]
 pub(crate) struct CostReport {
     pub(crate) package: String,
     pub(crate) function: String,
-    pub(crate) metric: String,
+    pub(crate) metric: &'static str,
     /// The measured value, or `None` if the simulation failed to produce one
     /// (only emitted in `--check` mode for functions declared in
     /// `budget.toml`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) value: Option<u32>,
     /// Configured upper bound for the metric, if any. Emitted in `--check`
     /// mode only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) limit: Option<u64>,
     /// `true` if the measured value is within the configured limit, `false`
     /// if it exceeds the limit **or** the simulation failed for a configured
     /// function. Emitted in `--check` mode only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) pass: Option<bool>,
 }
 
@@ -452,19 +452,56 @@ fn load_cost_reports(path: &Path) -> Result<Vec<CostReport>> {
     };
 
     #[derive(serde::Deserialize)]
+    struct RawReport {
+        package: String,
+        function: String,
+        metric: String,
+        #[serde(default)]
+        value: Option<u32>,
+        #[serde(default)]
+        limit: Option<u64>,
+        #[serde(default)]
+        pass: Option<bool>,
+    }
+
+    #[derive(serde::Deserialize)]
     #[serde(untagged)]
     enum ReportShape {
-        Wrapped { snapshots: Vec<CostReport> },
-        Bare(Vec<CostReport>),
+        Wrapped { snapshots: Vec<RawReport> },
+        Bare(Vec<RawReport>),
     }
 
     let parsed: ReportShape = serde_json::from_str(&contents)
         .map_err(|e| Error::Message(format!("failed to parse report JSON: {e}")))?;
 
-    Ok(match parsed {
+    let raw_list = match parsed {
         ReportShape::Wrapped { snapshots } => snapshots,
         ReportShape::Bare(items) => items,
-    })
+    };
+
+    let reports = raw_list
+        .into_iter()
+        .map(|r| {
+            let static_metric: &'static str = match r.metric.as_str() {
+                "CPU Instructions" => "CPU Instructions",
+                "Memory Bytes" => "Memory Bytes",
+                "Read Bytes" => "Read Bytes",
+                "Write Bytes" => "Write Bytes",
+                "WASM Bytes" => "WASM Bytes",
+                _ => Box::leak(r.metric.into_boxed_str()),
+            };
+            CostReport {
+                package: r.package,
+                function: r.function,
+                metric: static_metric,
+                value: r.value,
+                limit: r.limit,
+                pass: r.pass,
+            }
+        })
+        .collect();
+
+    Ok(reports)
 }
 
 /// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
@@ -660,7 +697,7 @@ pub(crate) fn emit_check_failure_entries(
         reports.push(CostReport {
             package: package_name.to_string(),
             function: function.to_string(),
-            metric: metric.to_string(),
+            metric,
             value: None,
             limit,
             pass: Some(false),
@@ -1713,7 +1750,7 @@ fn main() -> anyhow::Result<()> {
                         reports.push(CostReport {
                             package: package.name.to_string(),
                             function: function.clone(),
-                            metric: metric.to_string(),
+                            metric,
                             value: Some(value),
                             limit: entry_limit,
                             pass,
@@ -2621,6 +2658,7 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,
@@ -2655,6 +2693,7 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,
@@ -2689,6 +2728,7 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,
@@ -2726,6 +2766,7 @@ mod tests {
             network: None,
             source: None,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,

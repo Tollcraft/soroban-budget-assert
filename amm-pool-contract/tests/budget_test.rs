@@ -784,29 +784,25 @@ fn test_export_tier_a_budget_report() {
         },
     ];
 
-    let snapshots: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            let mut obj = serde_json::json!({
-                "package": r.package,
-                "function": r.function,
-                "metric": r.metric,
-            });
-            if let Some(v) = r.value {
-                obj["value"] = serde_json::json!(v);
-            } else {
-                obj["value"] = serde_json::Value::Null;
-            }
-            obj
-        })
-        .collect();
+    let mut json_str = String::from("{\n  \"schema_version\": 1,\n  \"snapshots\": [\n");
+    for (i, r) in rows.iter().enumerate() {
+        json_str.push_str("    {\n");
+        json_str.push_str(&format!("      \"package\": \"{}\",\n", r.package));
+        json_str.push_str(&format!("      \"function\": \"{}\",\n", r.function));
+        json_str.push_str(&format!("      \"metric\": \"{}\",\n", r.metric));
+        if let Some(val) = r.value {
+            json_str.push_str(&format!("      \"value\": {}\n", val));
+        } else {
+            json_str.push_str("      \"value\": null\n");
+        }
+        json_str.push_str("    }");
+        if i + 1 < rows.len() {
+            json_str.push(',');
+        }
+        json_str.push('\n');
+    }
+    json_str.push_str("  ]\n}\n");
 
-    let json = serde_json::json!({
-        "schema_version": 1,
-        "snapshots": snapshots
-    });
-
-    let json_str = serde_json::to_string_pretty(&json).unwrap();
     let _ = std::fs::write("../current_report.json", &json_str);
     let _ = std::fs::write("current_report.json", &json_str);
 }
