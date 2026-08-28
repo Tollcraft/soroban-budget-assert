@@ -43,15 +43,11 @@ jobs:
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
-      # No Stellar CLI or testnet identity is installed here on purpose.
-      # The Tier B step below is mocked, so nothing in this job reaches the
-      # network, and `secrets` are withheld from pull_request runs on forks —
-      # where every contribution to this repo comes from. Gating the job on a
-      # secret it never uses made it fail on every contributor PR.
-      #
-      # To restore real Tier B reporting, add `if: github.event_name == 'push'`
-      # to the reinstated CLI/identity steps and un-comment the budget-report
-      # invocations below, so fork PRs still run Tier A only.
+      # No Stellar CLI or testnet identity is required here.
+      # The report step runs local WASM Tier A budget measurements of contract
+      # functions in the local test harness, producing real CPU and Memory figures
+      # without reaching the network. This allows pull_request runs on forks —
+      # where secrets are withheld — to run cleanly and publish actual measurements.
 
       - name: Build Contracts
         run: |
@@ -61,29 +57,13 @@ jobs:
       - name: Run Budget Macros Test (Tier A)
         run: cargo test --workspace
 
-      - name: Run Budget Report (Tier B)
+      - name: Generate Budget Report (Tier A)
         run: |
-          # Optionally, this uses budget.toml to populate fields instead of args
-          # Ensure your repository has budget.toml configured for this to work
-          # and ALICE_SECRET_KEY is in your Github Secrets for deploying to testnet
-          # cargo run --bin cargo-budget-report -- budget-report >> "$GITHUB_STEP_SUMMARY"
-          # cargo run --bin cargo-budget-report -- budget-report --json > current_report.json
-
-          # Mocking the JSON output for the demo so CI passes without testnet secrets:
-          echo '[{"package":"amm-pool-contract","function":"do_expensive_work","metric":"CPU Instructions","value":1000000},{"package":"amm-pool-contract","function":"do_expensive_work","metric":"Read Bytes","value":4096}]' > current_report.json
+          cargo test -p amm-pool-contract --test budget_test test_export_tier_a_budget_report
 
       - name: Publish Step Summary
         run: |
-          {
-            echo "# Workspace Budget Report"
-            echo ""
-            echo "| Function | CPU Instructions | Read Bytes | Write Bytes |"
-            echo "|----------|-----------------|------------|-------------|"
-            echo "| do_expensive_work | 1,000,000 inst. | 4,096 B | - |"
-            echo ""
-            echo "---"
-            echo "_Simulated resource amounts, not fees._"
-          } >> "$GITHUB_STEP_SUMMARY"
+          cargo run -p cargo-budget-report -- --markdown --from current_report.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Budget Report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
