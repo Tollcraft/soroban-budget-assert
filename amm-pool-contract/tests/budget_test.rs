@@ -629,3 +629,102 @@ fn test_storage_read_wasm_local() {
     println!("CPU_INSTRUCTIONS={}", cpu);
     println!("MEMORY_BYTES={}", mem);
 }
+
+/// Measures actual local Tier A WASM budget metrics for `amm-pool-contract`
+/// functions and exports `current_report.json` to the workspace root.
+#[test]
+fn test_export_tier_a_budget_report() {
+    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
+    let wasm_bytes = match std::fs::read(wasm_path) {
+        Ok(b) => b,
+        Err(_) => return, // Skip if WASM has not been pre-compiled
+    };
+    let wasm_size = wasm_bytes.len() as u32;
+
+    let env = Env::default();
+    let contract_id = env.register(wasm_bytes.as_slice(), ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+    let user = Address::generate(&env);
+    client.initialize();
+    env.mock_all_auths();
+
+    // 1) do_expensive_work(10_000)
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_expensive_work(&10_000);
+    let exp_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
+    let exp_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+
+    // 2) require_auth_only
+    env.cost_estimate().budget().reset_unlimited();
+    client.require_auth_only(&user);
+    let auth_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
+    let auth_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+
+    // 3) allocate_vec(10_000)
+    env.cost_estimate().budget().reset_unlimited();
+    client.allocate_vec(&10_000);
+    let alloc_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
+    let alloc_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+
+    // 4) do_event_heavy_work(5)
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_event_heavy_work(&5);
+    let ev_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
+    let ev_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+
+    struct Row {
+        package: &'static str,
+        function: &'static str,
+        metric: &'static str,
+        value: Option<u32>,
+    }
+
+    let rows = vec![
+        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "CPU Instructions", value: Some(exp_cpu) },
+        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "Memory Bytes", value: Some(exp_mem) },
+        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "Read Bytes", value: None },
+        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "Write Bytes", value: None },
+        Row { package: "amm-pool-contract", function: "do_expensive_work", metric: "WASM Bytes", value: Some(wasm_size) },
+
+        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "CPU Instructions", value: Some(auth_cpu) },
+        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "Memory Bytes", value: Some(auth_mem) },
+        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "Read Bytes", value: None },
+        Row { package: "amm-pool-contract", function: "require_auth_only", metric: "Write Bytes", value: None },
+
+        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "CPU Instructions", value: Some(alloc_cpu) },
+        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "Memory Bytes", value: Some(alloc_mem) },
+        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "Read Bytes", value: None },
+        Row { package: "amm-pool-contract", function: "allocate_vec", metric: "Write Bytes", value: None },
+
+        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "CPU Instructions", value: Some(ev_cpu) },
+        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "Memory Bytes", value: Some(ev_mem) },
+        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "Read Bytes", value: None },
+        Row { package: "amm-pool-contract", function: "do_event_heavy_work", metric: "Write Bytes", value: None },
+    ];
+
+    let snapshots: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            let mut obj = serde_json::json!({
+                "package": r.package,
+                "function": r.function,
+                "metric": r.metric,
+            });
+            if let Some(v) = r.value {
+                obj["value"] = serde_json::json!(v);
+            } else {
+                obj["value"] = serde_json::Value::Null;
+            }
+            obj
+        })
+        .collect();
+
+    let json = serde_json::json!({
+        "schema_version": 1,
+        "snapshots": snapshots
+    });
+
+    let json_str = serde_json::to_string_pretty(&json).unwrap();
+    let _ = std::fs::write("../current_report.json", &json_str);
+    let _ = std::fs::write("current_report.json", &json_str);
+}
