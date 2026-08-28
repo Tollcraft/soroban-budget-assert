@@ -9,6 +9,7 @@ mod fixture;
 mod html_output;
 mod json_output;
 mod live;
+mod markdown;
 mod record;
 mod replay;
 mod transport;

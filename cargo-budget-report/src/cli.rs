@@ -242,6 +242,7 @@ where
 }
 
 /// Fallible argument parser supporting both `cargo budget-report` and direct `cargo-budget-report` invocations.
+#[allow(dead_code)]
 pub fn try_parse_args_from<I, T>(args: I) -> Result<BudgetReportArgs, clap::Error>
 where
     I: IntoIterator<Item = T>,
