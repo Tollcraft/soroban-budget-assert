@@ -11,3 +11,4 @@ site/dist
 *.pdf
 current_report.json
 .soroban/
+test_snapshots/

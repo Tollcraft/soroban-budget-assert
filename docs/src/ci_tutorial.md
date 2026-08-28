@@ -141,14 +141,14 @@ jobs:
         run: cargo build -p amm-pool-contract --release --target wasm32v1-none
 
       - name: Run Budget Macros Test (Tier A)
-        run: cargo test
+        run: cargo test --workspace
 ```
 
 Things to change per-repo:
 
 - Replace `amm-pool-contract` with your package name (or run `cargo build --workspace --release --target wasm32v1-none` if you have more than one contract). Match the target to the one your tests load — this repo's tests read `../target/wasm32v1-none/release/<contract>.wasm`.
 - Bump `toolchain:` to the version you measure with locally. The pin in the workflow is what the runner installs; keep it aligned with the `channel` in your `rust-toolchain.toml` or local and CI numbers will drift apart.
-- `cargo test` runs every test in the workspace. If your gated tests live in a single crate, `cargo test -p my-contract` is enough.
+- `cargo test --workspace` runs every test in the workspace. If your gated tests live in a single crate, `cargo test -p my-contract` is enough.
 - `fetch-depth: 0` is only strictly needed if a second job will diff or archive reports per commit (see [Recording cost history](#recording-cost-history-on-gh-pages)); it is harmless otherwise.
 
 Once this file is on `main`, `cargo test` is a pass/fail check on every push and pull request. The macro's failure message — `CPU instruction cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction` — is your regression signal.
@@ -405,6 +405,116 @@ What each piece is doing and why:
 
 If you want the same durability without a branch dance, the modern alternative is uploading `history.json` as an artifact with a retention of 90 days or committing it back to `main` — the `jq` append logic transfers unchanged. We picked `gh-pages` because the branch already existed for the docs site.
 
+## Customization
+
+### Running on multiple Rust versions
+
+If your project supports multiple Rust toolchains, use a build matrix:
+
+```yaml
+strategy:
+  matrix:
+    toolchain: ["1.93.0", "stable"]
+
+steps:
+  - name: Install Rust
+    uses: dtolnay/rust-toolchain@stable
+    with:
+      toolchain: ${{ matrix.toolchain }}
+      targets: wasm32v1-none wasm32-unknown-unknown
+```
+
+Note that changing the Rust version may produce different WASM and therefore different budget numbers. The pinned version in `rust-toolchain.toml` is what this project's measurements are based on.
+
+### Limiting execution to pull requests
+
+To run budget checks only on pull requests (not on every push to `main`), remove the `push` trigger:
+
+```yaml
+on:
+  pull_request:
+    branches: ["main"]
+```
+
+### Running only on selected branches
+
+To limit execution to specific branches:
+
+```yaml
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+```
+
+### Integrating with existing CI pipelines
+
+You can merge the budget check into an existing workflow file by copying the relevant steps. The minimum required steps for Tier A (local, CI-blocking) are:
+
+```yaml
+- name: Build Contracts
+  run: cargo build -p your-contract --release --target wasm32v1-none
+- name: Run Budget Macros Test
+  run: cargo test --workspace
+```
+
+Add the Tier B steps when you need network-verified cost measurements and have configured a testnet identity with the `ALICE_SECRET_KEY` secret.
+
+### Fork-safe fallback for Tier B
+
+Pull requests from forks do not have access to repository secrets — GitHub withholds them by design, because the PR author is untrusted. This is why every secret-consuming step in the example above (CLI install, identity import, Tier B report) is gated on `github.event_name == 'push'`, and why a placeholder-writing sibling covers fork PRs so downstream steps still find `current_report.json`.
+
+The minimal shape of the split:
+
+```yaml
+- name: Run Budget Report (push)
+  if: github.event_name == 'push'
+  run: cargo run --bin cargo-budget-report -- budget-report --json --validate > current_report.json
+
+- name: Run Budget Report (fork / pull request)
+  if: github.event_name != 'push'
+  run: echo '[{"package":"your-contract","function":"your_function","metric":"CPU Instructions","value":0}]' > current_report.json
+```
+
+Rules for the placeholder path:
+
+- Label it loudly (step name and comment) so nobody mistakes synthetic rows for measurements.
+- Never feed placeholder output into cost history (`record-history`-style jobs) or `--check` enforcement; gate anything durable on the push event regardless.
+- The simpler alternative is to skip Tier B on fork PRs entirely (no sibling step) and guard consumers with `if: hashFiles('current_report.json') != ''`. Use that when you do not need an artifact from every run.
+
+This repo's own workflow hit the failure mode before it was documented: gating the job on a secret the job did not need made every contributor PR red, and the fix (dropping the testnet steps entirely until they are reinstated behind event gates) is recorded in a comment in `.github/workflows/budget.yml`. The [End-to-End CI Tutorial](ci_tutorial.md#the-fork-pr-constraint-plan-for-secrets-before-you-write-yaml) covers the constraint in depth.
+
+---
+
+## Best Practices
+
+### Fail builds on budget regressions
+
+Make the `budget-check` job (or its Tier A equivalent) a required status check in your branch protection rules. This prevents merging any pull request that would push a function past its budget.
+
+### Keep budget baselines current
+
+Re-run `cargo budget-report --json` and re-derive Tier A limits whenever:
+- The contract source changes.
+- The release profile in `Cargo.toml` changes.
+- The Soroban SDK version changes.
+- The `[margin]` block in `budget.toml` changes.
+
+### Avoid unnecessary workflow duplication
+
+If you already have a CI workflow that builds and tests your contracts, add the budget steps to that existing workflow rather than creating a separate one. The Tier A steps (`cargo build` + `cargo test`) integrate naturally into any Rust CI pipeline.
+
+### Validate changes before merging
+
+Require the `budget-check` job to pass before merging. The branch protection rule for `main` in this repository already requires the `Quality Checks` status check. Add `budget-check` to that list so a budget regression blocks the merge alongside formatting, Clippy, and test failures.
+
+### Use the same release profile
+
+Always build WASM with the same `[profile.release]` settings locally and in CI. The published measurements in this repository use the size-optimized profile (`opt-level = "z"`, `lto = true`, etc.). Numbers from a different profile are not comparable. Copy the profile from `Cargo.toml` into your workspace before recording or comparing budget figures.
+
+---
+
 ## Troubleshooting
 
 These are the failure modes we have actually hit while running this workflow.
@@ -459,9 +569,29 @@ The workflow builds WASM *before* running tests. If `cargo build -p my-contract 
 
 The workflow pins the Rust toolchain explicitly (`toolchain: 1.91.0` via `dtolnay/rust-toolchain` in the snippets above). If that pin disagrees with the `channel` in your `rust-toolchain.toml` — the thing your local measurements were taken under — the compiler versions differ and the WASM differs with them. Mismatches rarely announce themselves as such: they show up as budget numbers that creep for no reviewable reason, or as `cargo test` failing with cryptic "feature stable since 1.XX" errors. Pick one version, pin it in both places, and bump them together.
 
+
+### Dependency caching problems
+**Symptom**: The `Swatinem/rust-cache` step takes a long time or produces a cache miss on every run.
+
+**Fix**: Ensure `Cargo.lock` is checked into the repository. The cache key is derived from `Cargo.lock` contents. Without it, the cache cannot detect dependency changes efficiently. If cache entries grow stale, clear the cache from the GitHub Actions UI (Settings → Actions → Caches).
+
+### Failing budget assertions
+**Symptom**: The `cargo test` step fails with a message like:
+
+```
+CPU instruction cost 5,400,123 exceeded limit 5,000,000 - local estimate,
+real network cost may differ significantly in either direction
+```
+
+**Fix**: Re-measure the function's cost with `cargo budget-report` and update the limit in your `budget.toml` or macro annotation. If the increase is expected (e.g., you added a feature), raise the limit consciously. If it is a regression, optimize the function.
+
+### Test failures
+**Symptom**: `cargo test --workspace` fails with test errors unrelated to budget assertions.
+
+**Fix**: Check whether the WASM was built before running tests (`cargo build -p <contract> --release --target wasm32v1-none`). Tests that load contract WASM will fail if the WASM artifact is missing or stale. Rebuild and re-run. If the failure is in a non-budget test, it is a real test break — fix the test or the code it exercises.
+
 ## See also
 
-- [CI/CD Integration](ci_cd_integration.md) — the reference-style companion to this tutorial: annotated workflow, customization matrices, best practices.
 - [End-User Guide](user_guide.md) — install, `budget.toml`, and the local styles of the Tier A gate.
 - [Deriving Limits](deriving_limits.md) — turning a Tier B report into auditable Tier A limits.
 - [Protocol Mechanics](mechanics.md) — why Tier A's local estimate can drift, how Tier B's pipeline is built.

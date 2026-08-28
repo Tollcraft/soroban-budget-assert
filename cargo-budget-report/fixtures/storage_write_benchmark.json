@@ -1,30 +1,60 @@
 {
   "operation_type": "Storage write",
-  "fixture": {
-    "contract": "amm-pool-contract",
-    "function": "write_bytes",
-    "arguments": {
-      "bytes": 1024
+  "fixtures": [
+    {
+      "contract": "amm-pool-contract",
+      "function": "do_write_persistent",
+      "description": "Isolated persistent storage writes — n entries with composite (symbol, u32) keys and i128 values",
+      "arguments": {
+        "n": [10, 50, 100]
+      },
+      "registration": "register_contract_wasm"
     },
-    "registration": "register_contract_wasm"
-  },
+    {
+      "contract": "amm-pool-contract",
+      "function": "do_write_temporary",
+      "description": "Isolated temporary storage writes — n entries with composite (symbol, u32) keys and i128 values",
+      "arguments": {
+        "n": [10, 50, 100]
+      },
+      "registration": "register_contract_wasm"
+    },
+    {
+      "contract": "amm-pool-contract",
+      "function": "do_write_instance",
+      "description": "Isolated instance storage writes — n entries with composite (symbol, u32) keys and i128 values",
+      "arguments": {
+        "n": [10, 50, 100]
+      },
+      "registration": "register_contract_wasm"
+    }
+  ],
   "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
-  "toolchain": "rustc 1.81",
+  "toolchain": "rustc 1.91.0",
   "network": {
     "method": "simulateTransaction",
     "network": "Soroban testnet"
   },
   "measurements": {
-    "cpu_instructions": {
-      "local_estimate": 36840,
-      "network_figure": 44512,
-      "delta": -0.1724,
-      "delta_percent": -17.2
+    "persistent": {
+      "n10": { "local_cpu": 752652, "local_mem": 1448260, "network_cpu": null, "network_mem": null, "delta_cpu": null },
+      "n50": { "local_cpu": 3058345, "local_mem": 2068620, "network_cpu": null, "network_mem": null, "delta_cpu": null },
+      "n100": { "local_cpu": 8018619, "local_mem": 3262570, "network_cpu": null, "network_mem": null, "delta_cpu": null }
+    },
+    "temporary": {
+      "n10": { "local_cpu": 752652, "local_mem": 1448260, "network_cpu": null, "network_mem": null, "delta_cpu": null },
+      "n50": { "local_cpu": 3058345, "local_mem": 2068620, "network_cpu": null, "network_mem": null, "delta_cpu": null },
+      "n100": { "local_cpu": 8018619, "local_mem": 3262570, "network_cpu": null, "network_mem": null, "delta_cpu": null }
+    },
+    "instance": {
+      "n10": { "local_cpu": 595235, "local_mem": 1376862, "network_cpu": null, "network_mem": null, "delta_cpu": null },
+      "n50": { "local_cpu": 1580447, "local_mem": 1545502, "network_cpu": null, "network_mem": null, "delta_cpu": null },
+      "n100": { "local_cpu": 3607138, "local_mem": 1810302, "network_cpu": null, "network_mem": null, "delta_cpu": null }
     }
   },
   "capture": {
-    "local_command": "cargo test -p amm-pool-contract test_write_bytes_wasm -- --exact --nocapture",
-    "network_command": "cargo run --bin cargo-budget-report -- --fixture cargo-budget-report/fixtures/storage_write_benchmark.json",
-    "recorded_at": "2026-07-26"
+    "local_command": "cargo test -p amm-pool-contract --test measure_storage_write_gap -- --nocapture",
+    "network_command": "cargo run --bin cargo-budget-report -- --network testnet",
+    "recorded_at": "2026-08-26"
   }
 }

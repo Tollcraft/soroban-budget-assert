@@ -1,3 +1,21 @@
+//! Budget assertion procedural macros for Soroban contract tests.
+//!
+//! # `std`/`no_std` boundary
+//!
+//! This crate is a **proc-macro library** — it runs at compile time and has no
+//! runtime footprint. It is used **exclusively in `#[cfg(test)]` contexts**:
+//! `amm-pool-contract/tests/` and the crate's own UI tests.
+//!
+//! The macros emit code that references `std::env::var`, `std::fs::read_to_string`,
+//! and `std::path::Path`. This is correct because the generated code is compiled
+//! into test binaries where `std` is always available. The macros are **not**
+//! intended for use in `no_std` Soroban contracts.
+//!
+//! If future use cases require `no_std` macro expansion, the `EnvFile` and
+//! `Config` limit forms would need an alternative to `std::fs` (e.g., a
+//! `#[cfg(not(no_std))]` gate or a compile-time-only resolution path). The
+//! integer-literal and `env` forms would work unchanged in `no_std` contexts.
+
 extern crate proc_macro;
 
 #[cfg(test)]

@@ -538,6 +538,77 @@ Each new macro should have:
 
 Run `cargo test -p budget-macros` for the UI-only tests, or `cargo test --workspace` (after building the WASM) for the full suite. Regenerate `.stderr` snapshots with `TRYBUILD=overwrite cargo test -p budget-macros`.
 
+## `std`/`no_std` Boundary and Test-Only Status
+
+### Investigation Result
+
+`budget-macros` is used **exclusively in test code**. A full search of the workspace confirms:
+
+| Consumer | File | Context |
+|---|---|---|
+| `amm-pool-contract` | `Cargo.toml` | `dev-dependency` only (line 15) |
+| `amm-pool-contract` | `tests/budget_test.rs` | `#[cfg(test)]` test functions |
+| `amm-pool-contract` | `tests/cross_contract_test.rs` | `#[cfg(test)]` test functions |
+| `budget-macros` | `tests/ui/*.rs` | UI compile-test and pass-test files |
+
+No production code, contract source, or non-test module references `budget_macros`. The crate is a **test-only utility**.
+
+### Where `std` Is Required
+
+The macros are a proc-macro library — they run at compile time and have no runtime. However, the **generated code** they emit references `std`:
+
+| Generated item | `std` item | When emitted |
+|---|---|---|
+| `budget_env_resolve` closure | `std::env::var` | Always (preamble) |
+| `EnvFile` limit expression | `std::fs::read_to_string` | When `env_file = "PATH"` is used |
+| `Config` limit expression | `std::fs::read_to_string`, `std::path::Path` | When `config = "key"` is used |
+| `Percentage` limit expression | `std::fs::read_to_string` | When `pct = N, of = env_file = "..."` is used |
+
+For the common case of integer-literal limits (`#[budget_cpu_lt(950_000)]`), the only `std` reference is the `budget_env_resolve` closure in the preamble — which is defined but never called.
+
+### Where `no_std` Applies
+
+Soroban contracts compile to WASM and use `#![no_std]`. The macros' generated code is **never compiled into contract WASM** because the macros are dev-dependencies only. The `no_std` boundary of the contract is unaffected by `budget-macros`.
+
+If the macros were ever used in non-test contract code, the `std::fs` and `std::env` references in the generated code would fail to compile under `no_std`. The integer-literal limit form would still work (no runtime `std` calls), but `env_file`, `config`, and `env` forms would need alternative resolution paths.
+
+### Dependency Audit
+
+The crate's dependencies are standard proc-macro tooling with no unnecessary `std` requirements:
+
+| Dependency | Purpose | `std`-dependent? |
+|---|---|---|
+| `syn` (full, extra-traits, visit-mut) | AST parsing and manipulation | No (compile-time only) |
+| `quote` | Token stream generation | No (compile-time only) |
+| `proc-macro2` | Proc-macro token types | No (compile-time only) |
+
+The crate has no runtime dependencies. `serde_json` was previously listed in the architecture doc as a dependency for `config = "key"` resolution but is not present in `Cargo.toml` — the runtime JSON parsing fallback in `generate_limit_expr` uses hand-rolled parsing (no `serde`), consistent with keeping dependencies minimal.
+
+### How Macro Expansion Interacts with Soroban `no_std` Contracts
+
+The macros and the contract occupy separate compilation domains:
+
+```
+┌──────────────────────────────┐     ┌──────────────────────────────┐
+│  Contract (no_std, WASM)     │     │  Test binary (std, native)   │
+│                              │     │                              │
+│  amm-pool-contract/src/      │     │  amm-pool-contract/tests/    │
+│  - No budget-macros dep      │     │  - budget_macros dev-dep     │
+│  - No std references         │     │  - #[budget_cpu_lt(...)]     │
+│  - Compiled to wasm32        │     │  - Generated code uses std   │
+└──────────────────────────────┘     └──────────────────────────────┘
+```
+
+The contract's `no_std` boundary is maintained by the workspace dependency structure: `budget-macros` is a `[dev-dependencies]` entry, which Cargo only resolves for test and bench targets. The WASM build (`cargo build --target wasm32v1-none --release -p amm-pool-contract`) does not link `budget-macros` at all.
+
+### Recommendations
+
+1. **Do not add `no_std` support.** The macros are test-only and the `std` references in generated code are correct for their usage context. Adding `no_std` support would require conditional compilation gates and alternative `env_file`/`config` resolution paths with no practical benefit.
+
+2. **Keep the test-only boundary explicit.** The Cargo.toml comment and lib.rs module docs now document this. Future contributors should not add `budget-macros` as a non-dev dependency without understanding the `std` implications.
+
+3. **If `no_std` use cases arise later**, the integer-literal and `env` forms could be made `no_std`-compatible with minimal changes (the `env` form only needs `core::env::var` which is not available in `no_std`, so it would need a compile-time-only fallback). The `env_file` and `config` forms are inherently `std`-dependent (file I/O) and would need a `#[cfg(not(no_std))]` gate.
+
 ## Interaction with Soroban Budget Measurement
 
 The macros do not call any Soroban SDK function directly — they have no dependency on it. Instead, they emit code that calls methods on whatever type the local `env` binding exposes:

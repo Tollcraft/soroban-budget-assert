@@ -2,6 +2,10 @@
 name = "budget-macros"
 version.workspace = true
 edition.workspace = true
+# NOTE: This crate is test-only. It is a dev-dependency of amm-pool-contract
+# and is used exclusively in #[cfg(test)] code. Generated code references
+# std (env::var, fs::read_to_string), which is fine in test binaries but
+# means this crate must NOT be used as a dependency in production contract code.
 description = "Proc-macro crate providing budget assertion attributes for Soroban contract tests."
 license.workspace = true
 repository.workspace = true

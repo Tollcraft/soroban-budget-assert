@@ -281,6 +281,65 @@ The native Rust and WASM local estimates are reported by `Env::cost_estimate().b
 
 **Implication for Tier A margins.** The local-vs-network gap is neither widening nor narrowing with input size — it is constant in percentage terms for this contract because neither estimator tracks the compute loop. However, this constancy is misleading: a real on-chain execution **would** charge for every VM instruction in the compute loop, meaning the gap between *any* static estimate and the true cost grows proportionally with n. Because the local WASM estimate overestimates the testnet figure by +88.6% for all measured sizes, a Tier A margin set above this ceiling (e.g. 2× the local estimate) would pass all tested inputs. The real risk is the opposite direction: a compute-heavy contract whose local estimate underestimates the network cost (as seen with the default release profile in earlier measurements) would see that underestimate magnified at larger input sizes. Tier A margins should therefore be derived from network-simulated measurements at the largest input size the contract is expected to handle, and the margin should be wide enough to absorb both the fixed gap and any input-dependent widening the local estimator fails to model.
 
+## Host-function calls
+
+This section records the local-vs-network cost gap for repeated host-function invocations, isolated from storage, event, and compute side-effects. It uses the dedicated [`host-function-contract`](host-function-contract/README.md) fixture crate.
+
+Host functions are where the local Soroban environment and the real host differ most structurally: locally a host function is a Rust call into the test harness in-process, while on the network it is a call into the actual host implementation with its own metering. The measurement in this section tests whether the CPU-instruction gap measured for other operation types (mixed compute + storage, VM instructions) applies to host-function calls, and — because the gap may vary by function — whether it is uniform across several distinct host functions.
+
+### Methodology
+
+The local estimate is collected by the `measure_host_fn_gap` test in `host-function-contract/tests/measure_host_fn_gap.rs`, which registers the WASM via `Env::register`, resets the budget to unlimited, and reads `cost_estimate().budget().cpu_instruction_cost()`.
+
+```
+cargo build -p host-function-contract --target wasm32v1-none --release
+cargo test -p host-function-contract --test measure_host_fn_gap -- --nocapture
+```
+
+The network figure is collected per function/call-count by deploying the same WASM to Soroban testnet and decoding the `resources.instructions` field from the `simulateTransaction` `transactionData` in the response. The deployed snapshot is not recoverable deterministically, so the capture record (all figures, per-function and per-call-count) is checked in at [`cargo-budget-report/fixtures/host_function_benchmark.json`](cargo-budget-report/fixtures/host_function_benchmark.json).
+
+Four distinct host functions are measured, all in [`host-function-contract/src/lib.rs`](host-function-contract/src/lib.rs): `repeated_sequence` (`env.ledger().sequence()`), `repeated_timestamp` (`env.ledger().timestamp()`), `repeated_hash` (`env.crypto().sha256`), and `repeated_bytes_new` (`Bytes::new`). Each loops `iterations` times over the host call with no storage, event, or arithmetic side-effects.
+
+### Figures (iterations = 1,000)
+
+| Host function | Local CPU | Network CPU | Delta | Local mem | Fixture | Build profile | Toolchain | Date |
+|---|---:|---:|---:|---:|---|---|---|---|
+| `ledger().sequence()` | 1,759,859 | 2,194,275 | −19.8% | 1,239,673 | `host-function-contract::repeated_sequence(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08-27 |
+| `ledger().timestamp()` | 3,861,391 | 4,379,869 | −11.8% | 1,239,673 | `host-function-contract::repeated_timestamp(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08-27 |
+| `Bytes::new` | 2,405,859 | 2,865,075 | −16.0% | 1,343,673 | `host-function-contract::repeated_bytes_new(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08-27 |
+| `crypto().sha256` | 7,488,773 | 8,042,983 | −6.9% | 1,391,800 | `host-function-contract::repeated_hash(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.91.0 | 2026-08-27 |
+
+Delta is `(local − network) / network`; a negative value means the local estimate *underestimates* the network cost. All four host functions are underestimated locally, by between **6.9%** and **19.8%**.
+
+**The gap varies by function.** The four measured host functions do not share a single gap. `ledger().sequence()` shows the largest underestimate (−19.8%), `crypto().sha256` the smallest (−6.9%). This confirms the assumption behind this measurement — that the CPU-instruction gap measured elsewhere does *not* transfer uniformly to host-function calls — is false. A single Tier A margin derived from one host function would not safely cover the others.
+
+The absolute figures differ from the earlier 2025-Q2 row in the CPU instructions section (1,280,000 local / 1,600,000 network for `repeated_sequence(1_000)`), which was produced under an older rustc/SDK combination. Under the current baseline (rustc 1.91.0, soroban-sdk 27, protocol 27 testnet) both figures are higher, but the sign of the gap is unchanged: local still underestimates network.
+
+### Gap stability across call counts
+
+The following measures `repeated_sequence` at several call counts to check whether the gap widens or narrows as the number of host calls grows. Raw CPU figures include the fixed module-instantiation cost present in both local and network estimates (`n = 0` baseline), so the per-call marginal cost is also reported: `(cost_n − cost_0) / n`.
+
+| n | Local CPU | Network CPU | Delta (raw) | Local per-call | Network per-call |
+|---|---:|---:|---:|---:|---:|
+| 0 (baseline) | 281,859 | 696,880 | — | — | — |
+| 100 | 429,659 | 843,180 | −49.0% | 1,478 | 1,463 |
+| 1,000 | 1,759,859 | 2,194,275 | −19.8% | 1,478 | 1,497 |
+| 5,000 | 7,671,859 | 8,280,355 | −7.3% | 1,478 | 1,517 |
+| 10,000 | 15,061,859 | 15,887,955 | −5.2% | 1,478 | 1,519 |
+
+**Conclusion.** The gap is **stable per host call, but the raw percentage is not constant** across call counts. The local per-call marginal cost is exactly constant at 1,478 CPU instructions for every measured count. The network per-call marginal cost is also essentially stable (~1,463–1,519), with a small drift upward as `n` grows that is consistent with cumulative metering granularity in the network estimate. The raw percentage delta shrinks as `n` grows only because the fixed module-instantiation baseline (696,880 CPU on network vs 281,859 locally) becomes a smaller fraction of the total — it is an artifact of the baseline, not a real change in per-call behavior.
+
+The practical implication: a Tier A margin for host-function-heavy workloads should be derived from the **per-call** marginal gap (roughly −0.2% to −2.7%: local ≈ network per call, slightly overestimating at small `n`, slightly underestimating at large `n`), not from the raw percentage, which depends on how many calls the fixture makes relative to the fixed baseline.
+
+### Reproduction
+
+To reproduce this measurement from a clean checkout:
+
+1. Build the WASM: `cargo build -p host-function-contract --target wasm32v1-none --release`
+2. Capture local figures: `cargo test -p host-function-contract --test measure_host_fn_gap -- --nocapture`. The `*_CPU` values in the output are the local estimates.
+3. Deploy the WASM to Soroban testnet: `stellar contract deploy --wasm target/wasm32v1-none/release/host_function_contract.wasm --source <funded-key> --network testnet`
+4. For each function and call count, build the invocation XDR with `stellar contract invoke --id <deployed-id> --source <funded-key> --network testnet --build-only -- <function> --iterations <n>`, POST it to the testnet RPC `simulateTransaction` method, and decode the `result.transactionData` base64 as `SorobanTransactionData` (via `stellar xdr dec --type SorobanTransactionData`). The `resources.instructions` field is the network CPU figure.
+5. Compute each delta = `(local − network) / network` and update the tables above. The full capture record is at [`cargo-budget-report/fixtures/host_function_benchmark.json`](cargo-budget-report/fixtures/host_function_benchmark.json).
 ## TTL extension
 
 This section records the local-vs-network cost gap for TTL extension operations — both instance-storage and persistent-storage variants. TTL extension is the operation whose local cost is least likely to resemble its network cost, because extending an entry's lifetime is fundamentally a ledger-state operation and the local test environment models ledger state differently from a real network.
@@ -349,13 +408,77 @@ For the isolated VM benchmark, the delta is calculated as:
 (689,312 − 634,912) / 634,912 = +8.6%
 ```
 
+## Map operations
+
+This section records the local-vs-network cost gap for Soroban [`Map`](https://docs.rs/soroban-sdk/latest/soroban_sdk/struct.Map.html) operations — insert, get, remove, iterate — isolated from storage, event, and compute side-effects, using the [`host-function-contract`](host-function-contract/README.md) fixture crate.
+
+Map is the collection whose cost scales least intuitively: to a Rust developer a `Map` lookup reads as the `O(1)` `HashMap`-style operation, but in Soroban it is a host call with its own per-operation cost curve, and the difference compounds inside loops. Measuring the actual cost gives the existing Map-usage lints an empirical basis rather than a structural argument. This section quantifies both the local-vs-network gap and, crucially, how per-operation cost scales with map size.
+
+### Methodology
+
+The local estimate is collected per operation and per map size by the `measure_map_gap` test in `host-function-contract/tests/measure_map_gap.rs`, which registers the WASM via `Env::register`, resets the budget to unlimited, and reads `cost_estimate().budget().cpu_instruction_cost()`.
+
+```
+cargo build -p host-function-contract --target wasm32v1-none --release
+cargo test -p host-function-contract --test measure_map_gap -- --nocapture
+```
+
+The network figure is collected per operation and size by deploying the same WASM to Soroban testnet and decoding the `resources.instructions` field from each `simulateTransaction` response. The capture record (all figures) is checked in at [`cargo-budget-report/fixtures/map_operations_benchmark.json`](cargo-budget-report/fixtures/map_operations_benchmark.json).
+
+Four functions in [`host-function-contract/src/lib.rs`](host-function-contract/src/lib.rs) isolate the operations: `map_insert`, `map_get`, `map_remove`, `map_iterate`. Each builds a `size`-entry `Map<u32, u32>` (the insert function *is* the build), then `map_get` issues `size` lookups, `map_remove` issues `size` removals, and `map_iterate` walks all `size` entries. Because every non-insert function performs an identical `size`-entry build, the **per-operation marginal cost** is computed by subtracting the `map_insert(size)` figure: `(map_<op>(size) − map_insert(size)) / size`. Map sizes are 100, 500, and 1,000 — larger sizes exceed the host's hard per-invocation memory limit (the Map's host memory grows super-linearly with size in the SDK-27 host), so these are the largest values measurable in a single invocation.
+
+### Figures
+
+Raw CPU instructions (local, network) and the per-operation marginal cost, by map size:
+
+| Operation | Size | Local CPU | Network CPU | Delta | Local per-op | Network per-op |
+|---|---|---:|---:|---:|---:|---:|
+| Insert | 100 | 755,807 | 846,437 | −10.7% | 7,558 | 8,464 |
+| Insert | 500 | 3,285,855 | 3,452,056 | −4.8% | 6,572 | 6,904 |
+| Insert | 1,000 | 8,475,569 | 8,839,998 | −4.1% | 8,476 | 8,840 |
+| Get | 100 | 1,104,263 | 1,190,352 | −7.2% | 3,485 | 3,439 |
+| Get | 500 | 5,031,111 | 5,248,256 | −4.1% | 3,491 | 3,592 |
+| Get | 1,000 | 11,971,325 | 12,439,038 | −3.8% | 3,496 | 3,599 |
+| Remove | 100 | 1,297,233 | 1,387,737 | −6.5% | 5,414 | 5,413 |
+| Remove | 500 | 6,894,789 | 7,187,147 | −4.1% | 7,218 | 7,470 |
+| Remove | 1,000 | 17,948,187 | 18,655,121 | −3.8% | 9,473 | 9,815 |
+| Iterate | 100 | 1,117,331 | 1,204,544 | −7.2% | 3,615 | 3,581 |
+| Iterate | 500 | 5,078,579 | 5,298,791 | −4.2% | 3,585 | 3,694 |
+| Iterate | 1,000 | 12,057,293 | 12,529,614 | −3.8% | 3,582 | 3,690 |
+
+Build profile: size-opt (`opt-level="z"`, LTO, `codegen-units=1`). Toolchain: rustc 1.91.0. Date: 2026-08-27.
+
+Delta is `(local − network) / network`; a negative value means the local estimate *underestimates* the network cost. For every Map operation at every size the local estimate underestimates the network cost, by **3.8%–10.7%**. As with the host-function series, the raw percentage is largest at the smallest map size (where the fixed module-instantiation baseline is a larger fraction of the total) and converges to roughly **−4%** at size 1,000.
+
+### Scaling behaviour (the substance of the result)
+
+The per-operation marginal cost is the quantity that reveals whether Map operations are constant-time:
+
+- **Get is constant.** Local per-lookup is 3,485 → 3,491 → 3,496 across sizes 100/500/1,000; network is 3,439 → 3,592 → 3,599. The per-lookup cost is flat: getting an entry from a 1,000-entry map costs the same as from a 100-entry map.
+- **Iterate is constant.** Local per-entry is 3,615 → 3,585 → 3,582; network is 3,581 → 3,694 → 3,690. Flat.
+- **Insert is roughly constant-to-modest.** Local per-insert is 7,558 → 6,572 → 8,476; network is 8,464 → 6,904 → 8,840. No monotonic growth with size.
+- **Remove is super-linear.** Local per-remove grows 5,414 → 7,218 → 9,473 (a 10× map-size increase raises per-remove cost ~75%); network grows 5,413 → 7,470 → 9,815. **Remove is not constant-time** — each removal costs more as the map grows, consistent with a delete that shifts/rewrites the remaining entries in the host's persistent map representation.
+
+**Implication for lints and Tier A margins.** The three Map lints and any local-vs-network margin can lean on the following: (1) the local estimate underestimates network for all four operations, so a margin derived from local Map estimates must be at least ~4% (larger at small maps) to avoid under-budgeting on-chain; (2) get/iterate are safe to model as `O(1)`-per-call in both local and network metering, while insert is roughly flat but ~2× get; (3) **remove must be modelled as size-dependent** — its per-call cost grows with map size, so a remove-heavy loop's cost compounds with the map's peak size, not just the number of removes. A margin that is flat with respect to map size (correct for get/iterate) would under-budget a remove-heavy workload at scale.
+
+### Reproduction
+
+To reproduce this measurement from a clean checkout:
+
+1. Build the WASM: `cargo build -p host-function-contract --target wasm32v1-none --release`
+2. Capture local figures: `cargo test -p host-function-contract --test measure_map_gap -- --nocapture`. The `INSERT/GET/REMOVE/ITERATE size=…` lines give the local CPU estimates.
+3. Deploy the WASM to Soroban testnet: `stellar contract deploy --wasm target/wasm32v1-none/release/host_function_contract.wasm --source <funded-key> --network testnet`
+4. For each operation and size, build the invocation XDR with `stellar contract invoke --id <deployed-id> --source <funded-key> --network testnet --build-only -- map_<op> --size <n>`, POST it to the testnet RPC `simulateTransaction` method, and decode the `result.transactionData` base64 as `SorobanTransactionData` (via `stellar xdr dec --type SorobanTransactionData`). The `resources.instructions` field is the network CPU figure.
+5. Compute each delta = `(local − network) / network` and the per-operation marginal cost `(map_<op>(size) − map_insert(size)) / size`, and update the tables above. The full capture record is at [`cargo-budget-report/fixtures/map_operations_benchmark.json`](cargo-budget-report/fixtures/map_operations_benchmark.json).
+
 ## Operation-type coverage
 
 | Operation type | Issue | Status |
 |---|---|---|
-| Storage-write operations | #44 | Measured in the existing mixed-operation fixtures |
-| Host-function-call operations | #86 | Measured in the host-function-contract fixture |
-| VM-instruction-heavy operations | #87 | Measured above |
-| Memory bytes | #122 | Measured |
-| TTL extension | TBD | Local measured — network figure pending (see [TTL extension](#ttl-extension) section) |
+| Storage-write operations | [#44](https://github.com/Tollcraft/soroban-budget-assert/issues/44) | Measured in the existing mixed-operation fixtures |
+| Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Measured in the [Host-function calls](#host-function-calls) section below |
+| VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Measured above |
+| Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | In progress |
+| TTL extension | TBD | In progress — calibration test at `amm-pool-contract/tests/calibrate_extend_ttl.rs` |
+| Map operations | TBD | Measured in the [Map operations](#map-operations) section above |
 
