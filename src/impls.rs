@@ -31,7 +31,7 @@
 //! with the assertion and reporting machinery:
 //!
 //! ```rust
-//! use soroban_budget_assert_core::module_21::{CpuCost, MemoryCost, BudgetBounds};
+//! use soroban_budget_assert_core::impls::{CpuCost, MemoryCost, BudgetBounds};
 //!
 //! /// A pair of measured costs for a contract function.
 //! struct FunctionMetrics {
@@ -66,8 +66,8 @@
 //!     }
 //! }
 //!
-//! let m = FunctionMetrics { name: "do_expensive_work", cpu: 750_000, mem: 300_000 };
-//! assert!(m.is_within_bounds().unwrap());
+//! let metrics = FunctionMetrics { name: "do_expensive_work", cpu: 750_000, mem: 300_000 };
+//! assert!(metrics.is_within_bounds().unwrap());
 //! ```
 //!
 //! ## Design notes
@@ -100,7 +100,7 @@
 /// instruction count:
 ///
 /// ```rust
-/// use soroban_budget_assert_core::module_21::CpuCost;
+/// use soroban_budget_assert_core::impls::CpuCost;
 ///
 /// /// A fixed-cost wrapper used in unit tests.
 /// struct FixedCpu(u64);
@@ -152,7 +152,7 @@ pub trait CpuCost {
 /// byte count:
 ///
 /// ```rust
-/// use soroban_budget_assert_core::module_21::MemoryCost;
+/// use soroban_budget_assert_core::impls::MemoryCost;
 ///
 /// /// A fixed-cost wrapper used in unit tests.
 /// struct FixedMem(u64);
@@ -202,7 +202,7 @@ pub trait MemoryCost {
 /// # Usage
 ///
 /// ```rust
-/// use soroban_budget_assert_core::module_21::{CpuCost, MemoryCost, BudgetBounds};
+/// use soroban_budget_assert_core::impls::{CpuCost, MemoryCost, BudgetBounds};
 ///
 /// /// Metrics for a swap operation.
 /// struct SwapMetrics {
@@ -224,9 +224,9 @@ pub trait MemoryCost {
 ///     fn memory_limit(&self) -> Option<u64> { None }
 /// }
 ///
-/// let m = SwapMetrics { cpu: 1_500_000, mem: 100_000 };
+/// let metrics = SwapMetrics { cpu: 1_500_000, mem: 100_000 };
 /// // CPU is below limit (1_500_000 < 2_000_000) and memory has no limit.
-/// assert!(m.is_within_bounds().unwrap());
+/// assert!(metrics.is_within_bounds().unwrap());
 ///
 /// let exceeded = SwapMetrics { cpu: 3_000_000, mem: 100_000 };
 /// assert!(!exceeded.is_within_bounds().unwrap());
@@ -289,7 +289,7 @@ pub trait BudgetBounds: CpuCost + MemoryCost {
     /// # Examples
     ///
     /// ```rust
-    /// use soroban_budget_assert_core::module_21::{CpuCost, MemoryCost, BudgetBounds};
+    /// use soroban_budget_assert_core::impls::{CpuCost, MemoryCost, BudgetBounds};
     ///
     /// struct NoLimits;
     ///
@@ -330,7 +330,7 @@ pub trait BudgetBounds: CpuCost + MemoryCost {
 /// # Usage
 ///
 /// ```rust
-/// use soroban_budget_assert_core::module_21::CostReportable;
+/// use soroban_budget_assert_core::impls::CostReportable;
 ///
 /// /// One row in a budget report.
 /// struct ReportRow {

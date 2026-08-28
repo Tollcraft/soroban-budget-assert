@@ -1,0 +1,5 @@
+error: `pct` requires `of = <source>` — e.g. `pct = 25, of = env_file = "tier-a-limits.env", env = "NETWORK__CPU"`
+ --> tests/ui/pct_no_of.rs:5:17
+  |
+5 | #[budget_cpu_lt(pct = 25)]
+  |                 ^^^

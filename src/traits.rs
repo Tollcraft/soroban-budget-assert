@@ -45,13 +45,13 @@
 //!         }
 //!     }
 //!
-//!     fn invoke(&mut self, n: u64) {
+//!     fn invoke(&mut self, iterations: u64) {
 //!         let mut acc: u64 = 0;
-//!         for i in 0..n {
+//!         for i in 0..iterations {
 //!             acc = acc.wrapping_add(i);
 //!         }
-//!         self.cpu_instructions = n * 10;
-//!         self.memory_bytes = n * 4;
+//!         self.cpu_instructions = iterations * 10;
+//!         self.memory_bytes = iterations * 4;
 //!         let _ = acc;
 //!     }
 //! }
@@ -461,8 +461,8 @@ pub struct ResourceReport {
 ///     }
 /// }
 ///
-/// let op = MyOp { cpu: 500, mem: 256 };
-/// let report = op.to_report("my-crate", "do_work");
+/// let operation = MyOp { cpu: 500, mem: 256 };
+/// let report = operation.to_report("my-crate", "do_work");
 /// assert_eq!(report.cpu_instructions, 500);
 /// ```
 pub trait ResourceReportable {
@@ -487,20 +487,20 @@ pub trait ResourceReportable {
 /// assert_eq!(format_metric(0, "Write Bytes"), "0 B");
 /// ```
 pub fn format_metric(value: u64, metric: &str) -> String {
-    let s = value.to_string();
-    let mut result = String::new();
+    let digits = value.to_string();
+    let mut grouped = String::new();
     let mut count = 0;
 
-    for c in s.chars().rev() {
+    for c in digits.chars().rev() {
         if count == 3 {
-            result.push(',');
+            grouped.push(',');
             count = 0;
         }
-        result.push(c);
+        grouped.push(c);
         count += 1;
     }
 
-    let formatted: String = result.chars().rev().collect();
+    let formatted: String = grouped.chars().rev().collect();
 
     if metric.contains("Bytes") {
         format!("{} B", formatted)

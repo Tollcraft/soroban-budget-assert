@@ -1,8 +1,9 @@
 # Architecture Diagrams
 
 Visual reference for the two primary subsystems in `soroban-budget-assert`.
-Both diagrams are authored in [Mermaid](https://mermaid.js.org/) and render
-natively on GitHub and GitBook.
+Both diagrams are authored in [Mermaid](https://mermaid.js.org/).
+
+**Note on Editing:** These diagrams are embedded directly in the Markdown pages of the documentation site so they render live without extra plugins. To edit them, modify the Mermaid source blocks directly in `docs/src/mechanics.md` and `docs/src/macro_architecture.md`. The `.mmd` files in this directory are kept as standalone backups and history references.
 
 ---
 
@@ -26,7 +27,7 @@ sequenceDiagram
     participant Report as Budget Report
 
     Dev->>CLI: cargo budget-report [--check] [--json]
-    CLI->>Cargo: cargo build -p <contract> --release<br/>--target wasm32-unknown-unknown
+    CLI->>Cargo: cargo build -p <contract> --release<br/>--target wasm32v1-none
     Cargo-->>WASM: amm_pool_contract.wasm (cdylib)
 
     CLI->>Parser: wasmparser: scan exports

@@ -10,7 +10,7 @@
 //! `Send + Sync`), so it can be converted to `anyhow::Error` via the `?`
 //! operator when the caller returns `anyhow::Result`.  The `main()`
 //! function is the natural place to keep that outer `anyhow::Result` return
-//! type; all intermediate functions use [`crate::module_10::Result`].
+//! type; all intermediate functions use [`crate::error::Result`].
 
 use std::fmt;
 
@@ -108,9 +108,9 @@ impl From<wasmparser::BinaryReaderError> for Error {
     }
 }
 
-/// Allow `?` to convert from `stellar_xdr::curr::Error` into ours.
-impl From<stellar_xdr::curr::Error> for Error {
-    fn from(e: stellar_xdr::curr::Error) -> Self {
+/// Allow `?` to convert from `stellar_xdr::Error` into ours.
+impl From<stellar_xdr::Error> for Error {
+    fn from(e: stellar_xdr::Error) -> Self {
         Error::Xdr(e.to_string())
     }
 }

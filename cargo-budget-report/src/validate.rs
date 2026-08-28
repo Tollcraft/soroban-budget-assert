@@ -1,3 +1,4 @@
+use crate::BudgetToml;
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -185,11 +186,336 @@ pub fn validate_metrics(
     )
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// `budget.toml` schema validation (issue #399)
+//
+// `load_budget_toml` deserializes into a permissive `BudgetToml` (the
+// top-level struct does *not* use `deny_unknown_fields`) so that an unknown
+// top-level key is silently dropped. That silence is the damaging failure mode
+// the issue targets: a misspelled function name yields a report that simply
+// omits the function, with no indication anything was wrong. These helpers
+// validate the raw document against the schema the tool understands and report
+// *every* problem found — with a closest-match suggestion for typos — so a
+// misconfigured file takes one round trip to fix rather than five.
+// ─────────────────────────────────────────────────────────────────────
+
+/// One problem found while validating `budget.toml`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct ValidationError {
+    pub location: String,
+    pub message: String,
+}
+
+impl ValidationError {
+    fn new(location: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            location: location.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Top-level keys the schema understands.
+const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
+    "network",
+    "source",
+    "tolerance",
+    "margin",
+    "scenarios",
+    "functions",
+    "retry",
+];
+
+/// Validate `content` (the raw `budget.toml` text) against the schema the tool
+/// understands, using `available_functions` (every function exported by the
+/// workspace) to confirm that each configured `[functions.<name>]` exists.
+///
+/// Returns the parsed [`BudgetToml`] on success, or *every* validation problem
+/// found (never just the first).
+pub(crate) fn validate_budget_toml(
+    content: &str,
+    available_functions: &[String],
+) -> std::result::Result<BudgetToml, Vec<ValidationError>> {
+    let mut errors: Vec<ValidationError> = Vec::new();
+
+    let value: toml::Value = match toml::from_str(content) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(vec![ValidationError::new(
+                "budget.toml",
+                format!("could not parse TOML: {e}"),
+            )]);
+        }
+    };
+
+    if let toml::Value::Table(top) = &value {
+        // Unknown top-level keys. We only *reject* a key when it is a plausible
+        // typo of a known key (so we can suggest the correction); an arbitrary
+        // foreign section — for example `[lints]`, which is consumed by the
+        // sibling `soroban-cost-linter` tool — is silently accepted so a single
+        // shared `budget.toml` can serve multiple tools without errors.
+        for key in top.keys() {
+            if !KNOWN_TOP_LEVEL_KEYS.contains(&key.as_str()) {
+                if let Some(s) = closest_match(key, KNOWN_TOP_LEVEL_KEYS) {
+                    errors.push(ValidationError::new(
+                        "budget.toml",
+                        format!("unknown top-level key `{key}` (did you mean `{s}`?)"),
+                    ));
+                }
+            }
+        }
+
+        // Function existence: every key under `[functions.*]` must be an
+        // exported function of the workspace. Skipped when we have no exported
+        // functions to compare against (e.g. nothing was built).
+        if !available_functions.is_empty() {
+            if let Some(toml::Value::Table(fns)) = top.get("functions") {
+                let avail: Vec<&str> = available_functions.iter().map(String::as_str).collect();
+                let avail_list = available_functions.join(", ");
+                for name in fns.keys() {
+                    if !available_functions.iter().any(|f| f == name) {
+                        let suggestion = closest_match(name, &avail);
+                        errors.push(ValidationError::new(
+                            "budget.toml [functions]",
+                            match suggestion {
+                                Some(s) => format!(
+                                    "function `{name}` is configured in budget.toml but does not exist in the workspace (did you mean `{s}`?). Available functions: {avail_list}"
+                                ),
+                                None => format!(
+                                    "function `{name}` is configured in budget.toml but does not exist in the workspace. Available functions: {avail_list}"
+                                ),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Type errors and nested-unknown-key errors (FunctionConfig uses
+    // `deny_unknown_fields`, so a misspelled limit key is caught here) are
+    // surfaced by deserializing into the real `BudgetToml`. The top-level
+    // struct intentionally does not deny unknown keys, so those are not
+    // double-counted here.
+    if let Err(e) = toml::from_str::<BudgetToml>(content) {
+        let msg = e.to_string();
+        let already_covered = KNOWN_TOP_LEVEL_KEYS.iter().any(|k| msg.contains(k));
+        if !already_covered {
+            errors.push(ValidationError::new(
+                "budget.toml",
+                format!("schema error: {msg}"),
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        toml::from_str(content)
+            .map_err(|e| vec![ValidationError::new("budget.toml", format!("{e}"))])
+    } else {
+        Err(errors)
+    }
+}
+
+/// Levenshtein edit distance between two strings.
+#[allow(clippy::needless_range_loop)]
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let n = a.len();
+    let m = b.len();
+    let mut dp = vec![vec![0usize; m + 1]; n + 1];
+    for i in 0..=n {
+        dp[i][0] = i;
+    }
+    for j in 0..=m {
+        dp[0][j] = j;
+    }
+    for i in 1..=n {
+        for j in 1..=m {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[n][m]
+}
+
+/// Return the closest `option` to `candidate` when the edit distance is small
+/// enough to be a plausible typo, else `None`.
+fn closest_match(candidate: &str, options: &[&str]) -> Option<String> {
+    let threshold = if candidate.chars().count() <= 4 { 1 } else { 2 };
+    let mut best: Option<(usize, String)> = None;
+    for opt in options {
+        let d = edit_distance(candidate, opt);
+        match best {
+            Some((bd, _)) if d >= bd => {}
+            _ => best = Some((d, (*opt).to_string())),
+        }
+    }
+    match best {
+        Some((d, s)) if d > 0 && d <= threshold && d < candidate.chars().count() => Some(s),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    fn avail() -> Vec<String> {
+        vec![
+            "do_expensive_work".to_string(),
+            "extend_instance_ttl".to_string(),
+            "require_auth_only".to_string(),
+        ]
+    }
+
+    #[test]
+    fn valid_config_passes() {
+        let toml = r#"
+tolerance = 0.1
+
+[margin]
+cpu_margin = 1.1
+memory_margin = 1.1
+read_margin = 1.1
+write_margin = 1.1
+
+[functions.do_expensive_work]
+cpu_limit = 5_000_000
+"#;
+        assert!(
+            validate_budget_toml(toml, &avail()).is_ok(),
+            "expected Ok for a valid config"
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_key_gets_suggestion() {
+        let errs = validate_budget_toml("tolernce = 0.1\n", &avail()).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            errs[0].message.contains("unknown top-level key `tolernce`"),
+            "got: {}",
+            errs[0].message
+        );
+        assert!(
+            errs[0].message.contains("did you mean `tolerance`?"),
+            "got: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn foreign_section_accepted() {
+        // `[lints]` is a foreign section for soroban-cost-linter; it must not be
+        // flagged as an unknown key, so a shared budget.toml stays valid.
+        let toml = "[lints]\ncomplexity = \"warn\"\n";
+        assert!(
+            validate_budget_toml(toml, &avail()).is_ok(),
+            "foreign sections must be silently accepted"
+        );
+    }
+
+    #[test]
+    fn typo_without_close_match_is_accepted() {
+        // A key that is not close to any known key is treated as a foreign
+        // section and accepted, not rejected.
+        assert!(validate_budget_toml("zzzz = 1\n", &avail()).is_ok());
+    }
+
+    #[test]
+    fn configured_function_not_in_workspace_is_reported() {
+        let toml = "[functions.do_expensive_wrk]\ncpu_limit = 5_000_000\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("`do_expensive_wrk`")
+                && e.message.contains("does not exist in the workspace")
+                && e.message.contains("did you mean `do_expensive_work`?")),
+            "errors: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn missing_function_lists_available() {
+        let toml = "[functions.nonexistent]\ncpu_limit = 1\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        let msg = &errs[0].message;
+        assert!(msg.contains("nonexistent"));
+        assert!(msg.contains("do_expensive_work"));
+        assert!(msg.contains("extend_instance_ttl"));
+        assert!(msg.contains("require_auth_only"));
+    }
+
+    #[test]
+    fn nested_typo_in_function_reports_schema_error() {
+        // `cpu_lmit` is a misspelling of `cpu_limit`; FunctionConfig denies
+        // unknown fields, so this surfaces as a schema error naming the field.
+        let toml = "[functions.do_expensive_work]\ncpu_lmit = 5_000_000\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("cpu_lmit")),
+            "errors: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn type_error_names_field_and_expected_type() {
+        let toml = "[functions.do_expensive_work]\ncpu_limit = \"high\"\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        assert!(
+            errs.iter().any(
+                |e| e.message.contains("cpu_limit") && e.message.to_lowercase().contains("u64")
+            ),
+            "errors: {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn all_problems_reported_together() {
+        let toml = "tolernce = 0.1\n\n[functions.nonexistent]\ncpu_limit = 1\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        assert!(
+            errs.len() >= 2,
+            "expected at least two errors (unknown key + missing function), got {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn empty_available_functions_skips_function_check() {
+        // When nothing was built, we must not flag configured functions as
+        // missing (that would be a false positive).
+        let toml = "[functions.do_expensive_work]\ncpu_limit = 1\n";
+        assert!(
+            validate_budget_toml(toml, &[]).is_ok(),
+            "function check must be skipped when no functions are available"
+        );
+    }
+
+    #[test]
+    fn closest_match_threshold() {
+        assert_eq!(closest_match("network", &["source", "tolerance"]), None);
+        assert_eq!(
+            closest_match("tolernce", &["tolerance"]),
+            Some("tolerance".to_string())
+        );
+        assert_eq!(
+            closest_match("cpu_lmit", &["cpu_limit"]),
+            Some("cpu_limit".to_string())
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stellar_xdr::curr::{ExtensionPoint, LedgerFootprint, VecM};
-    use stellar_xdr::curr::{Limits, SorobanTransactionData, WriteXdr};
+    use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
+    use stellar_xdr::{Limits, SorobanTransactionData, WriteXdr};
 
     const FIXTURE_INSTRUCTIONS: u32 = 1_000_000;
     const FIXTURE_READ_BYTES: u32 = 2_048;
@@ -197,14 +523,14 @@ mod tests {
 
     fn make_fixture_tx_data() -> SorobanTransactionData {
         SorobanTransactionData {
-            ext: ExtensionPoint::V0,
-            resources: stellar_xdr::curr::SorobanResources {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
                 footprint: LedgerFootprint {
                     read_only: VecM::default(),
                     read_write: VecM::default(),
                 },
                 instructions: FIXTURE_INSTRUCTIONS,
-                read_bytes: FIXTURE_READ_BYTES,
+                disk_read_bytes: FIXTURE_READ_BYTES,
                 write_bytes: FIXTURE_WRITE_BYTES,
             },
             resource_fee: 0,

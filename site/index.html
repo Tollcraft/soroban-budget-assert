@@ -194,7 +194,7 @@
 <span class="token-macro">#[budget_cpu_lt(950000)]</span> <span class="token-comment">// Fails test if CPU instruction budget exceeds limit</span>
 <span class="token-keyword">fn</span> <span class="token-function">test_cpu_budget</span>() {
     <span class="token-keyword">let</span> env = Env::default();
-    <span class="token-keyword">let</span> wasm = std::fs::read(<span class="token-string">"../target/wasm32-unknown-unknown/release/my_contract.wasm"</span>)
+    <span class="token-keyword">let</span> wasm = std::fs::read(<span class="token-string">"../target/wasm32v1-none/release/my_contract.wasm"</span>)
         .expect(<span class="token-string">"build the WASM first"</span>);
     <span class="token-keyword">let</span> contract_id = env.register_contract_wasm(<span class="token-keyword">None</span>, wasm.as_slice());
     <span class="token-keyword">let</span> client = MyContractClient::new(&env, &contract_id);

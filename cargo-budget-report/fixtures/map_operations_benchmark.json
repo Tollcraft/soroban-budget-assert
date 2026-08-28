@@ -1,0 +1,57 @@
+{
+  "operation_type": "Map operations",
+  "fixture": {
+    "contract": "host-function-contract",
+    "registration": "register_contract_wasm",
+    "note": "Each map_* function builds a size-entry Map<u32,u32> via map_insert (the insert fixture), then performs the named operation over the same size keys. Per-op marginal cost = (map_<op>(size) - map_insert(size)) / size."
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.91.0",
+  "network": {
+    "method": "simulateTransaction",
+    "network": "Soroban testnet"
+  },
+  "operations": {
+    "insert": {
+      "function": "map_insert",
+      "notes": "size inserts into a fresh map",
+      "sizes": {
+        "100":  { "local_cpu": 755807,   "network_cpu": 846437,   "delta_percent": -10.7 },
+        "500":  { "local_cpu": 3285855,  "network_cpu": 3452056,  "delta_percent": -4.8 },
+        "1000": { "local_cpu": 8475569,  "network_cpu": 8839998,  "delta_percent": -4.1 }
+      }
+    },
+    "get": {
+      "function": "map_get",
+      "notes": "build size-entry map, then size get calls; per-get subtracts map_insert(size)",
+      "sizes": {
+        "100":  { "local_cpu": 1104263, "network_cpu": 1190352, "delta_percent": -7.2, "local_per_op": 3485, "network_per_op": 3439 },
+        "500":  { "local_cpu": 5031111, "network_cpu": 5248256, "delta_percent": -4.1, "local_per_op": 3491, "network_per_op": 3592 },
+        "1000": { "local_cpu": 11971325, "network_cpu": 12439038, "delta_percent": -3.8, "local_per_op": 3496, "network_per_op": 3599 }
+      }
+    },
+    "remove": {
+      "function": "map_remove",
+      "notes": "build size-entry map, then size remove calls; per-remove subtracts map_insert(size)",
+      "sizes": {
+        "100":  { "local_cpu": 1297233, "network_cpu": 1387737, "delta_percent": -6.5, "local_per_op": 5414, "network_per_op": 5413 },
+        "500":  { "local_cpu": 6894789, "network_cpu": 7187147, "delta_percent": -4.1, "local_per_op": 7218, "network_per_op": 7470 },
+        "1000": { "local_cpu": 17948187, "network_cpu": 18655121, "delta_percent": -3.8, "local_per_op": 9473, "network_per_op": 9815 }
+      }
+    },
+    "iterate": {
+      "function": "map_iterate",
+      "notes": "build size-entry map, then iterate all size entries; per-iterate subtracts map_insert(size)",
+      "sizes": {
+        "100":  { "local_cpu": 1117331, "network_cpu": 1204544, "delta_percent": -7.2, "local_per_op": 3615, "network_per_op": 3581 },
+        "500":  { "local_cpu": 5078579, "network_cpu": 5298791, "delta_percent": -4.2, "local_per_op": 3585, "network_per_op": 3694 },
+        "1000": { "local_cpu": 12057293, "network_cpu": 12529614, "delta_percent": -3.8, "local_per_op": 3582, "network_per_op": 3690 }
+      }
+    }
+  },
+  "capture": {
+    "local_command": "cargo test -p host-function-contract --test measure_map_gap -- --nocapture",
+    "network_command": "simulateTransaction against Soroban testnet; see MEASUREMENTS.md #Map operations",
+    "recorded_at": "2026-08-27"
+  }
+}

@@ -1,17 +1,31 @@
 {
   "operation_type": "TTL extension",
-  "fixture": {
-    "contract": "amm-pool-contract",
-    "function": "extend_instance_ttl",
-    "arguments": {
-      "threshold": 100,
-      "extend_to": 10000
+  "fixtures": [
+    {
+      "contract": "amm-pool-contract",
+      "function": "extend_instance_ttl",
+      "storage_type": "instance",
+      "arguments": {
+        "threshold": 100,
+        "extend_to_values": [1000, 10000, 50000]
+      },
+      "registration": "register_contract_wasm",
+      "notes": "Contract is initialized before the TTL extension call so instance storage entries exist."
     },
-    "registration": "register_contract_wasm",
-    "notes": "Contract is initialized before the TTL extension call so instance storage entries exist. The threshold and extend_to values match test_budget_extend_ttl_isolated."
-  },
+    {
+      "contract": "amm-pool-contract",
+      "function": "extend_persistent_ttl",
+      "storage_type": "persistent",
+      "arguments": {
+        "threshold": 100,
+        "extend_to_values": [1000, 10000, 50000]
+      },
+      "registration": "register_contract_wasm",
+      "notes": "Writes a dummy persistent key, then extends its TTL. Slightly more expensive than instance due to the storage write."
+    }
+  ],
   "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
-  "toolchain": "rustc 1.85.0",
+  "toolchain": "rustc 1.91.0",
   "network": {
     "method": "simulateTransaction",
     "network": "Soroban testnet"
@@ -22,12 +36,68 @@
       "network_figure": null,
       "delta": null,
       "delta_percent": null,
-      "note": "Run cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture to collect local_estimate. Run cargo run --bin cargo-budget-report -- --network testnet to collect network_figure."
+      "note": "Run cargo build --target wasm32v1-none --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture to collect local_estimate. Run cargo run --bin cargo-budget-report -- --network testnet to collect network_figure."
+    "instance_ttl": {
+      "extend_to_1000": {
+        "local_cpu": 444536,
+        "local_mem": 1339397,
+        "network_cpu": null,
+        "network_mem": null,
+        "delta_cpu": null,
+        "delta_mem": null
+      },
+      "extend_to_10000": {
+        "local_cpu": 444536,
+        "local_mem": 1339397,
+        "network_cpu": null,
+        "network_mem": null,
+        "delta_cpu": null,
+        "delta_mem": null
+      },
+      "extend_to_50000": {
+        "local_cpu": 444536,
+        "local_mem": 1339397,
+        "network_cpu": null,
+        "network_mem": null,
+        "delta_cpu": null,
+        "delta_mem": null
+      }
+    },
+    "persistent_ttl": {
+      "extend_to_1000": {
+        "local_cpu": 458090,
+        "local_mem": 1345373,
+        "network_cpu": null,
+        "network_mem": null,
+        "delta_cpu": null,
+        "delta_mem": null
+      },
+      "extend_to_10000": {
+        "local_cpu": 458090,
+        "local_mem": 1345373,
+        "network_cpu": null,
+        "network_mem": null,
+        "delta_cpu": null,
+        "delta_mem": null
+      },
+      "extend_to_50000": {
+        "local_cpu": 458090,
+        "local_mem": 1345373,
+        "network_cpu": null,
+        "network_mem": null,
+        "delta_cpu": null,
+        "delta_mem": null
+      }
     }
   },
+  "conclusions": {
+    "cost_is_constant_with_extend_to": true,
+    "instance_vs_persistent_cpu_delta_percent": 3.0,
+    "instance_vs_persistent_mem_delta_percent": 0.4
+  },
   "capture": {
-    "local_command": "cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture",
+    "local_command": "cargo build --target wasm32v1-none --release -p amm-pool-contract && cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture",
     "network_command": "cargo run --bin cargo-budget-report -- --fixture cargo-budget-report/fixtures/ttl_extension_benchmark.json",
-    "recorded_at": null
+    "recorded_at": "2026-08-26T00:00:00Z"
   }
 }

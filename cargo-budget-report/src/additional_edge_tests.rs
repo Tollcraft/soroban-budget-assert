@@ -1,6 +1,6 @@
 //! Unit tests targeting additional off-by-one and zero-length edge cases.
 //!
-//! Complements `module_8` by exercising boundary conditions in functions that
+//! Complements `edge_case_tests` by exercising boundary conditions in functions that
 //! were not yet covered there. Focuses on:
 //! - Off-by-one errors in `evaluate_check` at type-cast boundaries
 //! - Zero-length and exactly-one-length inputs across all helpers
@@ -51,6 +51,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: Some(1_000),
             write_limit: Some(500),
+            tolerance: None,
         };
         // "Bytes" (exact match, no prefix) does not match any known metric.
         assert_eq!(limit_for_metric(&config, "Bytes"), None);
@@ -70,6 +71,7 @@ mod off_by_one_and_zero_length_tests {
             cpu_limit: Some(5_000_000),
             read_limit: None,
             write_limit: None,
+            tolerance: None,
         };
         assert_eq!(limit_for_metric(&config, "CPU Instructions\n"), None);
     }
@@ -341,7 +343,13 @@ cpu_limit = 5000000
         std::fs::write(tmp.path(), content).unwrap();
         let config = load_budget_toml(tmp.path()).expect("should parse args correctly");
         let func = config.functions.get("do_work").unwrap();
-        assert_eq!(func.args, vec!["--n", "10000", "--flag"]);
+        assert_eq!(
+            func.args,
+            ["--n", "10000", "--flag"]
+                .into_iter()
+                .map(|s| crate::arg_spec::ArgSpec::Raw(s.to_string()))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(func.cpu_limit, Some(5_000_000));
         assert!(func.read_limit.is_none());
         assert!(func.write_limit.is_none());

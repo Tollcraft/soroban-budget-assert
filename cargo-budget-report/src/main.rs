@@ -1,10 +1,18 @@
-use crate::cli::{BudgetReportArgs, CargoCli};
+use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
-use crate::module_10::{Error, Result, SimulationFailure, SimulationOutcome};
+use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
 use anyhow::Context;
+mod arg_spec;
 mod cli;
 mod compare;
-use cargo_metadata::MetadataCommand;
+mod fixture;
+mod html_output;
+mod json_output;
+mod live;
+mod record;
+mod replay;
+mod transport;
+use cargo_metadata::{CrateType, MetadataCommand};
 use clap::Parser;
 use compare::{
     build_baseline, check_against_baseline, max_allowed as max_allowed_metric, parse_tolerance,
@@ -13,17 +21,21 @@ use compare::{
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Write;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
-use stellar_xdr::curr::{Limits, ReadXdr, SorobanTransactionData};
+use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
+use tabled::settings::object::Rows;
+use tabled::settings::Color as TabledColor;
+use tabled::settings::Modify;
 use tabled::{Table, Tabled};
 use wasmparser::Parser as WasmParser;
 
 mod derive;
-mod module_10;
+mod error;
+mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
 /// when friendbot funding is suspected to have failed transiently
@@ -35,12 +47,18 @@ const MAX_DEPLOY_ATTEMPTS: u32 = 4;
 /// subsequent attempt (2 s → 4 s → 8 s).
 const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 
+/// WASM target used for every contract build and measurement.
+///
+/// Keep this aligned with `rust-toolchain.toml` so a clean checkout has the
+/// target required by the report CLI without installing an additional target.
+const WASM_TARGET: &str = "wasm32v1-none";
+
 /// `[retry]` section of `budget.toml`.
 ///
 /// Both fields are optional; missing values fall back to the built-in
 /// defaults (`MAX_DEPLOY_ATTEMPTS` / `INITIAL_RETRY_DELAY_SECS`).
 #[derive(serde::Deserialize, Default, Debug, Clone, Copy)]
-struct RetryToml {
+pub(crate) struct RetryToml {
     #[serde(default)]
     max_attempts: Option<u32>,
     #[serde(default)]
@@ -53,7 +71,7 @@ struct RetryToml {
 /// from this struct: `initial_backoff * (2^(max_attempts - 1) - 1)`.
 /// With the defaults (4 attempts, 2 s initial) that is 2 + 4 + 8 = 14 s.
 #[derive(Debug, Clone, Copy)]
-struct RetryConfig {
+pub(crate) struct RetryConfig {
     /// Total attempts including the first. A value of 1 disables retry.
     max_attempts: u32,
     initial_backoff: Duration,
@@ -77,7 +95,7 @@ impl RetryConfig {
 
 /// Resolves the effective retry policy: CLI flags win over the
 /// `budget.toml` `[retry]` section, which wins over the defaults.
-fn resolve_retry_config(
+pub(crate) fn resolve_retry_config(
     cli_max_attempts: Option<u32>,
     cli_backoff_secs: Option<u64>,
     toml_retry: Option<RetryToml>,
@@ -241,7 +259,7 @@ write_limit = 1000
 /// Contains optional network and source-account overrides, plus a map of
 /// per-function budget configurations keyed by exported function name.
 #[derive(serde::Deserialize, Default, Debug)]
-struct BudgetToml {
+pub(crate) struct BudgetToml {
     network: Option<String>,
     source: Option<String>,
     /// Global default tolerance, used unless overridden per function or by `--tolerance`.
@@ -270,7 +288,7 @@ struct BudgetToml {
 /// `cargo budget-report --derive-limits` flow propagates that error so
 /// a half-set `[margin]` block cannot silently degrade to no margin.
 #[derive(serde::Deserialize, Default, Debug, Clone, Copy)]
-struct MarginToml {
+pub(crate) struct MarginToml {
     #[serde(default)]
     cpu_margin: Option<f64>,
     #[serde(default)]
@@ -313,7 +331,7 @@ impl MarginToml {
 
 /// One scenario declaration in the `[[scenarios]]` table.
 #[derive(serde::Deserialize, Default, Debug, Clone)]
-struct ScenarioToml {
+pub(crate) struct ScenarioToml {
     /// (package, scenario_name) namespace prefix used to scope this
     /// scenario. Without a package, the scenario is treated as package
     /// `""`, which is rarely what callers want — the error path
@@ -332,7 +350,7 @@ struct ScenarioToml {
 /// object decoded from the RPC response.
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug)]
-struct Resources {
+pub(crate) struct Resources {
     instructions: u64,
     disk_read_bytes: u64,
     write_bytes: u64,
@@ -345,7 +363,7 @@ struct Resources {
 /// changing the extraction call-site.
 #[allow(dead_code)]
 #[derive(serde::Deserialize, Debug)]
-struct TransactionData {
+pub(crate) struct TransactionData {
     #[serde(alias = "resources")]
     resources: Resources,
 }
@@ -366,9 +384,9 @@ impl TransactionData {
 /// and which resource limits are enforced in `--check` mode.
 #[derive(serde::Deserialize, Default, Debug)]
 #[serde(deny_unknown_fields)]
-struct FunctionConfig {
+pub(crate) struct FunctionConfig {
     #[serde(default)]
-    args: Vec<String>,
+    args: Vec<arg_spec::ArgSpec>,
     /// Inclusive upper bound on the measured CPU `Instructions` metric. `None`
     /// means this metric is reported but not enforced by `--check`.
     #[serde(default)]
@@ -383,7 +401,7 @@ struct FunctionConfig {
 }
 
 #[derive(Clone, Copy)]
-struct MeasuredResources {
+pub(crate) struct MeasuredResources {
     instructions: u64,
     read_bytes: u64,
     write_bytes: u64,
@@ -405,7 +423,7 @@ impl MeasuredResources {
 /// In `--check` mode the `limit` and `pass` fields are populated so that
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
 #[derive(Serialize)]
-struct CostReport {
+pub(crate) struct CostReport {
     package: String,
     function: String,
     metric: &'static str,
@@ -438,8 +456,138 @@ struct TableCostReport {
     value: String,
 }
 
+/// A `CostReport` row for the plain-text table in `--check` mode.
+///
+/// Extends the default table with the configured limit and a textual
+/// pass/fail marker, so a breaching row stays identifiable without any
+/// colour at all (log files, colour-blind readers, terminals without
+/// ANSI support). Colour, when enabled, is applied on top of these text
+/// markers and never replaces them.
+#[derive(Tabled)]
+struct CheckTableCostReport {
+    package: String,
+    function: String,
+    metric: &'static str,
+    value: String,
+    limit: String,
+    check: &'static str,
+}
+
+/// True when the no-color.org convention applies: `NO_COLOR` is present
+/// with a non-empty value. Any other value (unset, empty) means colour
+/// is permitted.
+fn no_color_requested_from(no_color_env: Option<&std::ffi::OsStr>) -> bool {
+    match no_color_env {
+        Some(value) => !value.is_empty(),
+        None => false,
+    }
+}
+
+fn no_color_requested() -> bool {
+    no_color_requested_from(std::env::var_os("NO_COLOR").as_deref())
+}
+
+/// Pure decision core for [`color_enabled`], kept free of environment
+/// and terminal access so it can be unit-tested exhaustively.
+fn color_enabled_with(
+    choice: ColorChoice,
+    no_color_env_set: bool,
+    stdout_is_terminal: bool,
+) -> bool {
+    if no_color_env_set || !stdout_is_terminal {
+        return false;
+    }
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => true,
+    }
+}
+
+/// Whether the plain-text report should be colourised for this run.
+///
+/// Only meaningful in `--check` mode; callers gate on `args.check`
+/// before consulting this.
+fn color_enabled(choice: ColorChoice) -> bool {
+    color_enabled_with(
+        choice,
+        no_color_requested(),
+        std::io::stdout().is_terminal(),
+    )
+}
+
+/// ANSI reset / foreground codes for standalone summary lines.
+///
+/// These are deliberately *not* inserted into [`Table`] cells — the
+/// table uses tabled's own styling (`Modify` + `Color`) so its column
+/// width calculation accounts for the escapes. The summary lines below
+/// the table have no width calculation, so plain constants suffice.
+const ANSI_RESET: &str = "\u{1b}[0m";
+const ANSI_FG_RED: &str = "\u{1b}[31m";
+
+/// Wraps `text` in the given ANSI colour code when `colour` is set;
+/// returns `text` unchanged otherwise.
+fn paint(colour: bool, code: &str, text: &str) -> String {
+    if colour {
+        format!("{code}{text}{ANSI_RESET}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Formats a configured limit for display in the tables. Limits wider
+/// than u32::MAX are clamped for display; anything near the practical
+/// ceiling formats fine.
+fn format_limit_display(limit_val: u64, metric: &str) -> String {
+    let display_value = u32::try_from(limit_val).unwrap_or(u32::MAX);
+    format_with_commas_and_units(u64::from(display_value), metric)
+}
+
+/// Renders the plain-text workspace table for `--check` mode.
+///
+/// Rows carrying a measured value get the extra `limit` and `check`
+/// columns (`PASS`/`FAIL`). When `colour` is set, breaching rows are
+/// additionally rendered in red through tabled's styling so the escapes
+/// never disturb the column-width calculation. Passing rows keep the
+/// default style — the distinction comes from colour *and* the text
+/// marker, never from colour alone.
+fn render_check_table(reports: &[CostReport], colour: bool) -> String {
+    let valued: Vec<&CostReport> = reports.iter().filter(|r| r.value.is_some()).collect();
+    let rows: Vec<CheckTableCostReport> = valued
+        .iter()
+        .map(|report| CheckTableCostReport {
+            package: report.package.clone(),
+            function: report.function.clone(),
+            metric: report.metric,
+            value: format_with_commas_and_units(
+                u64::from(report.value.unwrap_or(0)),
+                report.metric,
+            ),
+            limit: report
+                .limit
+                .map(|l| format_limit_display(l, report.metric))
+                .unwrap_or_else(|| "-".to_string()),
+            check: if report.pass == Some(false) {
+                "FAIL"
+            } else {
+                "PASS"
+            },
+        })
+        .collect();
+    let mut table = Table::new(rows);
+    if colour {
+        // Data rows start at table index 1; index 0 is the header row.
+        for (idx, report) in valued.iter().enumerate() {
+            if report.pass == Some(false) {
+                table.with(Modify::new(Rows::new((idx + 1)..(idx + 2))).with(TabledColor::FG_RED));
+            }
+        }
+    }
+    table.to_string()
+}
+
 /// Returns the configured limit (if any) for the given metric name.
-fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
+pub(crate) fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
     match metric {
         "CPU Instructions" => func_config.cpu_limit,
         "Read Bytes" => func_config.read_limit,
@@ -456,7 +604,7 @@ fn limit_for_metric(func_config: &FunctionConfig, metric: &str) -> Option<u64> {
 /// * Limit configured and value is within it → `(Some(limit), Some(true))`.
 /// * Limit configured and value exceeds it → `(Some(limit), Some(false))`;
 ///   the caller should mark the check as failed.
-fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
+pub(crate) fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>) {
     match limit {
         Some(limit_value) => (Some(limit_value), Some(u64::from(value) <= limit_value)),
         None => (None, None),
@@ -477,7 +625,7 @@ fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Option<bool>)
 /// The caller has already set the `checks_failed` flag for the function as a
 /// whole, so emitting one entry per metric — even metrics without a limit —
 /// does not change the exit-code semantics.
-fn emit_check_failure_entries(
+pub(crate) fn emit_check_failure_entries(
     reports: &mut Vec<CostReport>,
     package_name: &str,
     function: &str,
@@ -504,7 +652,7 @@ fn emit_check_failure_entries(
 /// * `value` - The raw numeric value to format.
 /// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
 ///   `B`, otherwise `inst.`.
-fn format_with_commas_and_units(value: u64, metric: &str) -> String {
+pub(crate) fn format_with_commas_and_units(value: u64, metric: &str) -> String {
     let value_str = value.to_string();
     let mut result = String::new();
     let mut digit_count = 0;
@@ -561,7 +709,10 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
 
     Ok((
         tx_data.resources.instructions,
-        tx_data.resources.read_bytes,
+        // Renamed in Protocol 23 XDR: footprint reads that hit disk-backed
+        // ledger entries. In-memory reads of live state are no longer metered
+        // as read bytes. This is the field the report's "Read Bytes" now tracks.
+        tx_data.resources.disk_read_bytes,
         tx_data.resources.write_bytes,
     ))
 }
@@ -623,150 +774,15 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
     })
 }
 
-/// POSTs a `simulateTransaction` JSON-RPC request for `b64_xdr` and returns
-/// the parsed response body, classified as [`RetryFailure`] so the retry
-/// wrapper can decide whether to attempt again.
+/// Simulates one exported function end-to-end through a
+/// [`transport::Transport`]: builds the invocation transaction, POSTs it to
+/// `simulateTransaction` and decodes the reported resource usage.
 ///
-/// Uses `curl` to send the request to the Soroban RPC endpoint. The
-/// request body is piped via stdin to avoid shell-quoting issues.
-///
-/// # Errors
-///
-/// Returns a *permanent* [`RetryFailure`] if `curl` cannot be spawned or
-/// its stdio cannot be wired up (environment problems retrying cannot
-/// fix), and a *transient* one for connection-level failures (non-zero
-/// curl exit) or an unparseable response body.
-fn simulate_transaction_rpc(b64_xdr: &str) -> std::result::Result<serde_json::Value, RetryFailure> {
-    let rpc_payload = build_rpc_payload(b64_xdr);
-
-    let mut curl = Command::new("curl")
-        .args([
-            "-s",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            "@-",
-            "https://soroban-testnet.stellar.org:443",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            // A missing/unspawnable `curl` is an environment problem,
-            // not something a retry can fix.
-            RetryFailure::Permanent(format!("failed to execute curl: {}", e))
-        })?;
-
-    {
-        let stdin = curl
-            .stdin
-            .as_mut()
-            .ok_or_else(|| RetryFailure::Permanent("Failed to open stdin".to_string()))?;
-        stdin
-            .write_all(rpc_payload.to_string().as_bytes())
-            .map_err(|e| RetryFailure::Permanent(format!("failed to write to stdin: {}", e)))?;
-    }
-
-    let curl_output = curl
-        .wait_with_output()
-        .map_err(|e| RetryFailure::Permanent(format!("failed to read curl output: {}", e)))?;
-
-    if !curl_output.status.success() {
-        // Connection refused, DNS failure, TLS errors, HTTP-level
-        // failures surfaced by `curl -s`: all plausibly transient.
-        return Err(RetryFailure::Transient(format!(
-            "curl exited with status {}: {}",
-            curl_output.status,
-            String::from_utf8_lossy(&curl_output.stderr).trim()
-        )));
-    }
-
-    serde_json::from_slice(&curl_output.stdout).map_err(|e| {
-        // An empty or truncated body almost always means the
-        // connection dropped mid-response; treat it as transient.
-        RetryFailure::Transient(format!("Failed to parse RPC response: {}", e))
-    })
-}
-
-/// POSTs the `simulateTransaction` request with retry on plausibly
-/// transient failures (connection errors, rate limits). Deterministic
-/// failures such as an unspawnable `curl` are not retried.
-///
-/// Exhausting every attempt remains fatal (the run aborts), matching the
-/// pre-retry behavior where an RPC transport failure failed the whole run.
-fn simulate_transaction_rpc_with_retry(
-    b64_xdr: &str,
-    retry_config: &RetryConfig,
-    quiet: bool,
-) -> Result<serde_json::Value> {
-    run_with_retry(
-        retry_config,
-        quiet,
-        "Simulate RPC request",
-        || simulate_transaction_rpc(b64_xdr),
-        |last_error| {
-            Error::Message(format!(
-                "Simulate RPC request failed after {} attempts.\nLast error: {}",
-                retry_config.max_attempts, last_error
-            ))
-        },
-    )
-}
-
-/// Builds the unsigned transaction XDR for one function via
-/// `stellar contract invoke --build-only`, retrying on plausibly
-/// transient failures.
-///
-/// Non-zero exits whose stderr looks transient (rate limits, connection
-/// errors) are retried; deterministic failures — a missing contract ID,
-/// a rejected argument, a spawn failure of the `stellar` binary — are
-/// not, because repeating them cannot change the outcome. Exhaustion is
-/// reported as an error carrying the final stderr so callers can keep
-/// their existing recoverable-failure handling.
-fn build_invoke_xdr_with_retry(
-    invoke_args: &[String],
-    retry_config: &RetryConfig,
-    quiet: bool,
-) -> Result<String> {
-    run_with_retry(
-        retry_config,
-        quiet,
-        "Invoke build",
-        || {
-            let invoke_output =
-                Command::new("stellar")
-                    .args(invoke_args)
-                    .output()
-                    .map_err(|e| {
-                        RetryFailure::Permanent(format!(
-                            "failed to execute stellar-cli invoke: {}",
-                            e
-                        ))
-                    })?;
-
-            if !invoke_output.status.success() {
-                let stderr = String::from_utf8_lossy(&invoke_output.stderr).to_string();
-                return if is_transient_error(&stderr) {
-                    Err(RetryFailure::Transient(stderr))
-                } else {
-                    Err(RetryFailure::Permanent(stderr))
-                };
-            }
-
-            Ok(String::from_utf8_lossy(&invoke_output.stdout)
-                .trim()
-                .to_string())
-        },
-        |last_error| Error::Message(last_error.to_string()),
-    )
-}
-
-/// Simulates one exported function end-to-end: runs
-/// `stellar contract invoke --build-only` to build the transaction (with
-/// retry), then POSTs it to `simulateTransaction` (with retry) and decodes
-/// the reported resource usage.
+/// `LiveTransport` shells out to `stellar contract invoke --build-only` and
+/// `curl`, retrying plausibly transient failures (rate limits, connection
+/// errors) with the crate-wide retry configuration; `ReplayTransport`
+/// serves the same calls from a recorded fixture, which is how the rest of
+/// the crate can be tested without a network.
 ///
 /// Returns `Err` only for a persistent RPC transport failure after every
 /// retry attempt is exhausted, or for an unrecoverable environment
@@ -775,18 +791,28 @@ fn build_invoke_xdr_with_retry(
 /// field, or an undecodable response) is reported as
 /// `Ok(SimulationOutcome::Failed(..))` so the caller can move on to the next
 /// function instead of aborting the whole report.
-#[allow(clippy::too_many_arguments)]
-fn simulate_function(
+pub(crate) fn simulate_function(
+    transport: &mut impl transport::Transport,
     contract_id: &str,
     source: &str,
     network: &str,
     function: &str,
     func_args: &[String],
-    retry_config: &RetryConfig,
-    quiet: bool,
+    package: &str,
 ) -> Result<SimulationOutcome> {
-    let invoke_args = build_invoke_args(contract_id, source, network, function, func_args);
-    let b64_xdr = match build_invoke_xdr_with_retry(&invoke_args, retry_config, quiet) {
+    // Build the invocation XDR through the transport. The live transport
+    // reports a failed `stellar contract invoke` as an error (after any
+    // transient retries); that is a recoverable per-function failure (the
+    // CLI ran, the invocation failed), so it is recorded as
+    // `Failed(Invoke(..))` rather than aborting the whole report.
+    let b64_xdr = match transport.build_invoke_xdr(
+        contract_id,
+        source,
+        network,
+        function,
+        func_args,
+        package,
+    ) {
         Ok(xdr) => xdr,
         Err(err) => {
             return Ok(SimulationOutcome::Failed(SimulationFailure::Invoke(
@@ -794,7 +820,10 @@ fn simulate_function(
             )));
         }
     };
-    let rpc_resp = simulate_transaction_rpc_with_retry(&b64_xdr, retry_config, quiet)?;
+
+    let rpc_resp = transport
+        .simulate_transaction(&b64_xdr, package, function)
+        .map_err(|e| Error::CommandFailed(format!("{:#}", e)))?;
 
     if let Some(error) = rpc_resp.get("error") {
         return Ok(SimulationOutcome::Failed(SimulationFailure::Rpc(
@@ -829,7 +858,7 @@ fn simulate_function(
 /// # Errors
 ///
 /// Returns an error if the file exists but cannot be read or parsed.
-fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
+pub(crate) fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
             let trimmed = contents.trim();
@@ -848,7 +877,10 @@ fn load_budget_toml<P: AsRef<Path>>(path: P) -> Result<BudgetToml> {
     }
 }
 
-fn resolve_tolerance(cli_override: Option<&str>, config: &BudgetToml) -> Result<Tolerance> {
+pub(crate) fn resolve_tolerance(
+    cli_override: Option<&str>,
+    config: &BudgetToml,
+) -> Result<Tolerance> {
     if let Some(raw) = cli_override {
         return parse_tolerance(raw).map_err(|e| Error::Message(e.to_string()));
     }
@@ -1021,7 +1053,7 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
     }
     // ── wasm32 target ───────────────────────────────────────────────────
     if !quiet {
-        eprint!("Checking wasm32-unknown-unknown target... ");
+        eprint!("Checking {} target... ", WASM_TARGET);
     }
     let rustup_check = Command::new("rustup")
         .args(["target", "list", "--installed"])
@@ -1041,19 +1073,16 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
         }
         Ok(output) => {
             let installed = String::from_utf8_lossy(&output.stdout);
-            if installed
-                .lines()
-                .any(|line| line.trim() == "wasm32-unknown-unknown")
-            {
+            if installed.lines().any(|line| line.trim() == WASM_TARGET) {
                 if !quiet {
                     eprintln!("found");
                 }
             } else {
-                return Err(Error::Message(
-                    "wasm32-unknown-unknown target is not installed.\n\
-                     Install it with:  rustup target add wasm32-unknown-unknown"
-                        .to_string(),
-                ));
+                return Err(Error::Message(format!(
+                    "{} target is not installed.\n\
+                     Install it with:  rustup target add {}",
+                    WASM_TARGET, WASM_TARGET
+                )));
             }
         }
     }
@@ -1061,73 +1090,31 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
     Ok(())
 }
 
-/// Deploys a contract WASM to the network with automatic retry on
-/// friendbot-related transient failures.
+/// Deploys a contract WASM to the network through a [`transport::Transport`]
+/// and turns a failed deploy into the canonical user-facing error.
 ///
-/// The `stellar contract deploy` command implicitly triggers friendbot
-/// funding for the source account on testnet. Friendbot may return 429
-/// (rate-limited) or the account may not be confirmed on-ledger yet.
-/// This function makes up to `retry_config.max_attempts` total attempts
-/// with exponential backoff before giving up — but only when the deploy
-/// stderr looks plausibly transient (rate limits, connection errors).
-/// Deterministic failures are not retried.
-fn deploy_contract_with_retry(
+/// Retrying is the live transport's job: [`live::LiveTransport`] wraps the
+/// `stellar contract deploy` call in the crate-wide retry machinery, which
+/// retries friendbot rate limits and other plausibly transient stderr (429,
+/// connection errors) up to `retry_config.max_attempts` times with
+/// exponential backoff and skips retrying deterministic failures. All this
+/// function does is report the outcome with the familiar "source account is
+/// funded" hint.
+pub(crate) fn deploy_contract_with_retry(
+    transport: &mut impl transport::Transport,
     wasm_path: &Path,
     source: &str,
     network: &str,
     package_name: &str,
     retry_config: &RetryConfig,
-    quiet: bool,
 ) -> Result<String> {
-    let wasm_path_str = wasm_path
-        .to_str()
-        .ok_or_else(|| Error::Message("wasm path is not valid UTF-8".into()))?
-        .to_string();
-
-    run_with_retry(
-        retry_config,
-        quiet,
-        "Deploy",
-        || {
-            let deploy_output = Command::new("stellar")
-                .args([
-                    "contract",
-                    "deploy",
-                    "--wasm",
-                    &wasm_path_str,
-                    "--source",
-                    source,
-                    "--network",
-                    network,
-                ])
-                .output()
-                .map_err(|e| {
-                    // A missing/unspawnable `stellar` binary is an
-                    // environment problem, not something a retry fixes.
-                    RetryFailure::Permanent(format!("failed to execute stellar-cli deploy: {}", e))
-                })?;
-
-            if deploy_output.status.success() {
-                let contract_id = String::from_utf8_lossy(&deploy_output.stdout)
-                    .trim()
-                    .to_string();
-                return Ok(contract_id);
-            }
-
-            let stderr = String::from_utf8_lossy(&deploy_output.stderr).to_string();
-            if is_transient_error(&stderr) {
-                Err(RetryFailure::Transient(stderr))
-            } else {
-                Err(RetryFailure::Permanent(stderr))
-            }
-        },
-        |last_error| {
-            Error::Message(format!(
-                "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
-                package_name, retry_config.max_attempts, last_error
-            ))
-        },
-    )
+    match transport.deploy_contract(wasm_path, source, network, package_name) {
+        Ok(contract_id) => Ok(contract_id),
+        Err(err) => Err(Error::Message(format!(
+            "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
+            package_name, retry_config.max_attempts, err
+        ))),
+    }
 }
 
 fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<()> {
@@ -1193,10 +1180,7 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
         let write = cli_parts[3].1.unwrap();
         Margin::new(cpu, memory, read, write)?
     } else {
-        match toml_config
-            .margin
-            .and_then(|m| if m.is_complete() { Some(m) } else { None })
-        {
+        match toml_config.margin.filter(|m| m.is_complete()) {
             Some(m) => m.into_margin()?,
             None => {
                 return Err(Error::Message(
@@ -1225,7 +1209,7 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
 
     // 4) Run the derivation and write the outputs atomically.
     let derivation = derive::Derivation::from_report(&measurements, &config)?;
-    let timestamp_utc = build_utc_timestamp();
+    let timestamp_utc = build_utc_timestamp(std::time::SystemTime::now())?;
     let provenance = out_provenance.unwrap_or_else(|| default_provenance_path(&out_env));
     derive::write_outputs(
         &out_env,
@@ -1255,27 +1239,18 @@ fn default_provenance_path(out_env: &std::path::Path) -> std::path::PathBuf {
     out_env.with_extension("provenance.md")
 }
 
-/// UTC ISO-8601 timestamp at second precision — enough granularity
-/// for the provenance header without depending on `chrono`.
-fn build_utc_timestamp() -> String {
-    let now = std::time::SystemTime::now()
+fn build_utc_timestamp(now: std::time::SystemTime) -> Result<String> {
+    let now = now
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| Error::Message(format!("system time error: {e}")))
-        .map(|d| {
-            // Approximate UTC seconds-since-epoch using a 0-based
-            // bijection: 86400 seconds/day, 365.25 days/year. Good
-            // enough for an audit-trail timestamp; rounding to days
-            // would also be acceptable.
-            d.as_secs()
-        })
-        .unwrap_or(0);
+        .map_err(|e| Error::Message(format!("system time error: {e}")))?
+        .as_secs();
     // The header timestamp is descriptive, not asserted, so it is
     // fine to format it loosely. The string-form here is the
     // seconds-since-epoch expressed in ISO-8601 by hand: the
     // calendar math below is intentionally simple (no leap rules
     // beyond the standard 4/100/400-year rule) and is sufficient
     // for human-readable audit trail of when the derivation ran.
-    format_unix_timestamp_as_iso8601(now)
+    Ok(format_unix_timestamp_as_iso8601(now))
 }
 
 fn format_unix_timestamp_as_iso8601(secs: u64) -> String {
@@ -1334,6 +1309,72 @@ fn is_leap(y: u64) -> bool {
     (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
+/// The transport a run uses, chosen by CLI flags.
+///
+/// `--replay <path>` serves every deploy/invoke/simulate response from a
+/// recorded fixture, so the whole pipeline runs with no `stellar` CLI,
+/// `curl`, or network access. `--record <path>` wraps the live transport
+/// and captures every response so a later run can be replayed. Without
+/// either flag, runs use [`live::LiveTransport`] directly.
+enum TransportKind {
+    Live(live::LiveTransport),
+    Recording(record::RecordingTransport<live::LiveTransport>),
+    Replay(replay::ReplayTransport),
+}
+
+impl transport::Transport for TransportKind {
+    fn deploy_contract(
+        &mut self,
+        wasm_path: &Path,
+        source: &str,
+        network: &str,
+        package_name: &str,
+    ) -> anyhow::Result<String> {
+        match self {
+            TransportKind::Live(t) => t.deploy_contract(wasm_path, source, network, package_name),
+            TransportKind::Recording(t) => {
+                t.deploy_contract(wasm_path, source, network, package_name)
+            }
+            TransportKind::Replay(t) => t.deploy_contract(wasm_path, source, network, package_name),
+        }
+    }
+
+    fn build_invoke_xdr(
+        &mut self,
+        contract_id: &str,
+        source: &str,
+        network: &str,
+        function: &str,
+        func_args: &[String],
+        package: &str,
+    ) -> anyhow::Result<String> {
+        match self {
+            TransportKind::Live(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+            TransportKind::Recording(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+            TransportKind::Replay(t) => {
+                t.build_invoke_xdr(contract_id, source, network, function, func_args, package)
+            }
+        }
+    }
+
+    fn simulate_transaction(
+        &mut self,
+        b64_xdr: &str,
+        package: &str,
+        function: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        match self {
+            TransportKind::Live(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Recording(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Replay(t) => t.simulate_transaction(b64_xdr, package, function),
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let CargoCli::BudgetReport(args) = CargoCli::parse();
 
@@ -1355,22 +1396,17 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ── Preflight environment checks ──────────────────────────────────
-    run_preflight_checks(args.quiet)?;
+    // Replay runs serve every network call from a fixture, so they need
+    // neither the `stellar` CLI nor `curl`; skip the checks entirely.
+    if args.replay.is_none() {
+        run_preflight_checks(args.quiet)?;
+    }
 
     let toml_config = load_budget_toml("budget.toml")?;
     let default_tolerance = resolve_tolerance(args.tolerance.as_deref(), &toml_config)
         .context("failed to resolve tolerance")?;
 
     let mode = Mode::from_args(&args);
-
-    let network = args
-        .network
-        .or(toml_config.network.clone())
-        .context("missing --network or budget.toml network field")?;
-    let source = args
-        .source
-        .or(toml_config.source.clone())
-        .context("missing --source or budget.toml source field")?;
 
     let retry_config = resolve_retry_config(
         args.max_retry_attempts,
@@ -1381,6 +1417,45 @@ fn main() -> anyhow::Result<()> {
     if retry_config.disabled() && !args.quiet {
         eprintln!("Retry is disabled (--max-retry-attempts 1): each call gets a single attempt.");
     }
+
+    // ── Watch mode: delegate to the watch loop and exit ────────────────
+    if args.watch {
+        if !args.quiet {
+            eprintln!("Discovering workspace members...");
+        }
+        let metadata = MetadataCommand::new()
+            .no_deps()
+            .exec()
+            .context("failed to execute cargo metadata")?;
+        let network = args
+            .network
+            .clone()
+            .or(toml_config.network.clone())
+            .context("missing --network or budget.toml network field")?;
+        let source = args
+            .source
+            .clone()
+            .or(toml_config.source.clone())
+            .context("missing --source or budget.toml source field")?;
+        return watch::watch_loop(
+            &args,
+            metadata,
+            toml_config,
+            default_tolerance,
+            network,
+            source,
+            retry_config,
+        );
+    }
+
+    let network = args
+        .network
+        .or(toml_config.network.clone())
+        .context("missing --network or budget.toml network field")?;
+    let source = args
+        .source
+        .or(toml_config.source.clone())
+        .context("missing --source or budget.toml source field")?;
 
     if !args.quiet {
         eprintln!("Discovering workspace members...");
@@ -1401,25 +1476,48 @@ fn main() -> anyhow::Result<()> {
 
     let build_profile = args.profile.as_deref().unwrap_or("release");
 
+    // All network interaction happens through the transport. Production runs
+    // use `LiveTransport` (which owns the retry policy); `--record` wraps it
+    // in a `RecordingTransport` that captures every response, and `--replay`
+    // serves responses back from a recorded fixture with no network at all.
+    let mut transport = if let Some(replay_path) = &args.replay {
+        TransportKind::Replay(replay::ReplayTransport::new(
+            fixture::FixtureFile::load(replay_path)
+                .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
+        ))
+    } else if args.record.is_some() {
+        TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
+            retry_config,
+            args.quiet,
+        )))
+    } else {
+        TransportKind::Live(live::LiveTransport::new(retry_config, args.quiet))
+    };
+
+    // Union of every function exported by every contract in the workspace.
+    // Used at the end of the run (issue #399) to validate that every function
+    // configured in `budget.toml` actually exists.
+    let mut all_exported: HashSet<String> = HashSet::new();
+
     for package in metadata.packages {
         let is_cdylib = package
             .targets
             .iter()
-            .any(|target| target.crate_types.iter().any(|ct| *ct == "cdylib"));
+            .any(|target| target.crate_types.contains(&CrateType::CDyLib));
         if !is_cdylib {
             continue;
         }
 
         if !args.quiet {
-            eprintln!("Building package '{}' for wasm32...", package.name);
+            eprintln!("Building package '{}' for {}...", package.name, WASM_TARGET);
         }
         let build_status = Command::new("cargo")
             .args([
                 "build",
                 "-p",
-                &package.name,
+                package.name.as_str(),
                 "--target",
-                "wasm32-unknown-unknown",
+                WASM_TARGET,
                 "--profile",
                 build_profile,
             ])
@@ -1436,7 +1534,7 @@ fn main() -> anyhow::Result<()> {
         let cdylib_target = package
             .targets
             .iter()
-            .find(|t| t.crate_types.iter().any(|ct| *ct == "cdylib"));
+            .find(|t| t.crate_types.contains(&CrateType::CDyLib));
         let wasm_name = match cdylib_target {
             Some(target) => target.name.clone(),
             None => {
@@ -1449,7 +1547,7 @@ fn main() -> anyhow::Result<()> {
         };
         let wasm_path = metadata
             .target_directory
-            .join("wasm32-unknown-unknown")
+            .join(WASM_TARGET)
             .join(build_profile)
             .join(format!("{}.wasm", wasm_name));
 
@@ -1477,7 +1575,8 @@ fn main() -> anyhow::Result<()> {
                         let name = export_item.name.to_string();
                         // Ignore internal and common exports
                         if !name.starts_with('_') && name != "memory" {
-                            exported_fns.insert(name);
+                            exported_fns.insert(name.clone());
+                            all_exported.insert(name);
                         }
                     }
                 }
@@ -1507,12 +1606,12 @@ fn main() -> anyhow::Result<()> {
         };
 
         let contract_id = deploy_contract_with_retry(
+            &mut transport,
             wasm_path.as_std_path(),
             &source,
             &network,
             &package.name,
             &retry_config,
-            args.quiet,
         )?;
 
         if let Some(spinner) = spinner {
@@ -1527,16 +1626,20 @@ fn main() -> anyhow::Result<()> {
             }
 
             let func_config = toml_config.functions.get(&function);
-            let func_args = func_config.map(|cfg| cfg.args.clone()).unwrap_or_default();
+            let func_args = match func_config {
+                Some(cfg) => arg_spec::render_args(&cfg.args, &function)
+                    .map_err(|e| Error::Message(format!("{e:#}")))?,
+                None => Vec::new(),
+            };
 
             match simulate_function(
+                &mut transport,
                 &contract_id,
                 &source,
                 &network,
                 &function,
                 &func_args,
-                &retry_config,
-                args.quiet,
+                &package.name,
             )? {
                 SimulationOutcome::Metrics {
                     instructions,
@@ -1553,7 +1656,7 @@ fn main() -> anyhow::Result<()> {
                         write_bytes: write_bytes as u64,
                     };
                     measurements
-                        .entry(package.name.clone())
+                        .entry(package.name.as_str().to_string())
                         .or_default()
                         .insert(function.clone(), measured);
 
@@ -1582,7 +1685,9 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     // ── Optional Stellar CLI validation ──────────────
-                    if args.validate {
+                    // `--validate` shells out to `stellar xdr decode`, which
+                    // replay mode cannot assume exists; skip it there.
+                    if args.validate && args.replay.is_none() {
                         let v_result = validate::validate_metrics(
                             &transaction_data_xdr,
                             instructions,
@@ -1655,7 +1760,47 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Persist the recorded fixture when `--record` was requested, so the
+    // run can be reproduced offline with `--replay`.
+    if let Some(path) = &args.record {
+        match transport {
+            TransportKind::Recording(recording) => {
+                recording
+                    .into_fixture()
+                    .save(path)
+                    .with_context(|| format!("failed to save fixture to {}", path))?;
+                if !args.quiet {
+                    eprintln!("Recorded fixture to {}", path);
+                }
+            }
+            _ => unreachable!("--record always constructs a RecordingTransport"),
+        }
+    }
+
+    // Issue #399: validate budget.toml against the schema before reporting, so
+    // a misspelled function name or unknown key fails loudly instead of
+    // silently producing a report that omits the function. Runs in every mode
+    // that reached this point (Report / Record / Check).
+    {
+        let available: Vec<String> = all_exported.into_iter().collect();
+        if let Ok(content) = std::fs::read_to_string("budget.toml") {
+            if let Err(errs) = validate::validate_budget_toml(&content, &available) {
+                let report = errs
+                    .iter()
+                    .map(|e| format!("  - [{}] {}", e.location, e.message))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                anyhow::bail!("budget.toml validation failed:\n{report}");
+            }
+        }
+    }
+
     if measurements.is_empty() {
+        // `--html` still produces a valid page so a consumer pointed at the
+        // output sees an explicit empty state rather than an empty file.
+        if args.html {
+            println!("{}", html_output::render_html(&[], args.check));
+        }
         if !args.quiet {
             eprintln!("No successful simulations to report.");
         }
@@ -1767,29 +1912,36 @@ fn main() -> anyhow::Result<()> {
         }
         csv_writer.flush().context("Failed to flush CSV writer")?;
     } else if args.json {
-        let json_output =
-            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
-        println!("{}", json_output);
+        println!("{}", json_output::render_json(&reports));
+    } else if args.html {
+        print!("{}", html_output::render_html(&reports, args.check));
     } else {
         // The plain text report path is preserved byte-for-byte when
         // `--check` is not passed: only entries with a measured value are
-        // rendered in the table, and summary text is unchanged.
+        // rendered in the table, and summary text is unchanged. Colour
+        // exists only in `--check` mode — there are no limits to compare
+        // against otherwise.
         println!("\n=== WORKSPACE BUDGET REPORT ===");
-        let table_reports: Vec<TableCostReport> = reports
-            .iter()
-            .filter(|report| report.value.is_some())
-            .map(|report| {
-                let value = report.value.unwrap_or(0);
-                let formatted = format_with_commas_and_units(u64::from(value), report.metric);
-                TableCostReport {
-                    package: report.package.clone(),
-                    function: report.function.clone(),
-                    metric: report.metric,
-                    value: formatted,
-                }
-            })
-            .collect();
-        let table = Table::new(table_reports).to_string();
+        let colour = args.check && color_enabled(args.color);
+        let table = if args.check {
+            render_check_table(&reports, colour)
+        } else {
+            let table_reports: Vec<TableCostReport> = reports
+                .iter()
+                .filter(|report| report.value.is_some())
+                .map(|report| {
+                    let value = report.value.unwrap_or(0);
+                    let formatted = format_with_commas_and_units(u64::from(value), report.metric);
+                    TableCostReport {
+                        package: report.package.clone(),
+                        function: report.function.clone(),
+                        metric: report.metric,
+                        value: formatted,
+                    }
+                })
+                .collect();
+            Table::new(table_reports).to_string()
+        };
         println!("{}", table);
         println!("\nSummary: The values above are simulated resource amounts, not fees. They are three of the inputs to the non-refundable resource fee.");
         println!("* Not measured: transaction size, ledger footprint entry counts, refundable fees (rent, events, return value), the inclusion fee, and therefore the total fee charged.");
@@ -1806,21 +1958,19 @@ fn main() -> anyhow::Result<()> {
                 let Some(pass) = report.pass else {
                     continue;
                 };
-                let status = if pass { "PASS" } else { "FAIL" };
                 let value_str = match report.value {
                     Some(v) => format_with_commas_and_units(u64::from(v), report.metric),
                     None => "<simulation failed>".to_string(),
                 };
                 let limit_str = report
                     .limit
-                    .map(|limit_val| {
-                        // Limits wider than u32::MAX are not representable in
-                        // the table's units, but anything close to the
-                        // practical ceiling formats fine.
-                        let display_value = u32::try_from(limit_val).unwrap_or(u32::MAX);
-                        format_with_commas_and_units(u64::from(display_value), report.metric)
-                    })
+                    .map(|limit_val| format_limit_display(limit_val, report.metric))
                     .unwrap_or_else(|| "-".to_string());
+                let status = if pass {
+                    "PASS".to_string()
+                } else {
+                    paint(colour, ANSI_FG_RED, "FAIL")
+                };
                 println!(
                     "{}::{} [{}] value={} limit={} {}",
                     report.package, report.function, report.metric, value_str, limit_str, status
@@ -1842,9 +1992,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-mod module_2;
-mod module_3;
-mod module_4;
+mod config;
+mod limit_checks;
+mod url_checks;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1876,10 +2026,13 @@ impl Mode {
 }
 
 #[cfg(test)]
-mod module_8;
+mod edge_case_tests;
 
 #[cfg(test)]
-mod module_18;
+mod boundary_tests;
+
+#[cfg(test)]
+mod additional_edge_tests;
 
 /// Serializes tests that mutate the process working directory.
 #[cfg(test)]
@@ -1891,7 +2044,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use stellar_xdr::curr::WriteXdr;
+    use stellar_xdr::WriteXdr;
 
     const SHARED_BUDGET_TOML: &str = include_str!("../fixtures/shared_budget.toml");
 
@@ -1974,16 +2127,16 @@ mod tests {
     const FIXTURE_RESOURCE_FEE: i64 = 0;
 
     fn make_fixture_tx_data() -> SorobanTransactionData {
-        use stellar_xdr::curr::{ExtensionPoint, LedgerFootprint, VecM};
+        use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
         SorobanTransactionData {
-            ext: ExtensionPoint::V0,
-            resources: stellar_xdr::curr::SorobanResources {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
                 footprint: LedgerFootprint {
                     read_only: VecM::default(),
                     read_write: VecM::default(),
                 },
                 instructions: FIXTURE_INSTRUCTIONS,
-                read_bytes: FIXTURE_READ_BYTES,
+                disk_read_bytes: FIXTURE_READ_BYTES,
                 write_bytes: FIXTURE_WRITE_BYTES,
             },
             resource_fee: FIXTURE_RESOURCE_FEE,
@@ -2432,11 +2585,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2447,6 +2603,8 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
+            watch: false,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -2461,11 +2619,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: Some("budget-baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2476,6 +2637,8 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
+            watch: false,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -2490,11 +2653,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: None,
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2505,6 +2671,8 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
+            watch: false,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -2522,11 +2690,14 @@ mod tests {
             json: false,
             check: false,
             csv: false,
+            html: false,
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
             quiet: false,
             validate: false,
+            record: None,
+            replay: None,
             profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,
@@ -2537,6 +2708,8 @@ mod tests {
             provenance_out: None,
             max_retry_attempts: None,
             retry_backoff_secs: None,
+            color: ColorChoice::Auto,
+            watch: false,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),
@@ -2736,6 +2909,136 @@ write_limit = 1000
         );
     }
 
+    // --- Check-result colouring ---------------------------------------------
+
+    fn mixed_pass_fail_reports() -> Vec<CostReport> {
+        vec![
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(1_000_000),
+                limit: Some(5_000_000),
+                pass: Some(true),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Write Bytes",
+                value: Some(4_096),
+                limit: Some(1_000),
+                pass: Some(false),
+            },
+            CostReport {
+                package: "my-contract".to_string(),
+                function: "do_work".to_string(),
+                metric: "Read Bytes",
+                value: Some(2_048),
+                limit: None,
+                pass: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn color_decision_auto_requires_terminal_and_no_no_color() {
+        use ColorChoice::{Always, Auto, Never};
+        assert!(color_enabled_with(Auto, false, true));
+        assert!(!color_enabled_with(Auto, false, false));
+        assert!(!color_enabled_with(Auto, true, true));
+        assert!(!color_enabled_with(Auto, true, false));
+        // Explicit colour still cannot override NO_COLOR or non-terminal
+        // suppression.
+        assert!(!color_enabled_with(Always, true, false));
+        assert!(!color_enabled_with(Always, true, true));
+        assert!(color_enabled_with(Always, false, true));
+        assert!(!color_enabled_with(Never, false, true));
+    }
+
+    #[test]
+    fn no_color_convention_only_non_empty_value_disables_colour() {
+        use std::ffi::OsStr;
+        assert!(no_color_requested_from(Some(OsStr::new("1"))));
+        assert!(!no_color_requested_from(Some(OsStr::new(""))));
+        assert!(!no_color_requested_from(None));
+    }
+
+    #[test]
+    fn check_table_carries_pass_fail_text_without_colour() {
+        let reports = mixed_pass_fail_reports();
+        let table = render_check_table(&reports, false);
+        assert!(table.contains("PASS"), "marker column must exist: {table}");
+        assert!(table.contains("FAIL"), "marker column must exist: {table}");
+        assert!(
+            !table.contains('\u{1b}'),
+            "no ANSI escapes when colour disabled: {table:?}"
+        );
+        assert!(table.contains("limit"), "limit column must exist: {table}");
+        assert!(table.contains("-"), "unconfigured limit renders as dash");
+    }
+
+    #[test]
+    fn check_table_colours_only_breaching_rows_when_enabled() {
+        let reports = mixed_pass_fail_reports();
+        let table = render_check_table(&reports, true);
+        let red = "\u{1b}[31m";
+        assert!(
+            table.contains(red),
+            "breaching rows must be red when colour enabled: {table:?}"
+        );
+        let fail_line = table
+            .lines()
+            .find(|line| line.contains("FAIL"))
+            .expect("FAIL marker present");
+        assert!(
+            fail_line.contains(red),
+            "the FAIL row carries the escape: {fail_line:?}"
+        );
+        let pass_line = table
+            .lines()
+            .find(|line| line.contains("PASS"))
+            .expect("PASS marker present");
+        assert!(
+            !pass_line.contains('\u{1b}'),
+            "passing rows stay default-styled: {pass_line:?}"
+        );
+    }
+
+    #[test]
+    fn check_table_skips_simulation_failure_rows_like_default_table() {
+        let mut reports = mixed_pass_fail_reports();
+        reports.push(CostReport {
+            package: "my-contract".to_string(),
+            function: "broken".to_string(),
+            metric: "CPU Instructions",
+            value: None,
+            limit: Some(5_000),
+            pass: Some(false),
+        });
+        let table = render_check_table(&reports, true);
+        assert!(
+            !table.contains("broken"),
+            "value-less rows stay out of the workspace table: {table}"
+        );
+    }
+
+    #[test]
+    fn paint_wraps_text_only_when_enabled() {
+        assert_eq!(paint(false, ANSI_FG_RED, "FAIL"), "FAIL");
+        assert_eq!(paint(true, ANSI_FG_RED, "FAIL"), "\u{1b}[31mFAIL\u{1b}[0m");
+    }
+
+    #[test]
+    fn csv_output_is_never_coloured_even_in_check_mode() {
+        // The CSV writer path takes its data straight from `CostReport`
+        // fields; this asserts the contract end-to-end for a coloured run's
+        // worth of rows.
+        let reports = mixed_pass_fail_reports();
+        let csv = reports_to_csv(&reports, true);
+        assert!(!csv.contains('\u{1b}'), "CSV must be plain: {csv:?}");
+        assert!(csv.contains(",false"));
+    }
+
     // --- CSV serialization tests ---
 
     /// Helper to serialize a slice of CostReport to CSV bytes and return the
@@ -2892,5 +3195,20 @@ write_limit = 1000
         let reports: Vec<CostReport> = vec![];
         let csv = reports_to_csv(&reports, false);
         assert_eq!(csv, "package,function,metric,value\n");
+    }
+
+    #[test]
+    fn build_utc_timestamp_success() {
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1700000000);
+        let ts = build_utc_timestamp(now).expect("should return timestamp");
+        assert_eq!(ts, "2023-11-14T22:13:20Z");
+    }
+
+    #[test]
+    fn build_utc_timestamp_fails_before_epoch() {
+        let before_epoch = std::time::UNIX_EPOCH - std::time::Duration::from_secs(1);
+        let err = build_utc_timestamp(before_epoch).unwrap_err();
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("system time error"), "got {}", err_msg);
     }
 }

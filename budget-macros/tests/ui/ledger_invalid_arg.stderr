@@ -1,0 +1,5 @@
+error: expected `env`, `env_file`, `config`, or `pct`, got `wrong`
+ --> tests/ui/ledger_invalid_arg.rs:5:28
+  |
+5 | #[budget_ledger_entries_lt(wrong = "500")]
+  |                            ^^^^^

@@ -30,7 +30,7 @@ pub struct BudgetReportArgs {
     #[arg(long)]
     pub source: Option<String>,
 
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
     /// Enforce per-function limits declared in `budget.toml`.
@@ -49,12 +49,12 @@ pub struct BudgetReportArgs {
     pub csv: bool,
 
     /// Write a new resource-usage baseline snapshot to this path and exit.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "check_baseline")]
     pub record_baseline: Option<String>,
 
     /// Check current measurements against an existing baseline snapshot at
     /// this path, applying the configured regression tolerance.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "record_baseline")]
     pub check_baseline: Option<String>,
 
     /// Override the regression tolerance (e.g. "0.10" for 10%). Takes
@@ -155,6 +155,109 @@ pub struct BudgetReportArgs {
     /// `retry.initial_backoff_secs` in `budget.toml`; defaults to 2.
     #[arg(long, value_name = "SECS")]
     pub retry_backoff_secs: Option<u64>,
+
+    /// Emit the report as a single self-contained HTML page instead of a
+    /// table, JSON, or CSV.
+    ///
+    /// The page has no external CSS, scripts, or fonts, so it renders
+    /// correctly from a `file://` URL and from a downloaded CI artifact.
+    /// Each row shows the same values as `--json` for the same run; in
+    /// `--check` mode rows also show their limit and pass/fail status.
+    #[arg(long, default_value_t = false)]
+    pub html: bool,
+
+    /// Record every transport response (deploy, invoke-build, and
+    /// simulate RPC) into a replayable fixture file at this path.
+    ///
+    /// The run itself still talks to the network; the fixture it writes
+    /// lets a later `--replay` run reproduce the same report offline.
+    #[arg(long, value_name = "PATH", conflicts_with = "replay")]
+    pub record: Option<String>,
+
+    /// Replay a run from a fixture file written by `--record`.
+    ///
+    /// The whole report pipeline runs offline: no `stellar` CLI, no
+    /// `curl`, no network access. Deploy, invoke-build and simulate RPC
+    /// responses are served from the fixture. `--record` and `--replay`
+    /// are mutually exclusive.
+    #[arg(long, value_name = "PATH", conflicts_with = "record")]
+    pub replay: Option<String>,
+
+    /// When to colourise the plain-text `--check` report.
+    ///
+    /// Breaching rows are rendered red so they stand out when scanning a
+    /// mixed pass/fail table. The status is also carried as plain text
+    /// (`PASS`/`FAIL` markers), so no information is lost when colour is
+    /// disabled. CSV, JSON, and HTML output are never coloured.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
+
+    /// Watch the workspace for file changes and re-measure on save.
+    ///
+    /// When set, the tool enters a loop: it watches the workspace for
+    /// changes to source files, and on each change rebuilds and re-measures
+    /// only the affected packages. Each run prints a comparison against the
+    /// previous run so the delta is visible.
+    ///
+    /// Edits that arrive while a run is in flight are coalesced, not queued.
+    /// A build failure prints the error and keeps watching. Ctrl-C exits
+    /// cleanly.
+    ///
+    /// Refuses to start when stdout is not a terminal (CI guard).
+    #[arg(long, default_value_t = false)]
+    pub watch: bool,
+}
+
+/// Colour policy for the plain-text `--check` output.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorChoice {
+    /// Colour only when stdout is a terminal and `NO_COLOR` is unset or
+    /// empty (the no-color.org convention).
+    #[default]
+    Auto,
+    /// Always emit colour, even into pipes and files.
+    Always,
+    /// Never emit colour.
+    Never,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    #[test]
+    fn json_and_csv_are_mutually_exclusive() {
+        let err = CargoCli::try_parse_from(["cargo", "budget-report", "--json", "--csv"])
+            .expect_err("--json and --csv together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn json_alone_is_accepted() {
+        let result = CargoCli::try_parse_from(["cargo", "budget-report", "--json"]);
+        assert!(result.is_ok(), "--json alone should parse: {result:?}");
+    }
+
+    #[test]
+    fn csv_alone_is_accepted() {
+        let result = CargoCli::try_parse_from(["cargo", "budget-report", "--csv"]);
+        assert!(result.is_ok(), "--csv alone should parse: {result:?}");
+    }
+
+    #[test]
+    fn record_baseline_and_check_baseline_are_mutually_exclusive() {
+        let err = CargoCli::try_parse_from([
+            "cargo",
+            "budget-report",
+            "--record-baseline",
+            "out.json",
+            "--check-baseline",
+            "base.json",
+        ])
+        .expect_err("--record-baseline and --check-baseline together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
 }
 
 #[cfg(test)]

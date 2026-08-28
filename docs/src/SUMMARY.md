@@ -4,13 +4,14 @@
 
 ## Getting Started
 - [End-User Guide](user_guide.md)
+- [Local vs. Network Cost Gap](cost_gap.md)
+- [Testnet Troubleshooting](testnet_troubleshooting.md)
 - [Protocol Mechanics](mechanics.md)
 - [Cost Terms Glossary](glossary.md)
 
 ## Guides & Tutorials
 - [Deriving Limits](deriving_limits.md)
 - [CI Tutorial](ci_tutorial.md)
-- [CI/CD Integration](ci_cd_integration.md)
 - [Cross-Contract Testing](cross_contract_testing.md)
 
 ## Reference & Architecture

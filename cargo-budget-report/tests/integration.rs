@@ -114,9 +114,13 @@ fn json_output_reports_both_mock_contracts() {
 
     let output = assert.success().get_output().clone();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let reports: serde_json::Value =
+    let doc: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
-    let reports = reports.as_array().expect("report should be a JSON array");
+    // The --json output is the versioned envelope {schema_version, snapshots}.
+    assert_eq!(doc["schema_version"], 1, "schema_version should be 1");
+    let reports = doc["snapshots"]
+        .as_array()
+        .expect("snapshots should be a JSON array");
 
     let packages: std::collections::HashSet<&str> = reports
         .iter()
@@ -212,6 +216,81 @@ fn check_flag_fails_when_a_limit_is_exceeded() {
         .failure()
         .stdout(contains("mock-contract-a::ping [CPU Instructions]"))
         .stdout(contains("FAIL"));
+}
+
+#[test]
+fn html_output_renders_both_mock_contracts() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--html",
+        ])
+        .assert();
+
+    let output = assert.success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.starts_with("<!doctype html>"),
+        "expected an HTML document, got: {stdout}"
+    );
+    assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
+    assert!(stdout.contains("mock-contract-b"), "got: {stdout}");
+    assert!(stdout.contains("mock-contract-renamed"), "got: {stdout}");
+    assert!(stdout.contains("CPU Instructions"), "got: {stdout}");
+    // Thousands separators for the values the fake RPC returns.
+    assert!(stdout.contains("1,000,000"), "got: {stdout}");
+    assert!(stdout.contains("2,048"), "got: {stdout}");
+    // The page must be fully self-contained: no linked CSS or external scripts.
+    assert!(
+        !stdout.contains("<link"),
+        "page must not link external CSS: {stdout}"
+    );
+    assert!(
+        !stdout.contains("<script src"),
+        "page must not load external scripts: {stdout}"
+    );
+}
+
+#[test]
+fn html_output_check_mode_shows_pass_and_fail_rows() {
+    let workspace = setup_mock_workspace();
+    fs::write(
+        workspace.path().join("budget.toml"),
+        "[functions.ping]\n\
+         cpu_limit = 10\n\
+         read_limit = 5000\n\
+         write_limit = 5000\n\
+         \n\
+         [functions.pong]\n\
+         cpu_limit = 5000000\n",
+    )
+    .expect("failed to write budget.toml");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--html",
+            "--check",
+        ])
+        .assert();
+
+    // ping's CPU limit (10) is breached, so `--check` exits non-zero.
+    let output = assert.failure().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("&#10007; FAIL"), "got: {stdout}");
+    assert!(stdout.contains("&#10003; PASS"), "got: {stdout}");
 }
 
 // ── Retry mechanism integration tests ───────────────────────────────────
@@ -753,5 +832,81 @@ fn end_to_end_offline_full_pipeline() {
     assert!(
         fail_stdout.contains("1 failed") || fail_stdout.contains("failed"),
         "Stage FAILED: Budget Check - summary should show failures, got: {fail_stdout}"
+    );
+}
+
+// ── Record / replay transport integration tests ─────────────────────────
+
+#[test]
+fn record_then_replay_produces_identical_report() {
+    let workspace = setup_mock_workspace();
+    let fixture_path = workspace.path().join("fixture.json");
+
+    // First run records every transport response into the fixture. It runs
+    // against the fake stellar/curl scripts like the other tests.
+    let record = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--record",
+            fixture_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let recorded_stdout = String::from_utf8_lossy(&record.stdout);
+    assert!(
+        recorded_stdout.contains("WORKSPACE BUDGET REPORT"),
+        "recorded run should produce a report, got: {recorded_stdout}"
+    );
+
+    // The fixture must exist and contain the expected entry keys.
+    let fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&fixture_path).expect("fixture should be written"))
+            .expect("fixture should be valid JSON");
+    assert_eq!(fixture["fixture_version"], 1);
+    let entries = fixture["entries"]
+        .as_object()
+        .expect("fixture should have an entries object");
+    assert!(
+        entries.keys().any(|k| k.starts_with("deploy:")),
+        "fixture should contain deploy entries, got keys: {:?}",
+        entries.keys()
+    );
+    assert!(
+        entries.keys().any(|k| k.starts_with("simulate:")),
+        "fixture should contain simulate entries, got keys: {:?}",
+        entries.keys()
+    );
+
+    // Replay with a PATH that excludes the fake stellar/curl scripts: the
+    // whole pipeline must run with no `stellar` CLI and no `curl` at all.
+    let mut replay_cmd = Command::cargo_bin("cargo-budget-report").expect("binary should be built");
+    replay_cmd
+        .current_dir(workspace.path())
+        .env("PATH", std::env::var("PATH").unwrap_or_default());
+    let replay = replay_cmd
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--replay",
+            fixture_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let replayed_stdout = String::from_utf8_lossy(&replay.stdout);
+
+    assert_eq!(
+        recorded_stdout, replayed_stdout,
+        "replaying the fixture must reproduce the recorded report byte-for-byte"
     );
 }

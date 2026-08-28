@@ -27,13 +27,12 @@ fn test_cross_contract_wasm() {
 
     let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
-    #[allow(deprecated)]
-    let helper_address: Address = env.register_contract_wasm(None, wasm.as_slice());
-    #[allow(deprecated)]
-    let contract_address: Address = env.register_contract_wasm(None, wasm.as_slice());
+    let helper_address: Address = env.register(wasm.as_slice(), ());
+    let contract_address: Address = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(&env, &contract_address);
 
     env.cost_estimate().budget().reset_unlimited();
+    env.cost_estimate().disable_resource_limits();
 
     client.do_cross_contract_work(&helper_address, &100);
 
@@ -65,13 +64,12 @@ fn test_cross_contract_macro_gated() {
 
     let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
-    #[allow(deprecated)]
-    let helper_address: Address = env.register_contract_wasm(None, wasm.as_slice());
-    #[allow(deprecated)]
-    let contract_address: Address = env.register_contract_wasm(None, wasm.as_slice());
+    let helper_address: Address = env.register(wasm.as_slice(), ());
+    let contract_address: Address = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(&env, &contract_address);
 
     env.cost_estimate().budget().reset_unlimited();
+    env.cost_estimate().disable_resource_limits();
 
     client.do_cross_contract_work(&helper_address, &100);
 }

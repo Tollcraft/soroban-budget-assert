@@ -91,7 +91,7 @@ fn test_cross_contract_macro_gated() {
     let env = Env::default();
 
     let wasm = std::fs::read(
-        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
+        "../target/wasm32v1-none/release/my_contract.wasm",
     ).expect("build the WASM first");
 
     #[allow(deprecated)]
@@ -113,11 +113,11 @@ If the callee contract lives in a different crate, register each from its own WA
 
 ```rust
 let helper_wasm = std::fs::read(
-    "../target/wasm32-unknown-unknown/release/helper_contract.wasm",
+    "../target/wasm32v1-none/release/helper_contract.wasm",
 ).expect("build the helper WASM first");
 
 let caller_wasm = std::fs::read(
-    "../target/wasm32-unknown-unknown/release/caller_contract.wasm",
+    "../target/wasm32v1-none/release/caller_contract.wasm",
 ).expect("build the caller WASM first");
 
 #[allow(deprecated)]

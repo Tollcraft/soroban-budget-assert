@@ -1,0 +1,5 @@
+error: integer literal cannot be combined with env / config / env_file / pct
+ --> tests/ui/pct_with_env.rs:6:17
+  |
+6 | #[budget_cpu_lt(1000, pct = 25, of = env_file = "tier-a-limits.env", env = "NETWORK__CPU")]
+  |                 ^^^^

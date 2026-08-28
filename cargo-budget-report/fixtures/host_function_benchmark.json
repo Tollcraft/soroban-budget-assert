@@ -1,0 +1,100 @@
+{
+  "operation_type": "Host-function calls",
+  "fixture": {
+    "contract": "host-function-contract",
+    "registration": "register_contract_wasm"
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.91.0",
+  "network": {
+    "method": "simulateTransaction",
+    "network": "Soroban testnet"
+  },
+  "functions": {
+    "repeated_sequence": {
+      "arguments": {
+        "iterations": 1000
+      },
+      "cpu_instructions": {
+        "local_estimate": 1759859,
+        "network_figure": 2194275,
+        "delta": -434416,
+        "delta_percent": -19.8
+      },
+      "memory_bytes": {
+        "local_estimate": 1239673,
+        "network_figure": null,
+        "delta": null,
+        "delta_percent": null
+      }
+    },
+    "repeated_timestamp": {
+      "arguments": {
+        "iterations": 1000
+      },
+      "cpu_instructions": {
+        "local_estimate": 3861391,
+        "network_figure": 4379869,
+        "delta": -518478,
+        "delta_percent": -11.8
+      },
+      "memory_bytes": {
+        "local_estimate": 1239673,
+        "network_figure": null,
+        "delta": null,
+        "delta_percent": null
+      }
+    },
+    "repeated_bytes_new": {
+      "arguments": {
+        "iterations": 1000
+      },
+      "cpu_instructions": {
+        "local_estimate": 2405859,
+        "network_figure": 2865075,
+        "delta": -459216,
+        "delta_percent": -16.0
+      },
+      "memory_bytes": {
+        "local_estimate": 1343673,
+        "network_figure": null,
+        "delta": null,
+        "delta_percent": null
+      }
+    },
+    "repeated_hash": {
+      "arguments": {
+        "iterations": 1000
+      },
+      "cpu_instructions": {
+        "local_estimate": 7488773,
+        "network_figure": 8042983,
+        "delta": -554210,
+        "delta_percent": -6.9
+      },
+      "memory_bytes": {
+        "local_estimate": 1391800,
+        "network_figure": null,
+        "delta": null,
+        "delta_percent": null
+      }
+    }
+  },
+  "gap_stability": {
+    "function": "repeated_sequence",
+    "baseline_n": 0,
+    "local_baseline_cpu": 281859,
+    "network_baseline_cpu": 696880,
+    "rows": [
+      { "n": 100, "local": 429659, "network": 843180, "local_per_call": 1478, "network_per_call": 1463 },
+      { "n": 1000, "local": 1759859, "network": 2194275, "local_per_call": 1478, "network_per_call": 1497 },
+      { "n": 5000, "local": 7671859, "network": 8280355, "local_per_call": 1478, "network_per_call": 1517 },
+      { "n": 10000, "local": 15061859, "network": 15887955, "local_per_call": 1478, "network_per_call": 1519 }
+    ]
+  },
+  "capture": {
+    "local_command": "cargo test -p host-function-contract --test measure_host_fn_gap -- --nocapture",
+    "network_command": "cargo run --bin cargo-budget-report -- --network testnet (or simulateTransaction against Soroban testnet; see MEASUREMENTS.md #Host-function calls)",
+    "recorded_at": "2026-08-27"
+  }
+}

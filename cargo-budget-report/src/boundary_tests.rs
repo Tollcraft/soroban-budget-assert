@@ -9,7 +9,7 @@
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
     use crate::*;
-    use stellar_xdr::curr::{Limits, SorobanTransactionData, WriteXdr};
+    use stellar_xdr::{Limits, SorobanTransactionData, WriteXdr};
 
     // ── evaluate_check off-by-one tests ─────────────────────────────────
 
@@ -278,7 +278,7 @@ mod off_by_one_and_zero_length_tests {
     // ── scaffold_init edge case tests ──────────────────────────────────
     //
     // These tests mutate process CWD, so they must not run concurrently
-    // with each other (or with module_8's scaffold tests).
+    // with each other (or with edge_case_tests's scaffold tests).
 
     fn isolate_temp_dir() -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempfile::tempdir().expect("failed to create temp dir");
@@ -425,7 +425,10 @@ args = [""]
 
         let config = load_budget_toml(tmp.path()).expect("empty string arg should parse");
         let func = &config.functions["weird"];
-        assert_eq!(func.args, vec!["".to_string()]);
+        assert_eq!(
+            func.args,
+            vec![crate::arg_spec::ArgSpec::Raw(String::new())]
+        );
     }
 
     // ── build_invoke_args zero-length / boundary tests ─────────────────
@@ -535,16 +538,16 @@ args = [""]
     // ── extract_metrics zero-value / boundary tests ────────────────────
 
     fn make_tx_data(instructions: u32, read_bytes: u32, write_bytes: u32) -> String {
-        use stellar_xdr::curr::{ExtensionPoint, LedgerFootprint, VecM};
+        use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
         let tx_data = SorobanTransactionData {
-            ext: ExtensionPoint::V0,
-            resources: stellar_xdr::curr::SorobanResources {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
                 footprint: LedgerFootprint {
                     read_only: VecM::default(),
                     read_write: VecM::default(),
                 },
                 instructions,
-                read_bytes,
+                disk_read_bytes: read_bytes,
                 write_bytes,
             },
             resource_fee: 0,

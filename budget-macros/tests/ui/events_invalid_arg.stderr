@@ -1,0 +1,5 @@
+error: expected `env`, `env_file`, `config`, or `pct`, got `wrong`
+ --> tests/ui/events_invalid_arg.rs:5:20
+  |
+5 | #[budget_events_lt(wrong = "500")]
+  |                    ^^^^^

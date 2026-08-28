@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspace Budget Report</title>
+<style>
+body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;margin:2rem auto;max-width:960px;padding:0 1rem;color:#1a202c}
+h1{font-size:1.4rem;margin-bottom:0.25rem}
+p.sub{color:#4a5568;margin-top:0}
+table{border-collapse:collapse;width:100%;margin-top:1rem}
+th,td{border:1px solid #cbd5e0;padding:0.4rem 0.6rem;text-align:left;vertical-align:top}
+th{background:#f7fafc}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.pass{color:#16a34a}
+.fail{color:#991b1b;font-weight:600}
+.empty{color:#4a5568;font-style:italic}
+</style>
+</head>
+<body>
+<h1>Workspace Budget Report</h1>
+<p class="sub">Check mode: measured values are compared against the limits declared in <code>budget.toml</code>.</p>
+<table>
+<thead><tr><th>Package</th><th>Function</th><th>Metric</th><th>Value</th><th>Limit</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>amm-pool-contract</td><td>do_expensive_work</td><td>CPU Instructions</td><td class="num" data-value="1234567">1,234,567</td><td class="num" data-value="5000000">5,000,000</td><td class="pass">&#10003; PASS</td></tr>
+<tr><td>amm-pool-contract</td><td>do_expensive_work</td><td>Read Bytes</td><td class="num" data-value="2048">2,048</td><td class="num" data-value="5000">5,000</td><td class="pass">&#10003; PASS</td></tr>
+<tr><td>amm-pool-contract</td><td>do_expensive_work</td><td>Write Bytes</td><td class="num" data-value="4096">4,096</td><td class="num" data-value="1000">1,000</td><td class="fail">&#10007; FAIL</td></tr>
+<tr><td>amm-pool-contract</td><td>broken_sim</td><td>CPU Instructions</td><td class="num">&mdash;</td><td class="num" data-value="5000000">5,000,000</td><td class="fail">&#10007; FAIL</td></tr>
+</tbody>
+</table>
+</body>
+</html>

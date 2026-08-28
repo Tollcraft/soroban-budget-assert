@@ -20,13 +20,14 @@ updates:
       # Bump these manually, one migration per PR, via their issues:
       #   #382 — soroban-sdk / stellar-xdr
       #   #383 — wasmparser
-      #   #469 — cargo_metadata (0.18 -> 0.23 retypes `crate_types` to `CrateType`
-      #          and `package.name` to `PackageName`; both are load-bearing in the
-      #          workspace-discovery path in `main.rs`)
       #
       # REMOVE EACH ENTRY as its issue lands, so routine updates resume. While an
-      # entry is here that crate gets no automated updates at all, security
-      # advisories included — watch them by hand until then.
+      # entry is here that crate gets no automated updates at all. Security
+      # advisories ARE covered by the cargo-deny workflow (.github/workflows/
+      # security.yml) which runs weekly and on every push/PR — see deny.toml.
+      #
+      # `cargo_metadata` (0.18 -> 0.23) landed in #469 and was removed from this
+      # list so routine updates resume.
       #
       # `toml` (0.8 -> 1.1) and `tabled` (0.14 -> 0.21) are also majors in this
       # group. They are deliberately NOT ignored: nothing has shown them to be
@@ -35,7 +36,6 @@ updates:
       - dependency-name: "soroban-sdk"
       - dependency-name: "stellar-xdr"
       - dependency-name: "wasmparser"
-      - dependency-name: "cargo_metadata"
 
   - package-ecosystem: "github-actions"
     directory: "/"

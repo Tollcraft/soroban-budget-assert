@@ -8,9 +8,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = "22.0.0"
+soroban-sdk = "27.0.3"
 
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
+[dev-dependencies]
+soroban-sdk = { version = "27.0.3", features = ["testutils"] }

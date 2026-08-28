@@ -1,0 +1,44 @@
+name: Security Audit (cargo-deny)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/security.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/security.yml"
+  # A vulnerability can be disclosed against code that already merged, so a
+  # push/PR trigger alone is not enough — this runs daily so a new RustSec
+  # advisory against an already-vendored dependency is caught even when
+  # nothing in the repository changed.
+  schedule:
+    - cron: "17 4 * * *"
+  # Allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # cargo-deny-action fetches its own Rust toolchain and cargo-deny
+      # binary internally, so no separate Rust/cargo-deny install step is
+      # needed here.
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check
+          log-level: warn

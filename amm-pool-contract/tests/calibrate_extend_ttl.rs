@@ -1,9 +1,8 @@
 //! Calibration test for TTL extension budget measurement.
 //!
-//! This test follows the same pattern as `calibrate_gap.rs`: it registers the
-//! contract as WASM, calls the target function (`extend_instance_ttl`), and
-//! prints the local CPU and memory budget estimates so they can be compared
-//! against a network-verified `simulateTransaction` figure.
+//! Measures local CPU and memory cost estimates for extending both instance
+//! and persistent storage TTLs at three different `extend_to` values so the
+//! stability of the local-vs-network gap can be evaluated.
 //!
 //! # Usage
 //!
@@ -20,37 +19,90 @@
 use amm_pool_contract::ConstantProductPoolClient;
 use soroban_sdk::Env;
 
-fn measure_extend_ttl(env: &Env) {
+const THRESHOLD: u32 = 100;
+
+/// Register the WASM contract, initialize it, and return the client.
+fn setup(env: &Env) -> ConstantProductPoolClient<'_> {
     let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
     let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
-    // AUDIT (Issue #92): `register_contract_wasm` is deprecated but remains the
-    // only API for registering raw WASM bytes in soroban-sdk 22.x.
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let contract_id = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(env, &contract_id);
-
     env.mock_all_auths();
-    env.cost_estimate().budget().reset_unlimited();
-
     // Initialize so instance storage entries exist before extending TTL.
     client.initialize();
+    client
+}
 
-    // Extend TTL: threshold = 100 ledgers, extend_to = 10,000 ledgers.
-    // These values match the existing test_budget_extend_ttl_isolated so the
-    // measurement is comparable to the budget assertion test.
-    client.extend_instance_ttl(&100, &10_000);
+// ── Instance TTL extension ────────────────────────────────────────────
 
+fn measure_instance_extend_ttl(env: &Env, extend_to: u32) -> (u64, u64) {
+    let client = setup(env);
+    env.cost_estimate().budget().reset_unlimited();
+    client.extend_instance_ttl(&THRESHOLD, &extend_to);
     let budget = env.cost_estimate().budget();
-    let cpu = budget.cpu_instruction_cost();
-    let mem = budget.memory_bytes_cost();
+    (budget.cpu_instruction_cost(), budget.memory_bytes_cost())
+}
 
-    println!("=== CALIBRATE_EXTEND_TTL ===");
+#[test]
+fn calibrate_instance_extend_ttl_1000() {
+    let env = Env::default();
+    let (cpu, mem) = measure_instance_extend_ttl(&env, 1_000);
+    println!("=== CALIBRATE_INSTANCE_EXTEND_TTL extend_to=1000 ===");
     println!("CALIBRATE_CPU={}", cpu);
     println!("CALIBRATE_MEM={}", mem);
 }
 
 #[test]
-fn calibrate_extend_ttl() {
+fn calibrate_instance_extend_ttl_10000() {
     let env = Env::default();
-    measure_extend_ttl(&env);
+    let (cpu, mem) = measure_instance_extend_ttl(&env, 10_000);
+    println!("=== CALIBRATE_INSTANCE_EXTEND_TTL extend_to=10000 ===");
+    println!("CALIBRATE_CPU={}", cpu);
+    println!("CALIBRATE_MEM={}", mem);
+}
+
+#[test]
+fn calibrate_instance_extend_ttl_50000() {
+    let env = Env::default();
+    let (cpu, mem) = measure_instance_extend_ttl(&env, 50_000);
+    println!("=== CALIBRATE_INSTANCE_EXTEND_TTL extend_to=50000 ===");
+    println!("CALIBRATE_CPU={}", cpu);
+    println!("CALIBRATE_MEM={}", mem);
+}
+
+// ── Persistent TTL extension ──────────────────────────────────────────
+
+fn measure_persistent_extend_ttl(env: &Env, extend_to: u32) -> (u64, u64) {
+    let client = setup(env);
+    env.cost_estimate().budget().reset_unlimited();
+    client.extend_persistent_ttl(&THRESHOLD, &extend_to);
+    let budget = env.cost_estimate().budget();
+    (budget.cpu_instruction_cost(), budget.memory_bytes_cost())
+}
+
+#[test]
+fn calibrate_persistent_extend_ttl_1000() {
+    let env = Env::default();
+    let (cpu, mem) = measure_persistent_extend_ttl(&env, 1_000);
+    println!("=== CALIBRATE_PERSISTENT_EXTEND_TTL extend_to=1000 ===");
+    println!("CALIBRATE_CPU={}", cpu);
+    println!("CALIBRATE_MEM={}", mem);
+}
+
+#[test]
+fn calibrate_persistent_extend_ttl_10000() {
+    let env = Env::default();
+    let (cpu, mem) = measure_persistent_extend_ttl(&env, 10_000);
+    println!("=== CALIBRATE_PERSISTENT_EXTEND_TTL extend_to=10000 ===");
+    println!("CALIBRATE_CPU={}", cpu);
+    println!("CALIBRATE_MEM={}", mem);
+}
+
+#[test]
+fn calibrate_persistent_extend_ttl_50000() {
+    let env = Env::default();
+    let (cpu, mem) = measure_persistent_extend_ttl(&env, 50_000);
+    println!("=== CALIBRATE_PERSISTENT_EXTEND_TTL extend_to=50000 ===");
+    println!("CALIBRATE_CPU={}", cpu);
+    println!("CALIBRATE_MEM={}", mem);
 }

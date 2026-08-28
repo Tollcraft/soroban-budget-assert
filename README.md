@@ -49,14 +49,16 @@ The fixture is a benchmark, not a product. It implements `initialize`, `deposit`
 
 ## 📊 Cost-over-time Dashboard
 
-Every push to `main` runs [`budget.yml`](.github/workflows/budget.yml), whose `record-history` job appends a `{commit, timestamp, data}` entry to `history.json` on the `gh-pages` branch. The static dashboard at [`site/dashboard.html`](site/dashboard.html) (published by [`deploy-site.yml`](.github/workflows/deploy-site.yml)) fetches that file at page load and plots per-function trend lines, so a regression like "`do_expensive_work` got 12% more expensive over the last ten commits" is visible at a glance.
+Every push to `main` runs [`budget.yml`](.github/workflows/budget.yml), whose `record-history` job appends a `{commit, timestamp, data}` entry to `history.json` on the `gh-pages` branch — but only when the uploaded report is a genuine network-measured measurement. The job inspects the report itself (every recorded function must carry all four metric rows with numeric values, and the known demo placeholder is rejected verbatim); anything else is declined without failing the run. Entries already in `history.json` that fail the same check (legacy mocked points) are purged on the next push to `main`. The static dashboard at [`site/dashboard.html`](site/dashboard.html) (published by [`deploy-site.yml`](.github/workflows/deploy-site.yml)) fetches that file at page load and plots per-function trend lines, so a regression like "`do_expensive_work` got 12% more expensive over the last ten commits" is visible at a glance — and every point on it is real.
 
 **How the pieces fit together:**
-1. `record-history` job → appends to `history.json` on `gh-pages`.
+
+1. `record-history` job → verifies the report is a real measurement, purges non-measured legacy entries, then appends to `history.json` on `gh-pages`.
 2. `deploy-site.yml` → publishes `site/**` to `gh-pages` with `keep_files: true`, so `history.json` is never wiped.
 3. The dashboard page fetches `history.json` same-origin and pivots it client-side into `package → function → metric` series — no backend, no build-time data baking.
 
 **Using this on your own repo:** copy the `record-history` job pattern and the `site/` folder into your repo, then open the dashboard with query params:
+
 - `?history=URL` — where to fetch `history.json` from (default `./history.json`, same-origin).
 - `?repo=owner/name` — links each point to its commit on GitHub (auto-detected on `<owner>.github.io/<repo>/` URLs; set explicitly for custom domains/forks).
 - `?limit=N` — how many recent commits to render (default 200).
@@ -65,17 +67,27 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
-* **Corresponding Stellar Protocol**: **Protocol 22**
+The workspace does not pin a single `soroban-sdk` version — the two contract fixtures pin different ones, and the reporting CLI depends on the XDR decoder rather than the SDK. The manifest dependencies (the source of truth for intent; `Cargo.lock` only records resolution) are:
+
+| Crate                                                                    | Manifest dependency                                                                                                 |
+| :----------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------ |
+| `amm-pool-contract` ([manifest](amm-pool-contract/Cargo.toml))           | `soroban-sdk` = `"22.0.11"` (also as a dev-dependency with the `testutils` feature)                                 |
+| `host-function-contract` ([manifest](host-function-contract/Cargo.toml)) | `soroban-sdk` = `"22.0.0"`                                                                                          |
+| `cargo-budget-report` ([manifest](cargo-budget-report/Cargo.toml))       | `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses; no direct `soroban-sdk` dependency) |
+
+- **Corresponding Stellar Protocol**: **Protocol 22**
+
+### What "Supported" means here
+
+A row marked **Supported** means: every workspace crate builds and passes `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` in CI on each push/PR to `main` ([quality.yml](.github/workflows/quality.yml), [budget.yml](.github/workflows/budget.yml)) — which compiles both pinned `soroban-sdk` versions and runs the Tier A macro test suite against the `amm-pool-contract` fixture. Additionally, the network-side figures in [MEASUREMENTS.md](MEASUREMENTS.md) were captured manually against Soroban testnet with these pins (one-time verification, not continuous CI). A row marked **Untested** has neither CI coverage nor manual verification.
 
 ### Compatibility Matrix
 
-| SDK Version | Protocol Version | Status | Notes |
-| :--- | :--- | :--- | :--- |
-| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
-| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
+| SDK Version     | Protocol Version | Status        | Notes                                                                                                                                                                                                                                                                                                                                                                                                               |
+| :-------------- | :--------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **`< 22.0.0`**  | `< 22`           | **Untested**  | Older protocols may use different transaction/resource schemas.                                                                                                                                                                                                                                                                                                                                                     |
+| **`22.0.x`**    | `22`             | **Supported** | Matches all pinned manifest dependencies: `soroban-sdk` `22.0.11` (`amm-pool-contract`), `soroban-sdk` `22.0.0` (`host-function-contract`), `stellar-xdr` `22.1.0` (`cargo-budget-report`). Note that the two fixtures pin different patch versions of the same minor line; whether to unify them is a separate concern not covered by this table.                                                                  |
+| **`>= 23.0.0`** | `>= 23`          | **Untested**  | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. Migration to newer SDK/XDR versions is actively worked on — see [#382](https://github.com/Tollcraft/soroban-budget-assert/issues/382) (soroban-sdk/stellar-xdr migration) and [#383](https://github.com/Tollcraft/soroban-budget-assert/issues/383) (wasmparser migration) — so the project is not stuck on protocol 22. |
 
 ---
 
@@ -84,17 +96,21 @@ Example: `https://your-org.github.io/your-repo/dashboard.html?limit=100`.
 ### 1. Installation
 
 Install from [crates.io](https://crates.io/crates/cargo-budget-report) (recommended):
+
 ```bash
 cargo install cargo-budget-report
 ```
 
 Alternatively, build from source:
+
 ```bash
 cargo install --path cargo-budget-report
 ```
 
 ### 2. Configuration
+
 Scaffold a `budget.toml` in your workspace root:
+
 ```bash
 cargo budget-report --init
 ```
@@ -103,6 +119,7 @@ This writes a commented template with all available fields and an example
 function entry. Review and adjust the values for your project.
 
 To overwrite an existing file, add `--force`:
+
 ```bash
 cargo budget-report --init --force
 ```
@@ -134,13 +151,14 @@ complexity = "warn"           # accepted by cargo-budget-report.
 ### 3. Usage
 
 **Generate a Workspace Report:**
+
 ```bash
 cargo budget-report
 ```
 
 **Use the same release profile for comparable numbers:**
 
-`cargo budget-report` builds contracts with `cargo build --release --target wasm32-unknown-unknown`, so the workspace's `[profile.release]` changes the WASM that gets deployed and simulated. The figures published by this project use the Soroban size-optimized release profile below; copy it into the workspace root before comparing your results to this repo's measurements:
+`cargo budget-report` builds contracts with `cargo build --release --target wasm32v1-none`, so the workspace's `[profile.release]` changes the WASM that gets deployed and simulated. The figures published by this project use the Soroban size-optimized release profile below; copy it into the workspace root before comparing your results to this repo's measurements:
 
 ```toml
 [profile.release]
@@ -191,7 +209,6 @@ cargo budget-report --check --json
 cargo budget-report --check --fail-fast
 ```
 
-
 **Use Macros in Tests:**
 
 The macros (`budget_cpu_lt`, `budget_mem_lt`, `budget_read_bytes_lt`, `budget_write_bytes_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
@@ -226,14 +243,14 @@ network-derived limits because it is thread-safe and review-friendly.
 
 The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all empirical cost measurements comparing local Soroban budget estimates against real network costs. The [Protocol Mechanics documentation](https://tollcraft.gitbook.io/docs/budget-assert/mechanics) cites this file as the source of truth for measured figures.
 
-
 ## 🤝 Community & Maintainers
 
 Join the discussion and get support:
-* **Community Link**: [Stellar Developer Discord](https://discord.gg/5aprtMSyR)
 
-| Maintainer | Role | Telegram |
-|------------|------|----------|
+- **Community Link**: [Stellar Developer Discord](https://discord.gg/5aprtMSyR)
+
+| Maintainer     | Role            | Telegram                                     |
+| -------------- | --------------- | -------------------------------------------- |
 | Tollcraft Team | Core Developers | [@tollcraft](https://t.me/+Gflo5jZStw1jMjE0) |
 
 ---
@@ -245,3 +262,13 @@ We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for 
 ### 🧑‍💻 Contributors
 
 [![Contributors](https://contrib.rocks/image?repo=Tollcraft/soroban-budget-assert)](https://github.com/Tollcraft/soroban-budget-assert/graphs/contributors)
+
+## Generating the man page
+
+The CLI man page is generated from the same clap definition as `--help`, so the docs stay in sync without a handwritten copy.
+
+```bash
+cargo run -p cargo-budget-report --bin generate-manpage -- cargo-budget-report.1
+```
+
+This writes the rendered `cargo-budget-report` man page to the chosen output path.

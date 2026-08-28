@@ -57,11 +57,13 @@ The storage-write row isolates the `write_bytes` fixture with a 1,024-byte value
 The storage-read row isolates `do_read_heavy_work` with 100 keys (25,600 bytes of reads). Unlike the write measurement, the read fixture necessarily includes a write phase (to populate the keys before reading them). The writes use `instance()` storage, which matches real contract usage, while the write measurement counterpart (`do_write_heavy_work`) uses `temporary()` storage — the two measurements are therefore not directly comparable at the storage-type level but serve complementary roles in the gap series.
 
 ```bash
-cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract
+cargo build --target wasm32v1-none --release -p amm-pool-contract
 cargo test -p amm-pool-contract test_storage_read_wasm_local -- --nocapture
 ```
 
 The network figure is collected via `cargo budget-report` on Soroban testnet against the same WASM. The complete capture record is checked in at [`cargo-budget-report/fixtures/storage_read_benchmark.json`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/fixtures/storage_read_benchmark.json).
+
+The host-function row uses the dedicated [`host-function-contract`](https://github.com/Tollcraft/soroban-budget-assert/tree/main/host-function-contract) fixture crate, which isolates 1,000 calls to `env.ledger().sequence()` with zero storage side-effects. See [`host-function-contract/README.md`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/host-function-contract/README.md) for build, execution, and reproduction instructions.
 
 ---
 
@@ -74,14 +76,14 @@ The existing measurement series shows the local-vs-network gap can flip directio
 Each measurement uses the same contract (`amm-pool-contract`), the same function (`do_expensive_work(10_000)`), and the same build profile (workspace `[profile.release]`: `opt-level="z"`, LTO, `codegen-units=1`). Only the `soroban-sdk` version changes. The local WASM estimate is collected by the `calibrate_gap` test in `amm-pool-contract/tests/calibrate_gap.rs`:
 
 ```bash
-cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract
+cargo build --target wasm32v1-none --release -p amm-pool-contract
 cargo test -p amm-pool-contract calibrate_gap -- --nocapture
 ```
 
 SDK 20 and 21 use `env.budget()` instead of `env.cost_estimate().budget()`. For those versions, run with `--features sdk20` and use the `calibrate_gap_sdk20` test binary:
 
 ```bash
-cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract
+cargo build --target wasm32v1-none --release -p amm-pool-contract
 cargo test -p amm-pool-contract --features sdk20 --test calibrate_gap_sdk20 calibrate_gap -- --nocapture
 ```
 
@@ -115,7 +117,7 @@ SDK 20 is dramatically more expensive (+149% CPU) because its `vm.exec` cost mod
 
 1. Pin the desired `soroban-sdk` version in `amm-pool-contract/Cargo.toml` (both `[dependencies]` and `[dev-dependencies]`).
 2. Run `cargo update -p soroban-sdk` to resolve.
-3. Build the WASM: `cargo build --target wasm32-unknown-unknown --release -p amm-pool-contract`.
+3. Build the WASM: `cargo build --target wasm32v1-none --release -p amm-pool-contract`.
 4. Collect local estimate: `cargo test -p amm-pool-contract calibrate_gap -- --nocapture`.
 5. For the network figure, deploy the WASM to testnet and run `cargo run --bin cargo-budget-report -- --network testnet` (see [Network simulation in mechanics.md](mechanics.md#tier-b-network-simulation-cargo-budget-report)).
 6. Compute `delta = (local − network) / network` and add a row to the table above.

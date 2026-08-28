@@ -4,7 +4,7 @@ This guide is for Soroban developers who want budget assertions in an existing c
 
 ## Prerequisites
 
-- Rust with the `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)
+- Rust with the `wasm32v1-none` target (`rustup target add wasm32v1-none`)
 - The `stellar` CLI
 - A funded testnet identity: `stellar keys generate alice --network testnet --fund`
 
@@ -58,13 +58,15 @@ cargo budget-report
 
 The CLI finds every contract in the workspace, builds it to WASM, deploys to testnet, simulates every exported function, and prints one table of CPU instructions, read bytes, and write bytes. Use `--json` if you want to feed the numbers to a script.
 
+If this step fails partway through — friendbot funding, deploy, or simulation — see the [Testnet Troubleshooting Guide](testnet_troubleshooting.md) for what each failure means and how to resolve it.
+
 {% hint style="warning" %}
 This is not your transaction fee. The three metrics are inputs to the non-refundable resource fee; rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. If you are budgeting what users will actually pay — especially for a contract that writes persistent state, where rent often dominates — read [Measurement scope](reference.md#measurement-scope) first.
 {% endhint %}
 
 ## Step 4: Pin the costs into tests
 
-Add the macro crate to your contract's dev-dependencies, then gate a test. The macro asserts the *local* WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds:
+Add the macro crate to your contract's dev-dependencies, then gate a test. The macro asserts the *local* WASM estimate, so set the limit from a local measurement: run the test once unlimited, note the printed cost, and pin ~5% above it. Keep the Step 3 network number alongside it in a comment — local and network costs can differ by double-digit percentages in either direction, and the network number is the one that decides whether your transaction succeeds. For detailed guidance on choosing safety margins and understanding operational gaps, see [Local vs. Network Cost Gap](cost_gap.md).
 
 ```rust
 use budget_macros::budget_cpu_lt;
@@ -80,14 +82,12 @@ fn test_expensive_function_budget() {
     )
     .expect("WASM file not found — build the contract first");
 
-    // `register_contract_wasm` is deprecated in soroban-sdk 22.x in favour of
-    // `Env::register`, but `Env::register` only registers Rust contract types
-    // for in-memory host execution.  Raw WASM byte-slice registration is
-    // required for accurate CPU/memory budget measurements (Rust-level
-    // estimates undercount costs), and `register_contract_wasm` is the only
-    // API that supports it in the current SDK.
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    // `Env::register` accepts raw WASM bytes: `Register` is implemented for
+    // `&[u8]` in soroban-sdk 22.x, and it drives the same host path the
+    // deprecated `register_contract_wasm` used. Raw WASM registration (rather
+    // than linked-in Rust) is required for accurate CPU/memory budget
+    // measurements, since Rust-level estimates undercount costs.
+    let contract_id = env.register(wasm.as_slice(), ());
 
     // Replace `MyContractClient` with the generated client type for your
     // contract, e.g. `MyContractClient::new(&env, &contract_id)`.
@@ -101,6 +101,7 @@ fn test_expensive_function_budget() {
 Two details matter:
 
 {% hint style="warning" %}
+- **Local estimates differ from network costs.** A local check passing in CI does not guarantee network success. Read [Local vs. Network Cost Gap](cost_gap.md) to understand operation gaps and safety margins.
 - **Run the WASM, not raw Rust.** Raw Rust estimates ran ~81% below real network cost in our measurements; a limit asserted against them protects nothing.
 - **`reset_unlimited()` before the call**, so the default test budget doesn't cap the measurement.
 {% endhint %}
@@ -113,7 +114,7 @@ Build the WASM, then run the tests, on every push and pull request:
 
 ```yaml
 - name: Build contracts
-  run: cargo build -p my-contract --release --target wasm32-unknown-unknown
+  run: cargo build -p my-contract --release --target wasm32v1-none
 
 - name: Budget assertions
   run: cargo test
@@ -159,6 +160,69 @@ tolerance = 0.05                    # tighter override for a known-sensitive cal
 ```
 
 A single bad commit can no longer ride the `--check-baseline` gate; the rest of the workflow (tier-A macros, the textual report, `--json` for scripts) is unchanged.
+
+## Step 7 (optional): Watch mode for iterative development
+
+When iterating on a function that is over budget, you want to know whether each change moved the number — without running a full `cargo budget-report` by hand every time. Watch mode automates this loop:
+
+```bash
+cargo budget-report --watch
+```
+
+### What it does
+
+1. **Watches the workspace** for changes to source files (`.rs`, `.toml`, etc.).
+2. **On each change**, rebuilds and re-measures only the affected packages. A change confined to one package does not re-deploy every other package in the workspace.
+3. **Prints a delta** comparing the current measurements against the previous run, so you can see the impact of your edit immediately.
+4. **Coalesces rapid edits** — saving four times in ten seconds triggers one re-measurement, not four.
+5. **Handles build failures gracefully** — if a build fails, it prints the error and keeps watching.
+6. **Exits cleanly on Ctrl-C** without leaving deployed contracts or temp files behind.
+
+### Restrictions
+
+- **Interactive terminals only**: watch mode refuses to start when stdout is not a terminal (e.g. in CI). Run without `--watch` for CI.
+- **Not usable in pipelines**: the progress output goes to stderr so it does not pollute stdout, but the tool is designed for human-in-the-loop use.
+
+### What counts as a "relevant change"
+
+Only source files under workspace package directories trigger a re-measurement. The following are always excluded:
+
+- `target/` (build output — including the tool's own WASM builds)
+- `.git/` (version control metadata)
+- `node_modules/` (JavaScript dependencies)
+- `.github/` (CI configuration)
+
+This prevents the tool from retriggering on its own build output or on unrelated files.
+
+### Example session
+
+```
+$ cargo budget-report --watch
+Watch mode active. Watching for source changes...
+Press Ctrl-C to stop.
+
+Discovering workspace members...
+Building package 'amm-pool-contract' for wasm32...
+Contract deployed at: C...
+Simulating function 'do_expensive_work'...
+
+=== WORKSPACE BUDGET REPORT ===
+  amm-pool-contract::do_expensive_work [CPU Instructions] = 756,678 inst.
+  amm-pool-contract::do_expensive_work [Read Bytes] = 2,048 B
+  amm-pool-contract::do_expensive_work [Write Bytes] = 4,096 B
+Watching for changes...
+
+── Re-measuring workspace ──────────────────────────
+  amm-pool-contract::do_expensive_work [cpu_instructions] 756678 -> 720100 (-36578, -5%)
+
+=== WORKSPACE BUDGET REPORT ===
+  amm-pool-contract::do_expensive_work [CPU Instructions] = 720,100 inst.
+  amm-pool-contract::do_expensive_work [Read Bytes] = 2,048 B
+  amm-pool-contract::do_expensive_work [Write Bytes] = 4,096 B
+Watching for changes...
+```
+
+The delta line shows the direction and percentage of the change, so you can see at a glance whether your optimization moved the needle.
 
 ## ⚙️ Supported Versions & Compatibility
 

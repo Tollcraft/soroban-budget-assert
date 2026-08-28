@@ -1,113 +1,58 @@
 use serde::Serialize;
-use serde_json::Value;
-use std::fmt;
-use std::str::FromStr;
 
-/// Supported output formats for budget reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputFormat {
-    Human,
-    Json,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Human
-    }
-}
-
-impl FromStr for OutputFormat {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "human" => Ok(Self::Human),
-            "json" => Ok(Self::Json),
-            _ => Err(format!(
-                "unsupported output format `{value}`; expected `human` or `json`"
-            )),
-        }
-    }
-}
-
-impl fmt::Display for OutputFormat {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Human => formatter.write_str("human"),
-            Self::Json => formatter.write_str("json"),
-        }
-    }
-}
-
-/// The stable top-level JSON representation emitted by `--format json`.
+/// Current JSON schema version for budget report output.
 ///
-/// The snapshot is intentionally kept as a serialized value here. This lets
-/// the report command serialize its existing snapshot data structures without
-/// changing their ownership or presentation logic, while guaranteeing a
-/// stable top-level schema for consumers.
-#[derive(Debug, Serialize)]
-struct JsonReport<'a> {
-    schema_version: u8,
-    snapshots: &'a Value,
-}
+/// Increment this value when the JSON structure changes in a way that
+/// requires consumers to update their parsing logic (see
+/// `docs/src/reference.md` for the full versioning policy).
+pub(crate) const SCHEMA_VERSION: u32 = 1;
 
-/// Serialize report snapshot data using the public JSON report schema.
+/// Top-level wrapper emitted by `cargo budget-report --json`.
 ///
-/// The returned string contains only JSON. No status messages, labels, or
-/// progress output are added, which makes it safe to pipe directly into
-/// another process.
-pub fn render_json<T: Serialize>(snapshots: &T) -> Result<String, serde_json::Error> {
-    let snapshots = serde_json::to_value(snapshots)?;
-    serde_json::to_string_pretty(&JsonReport {
-        schema_version: 1,
-        snapshots: &snapshots,
-    })
+/// Every JSON document produced by the budget report is an object with a
+/// `schema_version` integer and a `snapshots` array.  The individual
+/// snapshot objects are unchanged from the pre-versioning format.
+#[derive(Serialize)]
+pub(crate) struct BudgetReportJson<'a> {
+    schema_version: u32,
+    snapshots: &'a [crate::CostReport],
 }
 
-/// Render a report according to the selected output format.
-pub fn render<T, F>(
-    format: OutputFormat,
-    snapshots: &T,
-    human_renderer: F,
-) -> Result<String, serde_json::Error>
-where
-    T: Serialize,
-    F: FnOnce(&T) -> String,
-{
-    match format {
-        OutputFormat::Human => Ok(human_renderer(snapshots)),
-        OutputFormat::Json => render_json(snapshots),
-    }
+/// Wrap the given report rows in the versioned JSON envelope.
+pub(crate) fn render_json(reports: &[crate::CostReport]) -> String {
+    let wrapper = BudgetReportJson {
+        schema_version: SCHEMA_VERSION,
+        snapshots: reports,
+    };
+    serde_json::to_string_pretty(&wrapper).expect("report serialization should not fail")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{render_json, OutputFormat};
-    use serde_json::json;
-    use std::str::FromStr;
+    use super::*;
+    use crate::CostReport;
 
     #[test]
-    fn json_output_has_stable_schema() {
-        let snapshot = json!({
-            "contract": "example",
-            "cpu": 123,
-            "memory": 456
-        });
+    fn budget_report_json_contains_schema_version() {
+        let reports = vec![CostReport {
+            package: "test-pkg".to_string(),
+            function: "test_fn".to_string(),
+            metric: "CPU Instructions",
+            value: Some(12345),
+            limit: None,
+            pass: None,
+        }];
 
-        let output = render_json(&snapshot).expect("snapshot should serialize");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&output).expect("output must be valid JSON");
-
-        assert_eq!(parsed["schema_version"], 1);
-        assert_eq!(parsed["snapshots"]["contract"], "example");
-        assert_eq!(parsed["snapshots"]["cpu"], 123);
-        assert_eq!(parsed["snapshots"]["memory"], 456);
+        let json_str = render_json(&reports);
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(json["schema_version"], SCHEMA_VERSION);
+        assert!(json["snapshots"].is_array());
+        assert_eq!(json["snapshots"][0]["package"], "test-pkg");
+        assert_eq!(json["snapshots"][0]["value"], 12345);
     }
 
     #[test]
-    fn format_parser_accepts_json_only_as_json() {
-        assert_eq!(OutputFormat::from_str("json"), Ok(OutputFormat::Json));
-        assert_eq!(OutputFormat::from_str("human"), Ok(OutputFormat::Human));
-        assert!(OutputFormat::from_str("yaml").is_err());
+    fn schema_version_matches_documented_current_version() {
+        assert_eq!(SCHEMA_VERSION, 1);
     }
 }
