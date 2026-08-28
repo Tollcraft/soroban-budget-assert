@@ -228,11 +228,13 @@ pub enum ColorChoice {
 /// Parses CLI arguments, supporting both `cargo budget-report [OPTIONS]`
 /// (when invoked via Cargo as a subcommand) and `cargo-budget-report [OPTIONS]`
 /// (when invoked directly as a standalone binary).
+#[allow(dead_code)]
 pub fn parse_args() -> BudgetReportArgs {
     parse_args_from(std::env::args_os())
 }
 
 /// Helper for parsing arguments from an arbitrary iterator.
+#[allow(dead_code)]
 pub fn parse_args_from<I, T>(args: I) -> BudgetReportArgs
 where
     I: IntoIterator<Item = T>,
