@@ -24,6 +24,7 @@ pub(crate) fn render_markdown(reports: &[CostReport]) -> String {
     out
 }
 
+#[allow(clippy::manual_is_multiple_of)]
 fn format_number(n: u32) -> String {
     let s = n.to_string();
     let mut result = String::new();

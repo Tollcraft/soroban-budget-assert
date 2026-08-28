@@ -641,36 +641,60 @@ fn test_export_tier_a_budget_report() {
     };
     let wasm_size = wasm_bytes.len() as u32;
 
-    let env = Env::default();
-    let contract_id = env.register(wasm_bytes.as_slice(), ());
-    let client = ConstantProductPoolClient::new(&env, &contract_id);
-    let user = Address::generate(&env);
-    client.initialize();
-    env.mock_all_auths();
-
-    // 1) do_expensive_work(10_000)
-    env.cost_estimate().budget().reset_unlimited();
-    client.do_expensive_work(&10_000);
-    let exp_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
-    let exp_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+    // 1) do_expensive_work
+    let (exp_cpu, exp_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_expensive_work(&10_000);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
 
     // 2) require_auth_only
-    env.cost_estimate().budget().reset_unlimited();
-    client.require_auth_only(&user);
-    let auth_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
-    let auth_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+    let (auth_cpu, auth_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        let user = Address::generate(&env);
+        client.initialize();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        client.require_auth_only(&user);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
 
-    // 3) allocate_vec(10_000)
-    env.cost_estimate().budget().reset_unlimited();
-    client.allocate_vec(&10_000);
-    let alloc_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
-    let alloc_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+    // 3) allocate_vec
+    let (alloc_cpu, alloc_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.allocate_vec(&10_000);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
 
-    // 4) do_event_heavy_work(5)
-    env.cost_estimate().budget().reset_unlimited();
-    client.do_event_heavy_work(&5);
-    let ev_cpu = env.cost_estimate().budget().cpu_instruction_cost() as u32;
-    let ev_mem = env.cost_estimate().budget().memory_bytes_cost() as u32;
+    // 4) do_event_heavy_work
+    let (ev_cpu, ev_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_event_heavy_work(&5);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
 
     struct Row {
         package: &'static str,
