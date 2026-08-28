@@ -670,13 +670,14 @@ fn test_export_tier_a_budget_report() {
         )
     };
 
-    // 3) allocate_vec
+    // 3) allocate_vec — use a small n to stay within the 40 MB host
+    //    invocation memory ceiling (10_000 blows through it at ~400 MB).
     let (alloc_cpu, alloc_mem) = {
         let env = Env::default();
         let contract_id = env.register(wasm_bytes.as_slice(), ());
         let client = ConstantProductPoolClient::new(&env, &contract_id);
         env.cost_estimate().budget().reset_unlimited();
-        client.allocate_vec(&10_000);
+        client.allocate_vec(&100);
         (
             env.cost_estimate().budget().cpu_instruction_cost() as u32,
             env.cost_estimate().budget().memory_bytes_cost() as u32,
