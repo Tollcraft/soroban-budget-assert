@@ -183,7 +183,7 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn build_invoke_args_all_empty_strings() {
-        let args = build_invoke_args("", "", "", "", &[]);
+        let args = build_invoke_args("", "", "", "", &[], None);
         assert_eq!(args.len(), 11);
         assert_eq!(args[3], ""); // contract id
         assert_eq!(args[5], ""); // source
@@ -199,6 +199,7 @@ mod off_by_one_and_zero_length_tests {
             "testnet",
             "transfer",
             &["--value".into(), "!@#$%^&*()".into()],
+            None,
         );
         assert_eq!(args[11], "--value");
         assert_eq!(args[12], "!@#$%^&*()");
@@ -206,14 +207,14 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn build_invoke_args_args_with_empty_strings() {
-        let args = build_invoke_args("C", "alice", "testnet", "f", &["".into(), "".into()]);
+        let args = build_invoke_args("C", "alice", "testnet", "f", &["".into(), "".into()], None);
         assert_eq!(args[11], "");
         assert_eq!(args[12], "");
     }
 
     #[test]
     fn build_invoke_args_function_name_with_special_characters() {
-        let args = build_invoke_args("C", "alice", "testnet", "do_work_123!", &[]);
+        let args = build_invoke_args("C", "alice", "testnet", "do_work_123!", &[], None);
         assert_eq!(args.last(), Some(&"do_work_123!".to_string()));
     }
 

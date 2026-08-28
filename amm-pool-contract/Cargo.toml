@@ -16,3 +16,4 @@ budget-macros = { path = "../budget-macros" }
 
 [features]
 sdk20 = []
+sdk22 = []

@@ -435,7 +435,7 @@ args = [""]
 
     #[test]
     fn build_invoke_args_all_empty_strings() {
-        let args = build_invoke_args("", "", "", "", &[]);
+        let args = build_invoke_args("", "", "", "", &[], None);
         assert_eq!(args.len(), 11);
         assert_eq!(args[3], ""); // contract id
         assert_eq!(args[5], ""); // source
@@ -445,20 +445,20 @@ args = [""]
 
     #[test]
     fn build_invoke_args_empty_string_function_arg() {
-        let args = build_invoke_args("C", "alice", "testnet", "f", &["".into()]);
+        let args = build_invoke_args("C", "alice", "testnet", "f", &["".into()], None);
         assert_eq!(args.len(), 12);
         assert_eq!(args.last(), Some(&"".to_string()));
     }
 
     #[test]
     fn build_invoke_args_whitespace_only_function_arg() {
-        let args = build_invoke_args("C", "alice", "testnet", "f", &["   ".into()]);
+        let args = build_invoke_args("C", "alice", "testnet", "f", &["   ".into()], None);
         assert_eq!(args.last(), Some(&"   ".to_string()));
     }
 
     #[test]
     fn build_invoke_args_one_arg_boundary_length() {
-        let args = build_invoke_args("CID", "src", "net", "fn", &["x".into()]);
+        let args = build_invoke_args("CID", "src", "net", "fn", &["x".into()], None);
         // 11 base args + 1 function arg
         assert_eq!(args.len(), 12);
         assert_eq!(args[10], "fn");

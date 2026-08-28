@@ -1,10 +1,14 @@
 use crate::cli::{BudgetReportArgs, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
-use crate::error::{Error, Result, SimulationFailure, SimulationOutcome};
+use crate::error::{
+    Error, Result, SimulationFailure, SimulationOutcome, EXIT_BUDGET_EXCEEDED,
+    EXIT_NETWORK_FAILURE, EXIT_REGRESSION, EXIT_SUCCESS,
+};
 use anyhow::Context;
 mod arg_spec;
 mod cli;
 mod compare;
+mod deploy_cache;
 mod fixture;
 mod html_output;
 mod json_output;
@@ -264,7 +268,8 @@ pub(crate) struct BudgetToml {
     network: Option<String>,
     source: Option<String>,
     /// Global default tolerance, used unless overridden per function or by `--tolerance`.
-    #[serde(default)]
+    /// Accepts a fraction (`0.05`) or a percentage string (`"5%"`).
+    #[serde(default, deserialize_with = "deserialize_tolerance")]
     tolerance: Option<f64>,
     #[serde(default)]
     margin: Option<MarginToml>,
@@ -396,8 +401,9 @@ pub(crate) struct FunctionConfig {
     read_limit: Option<u64>,
     #[serde(default)]
     write_limit: Option<u64>,
-    /// Optional per-function override for the regression tolerance.
-    #[serde(default)]
+    /// Optional per-function override for the regression tolerance. Accepts a
+    /// fraction (`0.05`) or a percentage string (`"5%"`).
+    #[serde(default, deserialize_with = "deserialize_tolerance")]
     tolerance: Option<f64>,
 }
 
@@ -796,12 +802,15 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
 /// * `network` - The target network passphrase or alias.
 /// * `function` - The exported function name to invoke.
 /// * `func_args` - Additional CLI arguments forwarded after the `--` separator.
+/// * `rpc_override` - `Some((rpc_url, network_passphrase))` to target a custom
+///   local/standalone RPC node instead of a built-in `--network` alias (#49).
 fn build_invoke_args(
     contract_id: &str,
     source: &str,
     network: &str,
     function: &str,
     func_args: &[String],
+    rpc_override: Option<(&str, &str)>,
 ) -> Vec<String> {
     let mut invoke_args = vec![
         "contract".to_string(),
@@ -810,12 +819,22 @@ fn build_invoke_args(
         contract_id.to_string(),
         "--source".to_string(),
         source.to_string(),
-        "--network".to_string(),
-        network.to_string(),
-        "--build-only".to_string(),
-        "--".to_string(),
-        function.to_string(),
     ];
+    match rpc_override {
+        Some((rpc_url, passphrase)) => {
+            invoke_args.push("--rpc-url".to_string());
+            invoke_args.push(rpc_url.to_string());
+            invoke_args.push("--network-passphrase".to_string());
+            invoke_args.push(passphrase.to_string());
+        }
+        None => {
+            invoke_args.push("--network".to_string());
+            invoke_args.push(network.to_string());
+        }
+    }
+    invoke_args.push("--build-only".to_string());
+    invoke_args.push("--".to_string());
+    invoke_args.push(function.to_string());
     invoke_args.extend(func_args.iter().cloned());
     invoke_args
 }
@@ -957,6 +976,51 @@ pub(crate) fn resolve_tolerance(
     Ok(Tolerance::default())
 }
 
+/// Decide the exit code from the run's boolean outcomes.
+///
+/// Precedence (most actionable first): regression beyond tolerance beats a
+/// budget-exceeded result, which beats a network/infrastructure fault. A
+/// regression is a real signal that should block a PR, whereas a network
+/// fault is safe to retry, so surfacing the regression wins when both occur.
+fn classify_outcome(has_regressions: bool, budget_exceeded: bool, network_failure: bool) -> i32 {
+    if has_regressions {
+        EXIT_REGRESSION
+    } else if budget_exceeded {
+        EXIT_BUDGET_EXCEEDED
+    } else if network_failure {
+        EXIT_NETWORK_FAILURE
+    } else {
+        EXIT_SUCCESS
+    }
+}
+
+/// Deserialize a tolerance value that may be written either as a plain number
+/// (`tolerance = 0.05`) or as a string (`tolerance = "5%"`), matching the
+/// syntax accepted by [`compare::parse_tolerance`]. A missing field yields
+/// `None` (fall back to the global/default tolerance); an invalid value
+/// produces a deserialization error, which surfaces as a configuration error.
+fn deserialize_tolerance<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Num(f64),
+        Str(String),
+    }
+    match Option::<Raw>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(Raw::Num(n)) => Ok(Some(n)),
+        Some(Raw::Str(s)) => {
+            let t = compare::parse_tolerance(&s).map_err(serde::de::Error::custom)?;
+            Ok(Some(t.value))
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct CheckReportJson<'r> {
     has_regressions: bool,
@@ -964,6 +1028,10 @@ struct CheckReportJson<'r> {
     default_tolerance: f64,
     regressions: Vec<RegressionJson<'r>>,
     improvements: Vec<ImprovementJson<'r>>,
+    /// Measurements that passed (within tolerance). Included so a passing
+    /// result is interpretable: each entry records the tolerance that was
+    /// applied to it (per-function override, global, or default).
+    passes: Vec<PassJson<'r>>,
     new_entries: Vec<NewEntryJson<'r>>,
     stale_entries: Vec<StaleEntryJson<'r>>,
 }
@@ -990,6 +1058,17 @@ struct ImprovementJson<'r> {
 }
 
 #[derive(serde::Serialize)]
+struct PassJson<'r> {
+    package: &'r str,
+    function: &'r str,
+    metric: &'r str,
+    baseline: u64,
+    current: u64,
+    tolerance: f64,
+    max_allowed: u64,
+}
+
+#[derive(serde::Serialize)]
 struct NewEntryJson<'r> {
     package: &'r str,
     function: &'r str,
@@ -1007,6 +1086,7 @@ fn render_check_report_json(
 ) -> serde_json::Value {
     let mut regressions = Vec::new();
     let mut improvements = Vec::new();
+    let mut passes = Vec::new();
     for func in &report.compared {
         for m in &func.metrics {
             match m.verdict {
@@ -1031,7 +1111,17 @@ fn render_check_report_json(
                         tolerance: m.tolerance.value,
                     });
                 }
-                compare::Verdict::Pass => {}
+                compare::Verdict::Pass => {
+                    passes.push(PassJson {
+                        package: &func.package,
+                        function: &func.function,
+                        metric: m.metric.label(),
+                        baseline: m.baseline,
+                        current: m.current,
+                        tolerance: m.tolerance.value,
+                        max_allowed: max_allowed_metric(m.baseline, m.tolerance.value),
+                    });
+                }
             }
         }
     }
@@ -1057,6 +1147,7 @@ fn render_check_report_json(
         default_tolerance: default_tolerance.value,
         regressions,
         improvements,
+        passes,
         new_entries,
         stale_entries,
     };
@@ -1084,7 +1175,31 @@ fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
 ///
 /// Each check fails fast with an actionable error message. Checks that are
 /// not applicable (e.g. rustup not installed) are silently skipped.
-fn run_preflight_checks(quiet: bool) -> Result<()> {
+fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> {
+    // ── source signing key (#123) ──────────────────────────────────────
+    // The chosen mechanism for a signing key that doesn't depend on the
+    // `stellar` CLI key store is `--source-secret` / `STELLAR_SECRET_KEY`
+    // (an `S...` ed25519 seed). It is validated here so a typo fails fast
+    // rather than deep inside a deploy. Native deploy/invoke that actually
+    // use it are a follow-up; today deploy/invoke still go through the
+    // `stellar` CLI, so its presence is still checked below.
+    if let Some(secret) = source_secret {
+        if !quiet {
+            eprint!("Checking --source-secret... ");
+        }
+        let ok = stellar_strkey::ed25519::PrivateKey::from_string(secret).is_ok();
+        if !ok {
+            return Err(Error::Message(
+                "--source-secret / STELLAR_SECRET_KEY is not a valid Stellar secret seed \
+                 (expected an `S...` strkey)"
+                    .to_string(),
+            ));
+        }
+        if !quiet {
+            eprintln!("ok");
+        }
+    }
+
     // ── stellar CLI ─────────────────────────────────────────────────────
     if !quiet {
         eprint!("Checking Stellar CLI... ");
@@ -1094,6 +1209,8 @@ fn run_preflight_checks(quiet: bool) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(Error::Message(
                 "Stellar CLI is not installed or not on PATH.\n\
+                 It is still required for contract deploy and invoke-build \
+                 (native RPC is a work in progress; see issue #123).\n\
                  Install it with:  cargo install --locked stellar-cli\n\
                  See: https://github.com/stellar/stellar-cli"
                     .to_string(),
@@ -1442,13 +1559,30 @@ impl transport::Transport for TransportKind {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    let code = match run() {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            err.exit_code()
+        }
+    };
+    std::process::exit(code);
+}
+
+/// Run the report and return the exit code CI should observe.
+///
+/// Distinct outcomes get distinct codes (see `docs/src/ci_cd_integration.md`):
+/// success, configuration error, budget exceeded, regression beyond
+/// tolerance, and network/infrastructure failure. Any unexpected error
+/// bubbles up as `Err` and is mapped to its variant's code by the caller.
+fn run() -> Result<i32> {
     let args = crate::cli::parse_args();
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
         scaffold_init(args.force, args.quiet)?;
-        return Ok(());
+        return Ok(EXIT_SUCCESS);
     }
 
     // ── --derive-limits: read Tier B JSON → write env file, no simulation ──
@@ -1459,7 +1593,7 @@ fn main() -> anyhow::Result<()> {
     if matches!(Mode::from_args(&args), Mode::Derive(..)) {
         let toml_config = load_budget_toml("budget.toml")?;
         run_derive_mode(&args, &toml_config)?;
-        return Ok(());
+        return Ok(EXIT_SUCCESS);
     }
 
     if args.markdown {
@@ -1476,7 +1610,7 @@ fn main() -> anyhow::Result<()> {
     // Replay runs serve every network call from a fixture, so they need
     // neither the `stellar` CLI nor `curl`; skip the checks entirely.
     if args.replay.is_none() {
-        run_preflight_checks(args.quiet)?;
+        run_preflight_checks(args.quiet, args.source_secret.as_deref())?;
     }
 
     let toml_config = load_budget_toml("budget.toml")?;
@@ -1522,17 +1656,39 @@ fn main() -> anyhow::Result<()> {
             network,
             source,
             retry_config,
-        );
+        )
+        .map_err(Error::from)
+        .map(|()| EXIT_SUCCESS);
     }
 
+    // Custom local/standalone RPC target (#49). `--network-passphrase` is
+    // clap-required alongside `--rpc-url`, so both are Some or both None.
+    let net_override = match (&args.rpc_url, &args.network_passphrase) {
+        (Some(rpc_url), Some(passphrase)) => Some(live::NetworkOverride {
+            rpc_url: rpc_url.clone(),
+            network_passphrase: passphrase.clone(),
+        }),
+        _ => None,
+    };
+
+    // With a custom RPC, the passphrase is the network's identity — use it
+    // as the `network` label (cache key, `stellar --network` fallback) when
+    // no explicit `--network` / `budget.toml` value is given.
     let network = args
         .network
         .or(toml_config.network.clone())
+        .or_else(|| net_override.as_ref().map(|o| o.network_passphrase.clone()))
         .context("missing --network or budget.toml network field")?;
     let source = args
         .source
         .or(toml_config.source.clone())
         .context("missing --source or budget.toml source field")?;
+
+    if let Some(o) = &net_override {
+        if !args.quiet {
+            eprintln!("Targeting custom RPC endpoint {}", o.rpc_url);
+        }
+    }
 
     if !args.quiet {
         eprintln!("Discovering workspace members...");
@@ -1566,10 +1722,21 @@ fn main() -> anyhow::Result<()> {
         TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
             retry_config,
             args.quiet,
+            net_override.clone(),
         )))
     } else {
-        TransportKind::Live(live::LiveTransport::new(retry_config, args.quiet))
+        TransportKind::Live(live::LiveTransport::new(
+            retry_config,
+            args.quiet,
+            net_override.clone(),
+        ))
     };
+
+    // Deploy cache (#79): reuse a contract id across runs when the wasm
+    // hash, network, and source all match. `--replay` never deploys, so it
+    // has nothing to cache; `--no-deploy-cache` bypasses lookups but still
+    // records fresh deploys so a later cached run stays warm.
+    let mut deploy_cache = deploy_cache::DeployCache::load(std::path::Path::new("."));
 
     // Union of every function exported by every contract in the workspace.
     // Used at the end of the run (issue #399) to validate that every function
@@ -1602,7 +1769,7 @@ fn main() -> anyhow::Result<()> {
             .context("failed to build package")?;
 
         if !build_status.success() {
-            anyhow::bail!("Failed to build {}", package.name);
+            return Err(Error::Message(format!("Failed to build {}", package.name)));
         }
 
         // Locate the cdylib target to derive the correct WASM filename.
@@ -1682,20 +1849,44 @@ fn main() -> anyhow::Result<()> {
             Some(pb)
         };
 
-        let contract_id = deploy_contract_with_retry(
-            &mut transport,
-            wasm_path.as_std_path(),
-            &source,
-            &network,
-            &package.name,
-            &retry_config,
-        )?;
+        let wasm_std_path = wasm_path.as_std_path();
+        let wasm_sha = deploy_cache::wasm_hash(wasm_std_path)?;
+        let cached_id = if args.no_deploy_cache {
+            None
+        } else {
+            deploy_cache
+                .get(&wasm_sha, &network, &source)
+                .map(str::to_string)
+        };
+
+        let (contract_id, from_cache) = match cached_id {
+            Some(id) => (id, true),
+            None => {
+                let id = deploy_contract_with_retry(
+                    &mut transport,
+                    wasm_std_path,
+                    &source,
+                    &network,
+                    &package.name,
+                    &retry_config,
+                )?;
+                deploy_cache.put(package.name.as_str(), &wasm_sha, &network, &source, &id);
+                (id, false)
+            }
+        };
 
         if let Some(spinner) = spinner {
             spinner.finish_and_clear();
         }
 
-        eprintln!("Contract deployed at: {}", contract_id);
+        if from_cache {
+            eprintln!(
+                "Reusing cached deployment for '{}': {}",
+                package.name, contract_id
+            );
+        } else {
+            eprintln!("Contract deployed at: {}", contract_id);
+        }
 
         for function in exported_fns {
             if !args.quiet {
@@ -1837,6 +2028,17 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Persist the deploy cache (#79). A write failure loses the warm
+    // entries for next run but must not fail a completed measurement run.
+    if let Err(e) = deploy_cache.save() {
+        if !args.quiet {
+            eprintln!(
+                "warning: could not write {}: {e:#}",
+                deploy_cache::CACHE_FILE
+            );
+        }
+    }
+
     // Persist the recorded fixture when `--record` was requested, so the
     // run can be reproduced offline with `--replay`.
     if let Some(path) = &args.record {
@@ -1867,7 +2069,9 @@ fn main() -> anyhow::Result<()> {
                     .map(|e| format!("  - [{}] {}", e.location, e.message))
                     .collect::<Vec<_>>()
                     .join("\n");
-                anyhow::bail!("budget.toml validation failed:\n{report}");
+                return Err(Error::Message(format!(
+                    "budget.toml validation failed:\n{report}"
+                )));
             }
         }
     }
@@ -1882,9 +2086,13 @@ fn main() -> anyhow::Result<()> {
             eprintln!("No successful simulations to report.");
         }
         if has_errors || (args.check && checks_failed) || validation_failed {
-            std::process::exit(1);
+            return Ok(classify_outcome(
+                false,
+                args.check && checks_failed,
+                has_errors || validation_failed,
+            ));
         }
-        return Ok(());
+        return Ok(EXIT_SUCCESS);
     }
 
     // Per-function tolerance overrides from `budget.toml` (top-level plus
@@ -1919,7 +2127,7 @@ fn main() -> anyhow::Result<()> {
                 .save(&path)
                 .with_context(|| format!("failed to save baseline to {}", path.display()))?;
             eprintln!("Recorded baseline to {}", path.display());
-            return Ok(());
+            return Ok(EXIT_SUCCESS);
         }
         Mode::Check(path) => {
             let baseline = Baseline::load(&path)
@@ -1940,9 +2148,9 @@ fn main() -> anyhow::Result<()> {
                 print!("{}", render_report_text(&report));
             }
             if report.has_regressions() {
-                std::process::exit(1);
+                return Ok(EXIT_REGRESSION);
             }
-            return Ok(());
+            return Ok(EXIT_SUCCESS);
         }
         Mode::Derive(_, _) => unreachable!("derive mode returns early before this point"),
         Mode::Report => {} // Fall through to the legacy rendering below.
@@ -2064,11 +2272,15 @@ fn main() -> anyhow::Result<()> {
         }
     }
     // PR #195: `--check` exits non-zero when any limit was breached so CI can
-    // gate on the result. Mirrors the empty-measurements branch above.
-    if (args.check && checks_failed) || validation_failed {
-        std::process::exit(1);
-    }
-    Ok(())
+    // gate on the result. Network/infrastructure failures (simulations that
+    // never produced metrics, `--validate` decode failures) also exit
+    // non-zero with their own code so a CI job can retry instead of treating
+    // them as a real budget/regression failure.
+    Ok(classify_outcome(
+        false,
+        args.check && checks_failed,
+        has_errors || validation_failed,
+    ))
 }
 
 mod config;
@@ -2113,6 +2325,9 @@ mod boundary_tests;
 #[cfg(test)]
 mod additional_edge_tests;
 
+#[cfg(test)]
+mod cli_arg_tests;
+
 /// Serializes tests that mutate the process working directory.
 #[cfg(test)]
 static TEST_CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2141,7 +2356,7 @@ mod tests {
 
     #[test]
     fn build_invoke_args_without_function_args() {
-        let invoke_args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &[]);
+        let invoke_args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &[], None);
         assert_eq!(
             invoke_args,
             vec![
@@ -2161,9 +2376,43 @@ mod tests {
     }
 
     #[test]
+    fn build_invoke_args_uses_rpc_url_and_passphrase_for_a_custom_network() {
+        let invoke_args = build_invoke_args(
+            "CCONTRACT",
+            "alice",
+            "unused-alias",
+            "do_work",
+            &[],
+            Some((
+                "http://localhost:8000/soroban/rpc",
+                "Standalone Network ; February 2017",
+            )),
+        );
+        assert_eq!(
+            invoke_args,
+            vec![
+                "contract",
+                "invoke",
+                "--id",
+                "CCONTRACT",
+                "--source",
+                "alice",
+                "--rpc-url",
+                "http://localhost:8000/soroban/rpc",
+                "--network-passphrase",
+                "Standalone Network ; February 2017",
+                "--build-only",
+                "--",
+                "do_work",
+            ]
+        );
+    }
+
+    #[test]
     fn build_invoke_args_appends_function_args_after_separator() {
         let func_args = vec!["--n".to_string(), "10000".to_string()];
-        let invoke_args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &func_args);
+        let invoke_args =
+            build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &func_args, None);
         assert_eq!(
             invoke_args,
             vec![
@@ -2445,6 +2694,97 @@ mod tests {
         assert_eq!(func.tolerance, Some(0.05));
     }
 
+    #[test]
+    fn budget_toml_parses_percentage_string_tolerance() {
+        let path = unique_test_path();
+        fs::write(
+            &path,
+            "tolerance = \"10%\"\n\
+             [functions.do_expensive_work]\ntolerance = \"5%\"\n",
+        )
+        .expect("failed to write budget.toml");
+        let config = load_budget_toml(&path).expect("parse should succeed");
+        assert!((config.tolerance.unwrap() - 0.10).abs() < f64::EPSILON);
+        let func = config
+            .functions
+            .get("do_expensive_work")
+            .expect("function present");
+        assert!((func.tolerance.unwrap() - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn budget_toml_rejects_malformed_per_function_tolerance() {
+        let path = unique_test_path();
+        fs::write(
+            &path,
+            "[functions.do_expensive_work]\ntolerance = \"not-a-number\"\n",
+        )
+        .expect("failed to write budget.toml");
+        let err = load_budget_toml(&path).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("TOML error"),
+            "expected a configuration error, got: {text}"
+        );
+        assert!(
+            text.contains("tolerance must be a number"),
+            "error should name the malformed tolerance, got: {text}"
+        );
+    }
+
+    #[test]
+    fn json_report_includes_passes_with_applied_tolerance() {
+        // A measurement that passes within its per-function override must
+        // appear in the JSON `passes` array, carrying the tolerance that was
+        // applied, so a passing result is interpretable.
+        let mut entries = std::collections::BTreeMap::new();
+        entries.insert(
+            compare::function_key("amm-pool-contract", "do_expensive_work"),
+            compare::BaselineEntry::from_measurement(compare::Measurement {
+                cpu_instructions: 1000,
+                read_bytes: 200,
+                write_bytes: 300,
+            }),
+        );
+        let baseline = compare::Baseline { entries };
+
+        let mut pkg = std::collections::BTreeMap::new();
+        pkg.insert(
+            "do_expensive_work".to_string(),
+            compare::Measurement {
+                cpu_instructions: 1050,
+                read_bytes: 200,
+                write_bytes: 300,
+            },
+        );
+        let mut current = std::collections::BTreeMap::new();
+        current.insert("amm-pool-contract".to_string(), pkg);
+
+        // Global tolerance 0% would regress on 1050 vs 1000; the per-function
+        // 10% override lets it pass, and that override is what must be reported.
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert("do_expensive_work".to_string(), Tolerance::new(0.10));
+
+        let report =
+            compare::check_against_baseline(&baseline, &current, Tolerance::new(0.0), &overrides);
+        let json = render_check_report_json(&report, Tolerance::new(0.0));
+        let passes = json
+            .get("passes")
+            .expect("`passes` key present")
+            .as_array()
+            .expect("`passes` is an array");
+        assert!(!passes.is_empty(), "expected at least one passing entry");
+        let tolerance = passes[0]
+            .get("tolerance")
+            .expect("pass entry has tolerance")
+            .as_f64()
+            .expect("tolerance is a number");
+        assert!(
+            (tolerance - 0.10).abs() < f64::EPSILON,
+            "got tolerance {tolerance}"
+        );
+    }
+
     // --- Tolerance resolution ----------------------------------------------
 
     #[test]
@@ -2673,6 +3013,10 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2708,6 +3052,10 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2743,6 +3091,10 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
             profile: None,
             derive_limits: None,
             from: None,
@@ -2781,6 +3133,10 @@ mod tests {
             validate: false,
             record: None,
             replay: None,
+            rpc_url: None,
+            network_passphrase: None,
+            no_deploy_cache: false,
+            source_secret: None,
             profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,
@@ -3293,5 +3649,30 @@ write_limit = 1000
         let err = build_utc_timestamp(before_epoch).unwrap_err();
         let err_msg = err.to_string();
         assert!(err_msg.contains("system time error"), "got {}", err_msg);
+    }
+
+    // ── Exit-code classification (#406) ──────────────────────────────────
+
+    #[test]
+    fn classify_outcome_success_when_nothing_failed() {
+        assert_eq!(classify_outcome(false, false, false), EXIT_SUCCESS);
+    }
+
+    #[test]
+    fn classify_outcome_regression_takes_precedence() {
+        // A regression is the strongest signal; it wins even when a budget
+        // limit also failed and the network was flaky.
+        assert_eq!(classify_outcome(true, true, true), EXIT_REGRESSION);
+    }
+
+    #[test]
+    fn classify_outcome_budget_before_network() {
+        assert_eq!(classify_outcome(false, true, true), EXIT_BUDGET_EXCEEDED);
+        assert_eq!(classify_outcome(false, true, false), EXIT_BUDGET_EXCEEDED);
+    }
+
+    #[test]
+    fn classify_outcome_network_only() {
+        assert_eq!(classify_outcome(false, false, true), EXIT_NETWORK_FAILURE);
     }
 }

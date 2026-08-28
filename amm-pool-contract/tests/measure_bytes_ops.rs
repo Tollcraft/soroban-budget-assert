@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 #![cfg(test)]
 
 //! Local WASM measurement for the bytes-operations gap series in

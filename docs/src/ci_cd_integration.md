@@ -298,6 +298,56 @@ Always build WASM with the same `[profile.release]` settings locally and in CI. 
 
 ---
 
+## Exit codes
+
+`cargo-budget-report` exits with a **distinct code per outcome** so a CI job can tell a real regression apart from a flaky network. Every code other than `0` means the run failed, so scripts that only care about pass/fail (`$? -ne 0`) keep working unchanged.
+
+| Code | Constant | Meaning | CI should… |
+| ---- | -------- | ------- | ---------- |
+| `0` | `EXIT_SUCCESS` | The run succeeded; all measurements are within limits and tolerances. | Continue. |
+| `1` | `EXIT_GENERIC_FAILURE` | An unexpected failure that is neither a budget/regression result nor a network fault (e.g. the contract WASM failed to build). | Fail the job; inspect the log. |
+| `3` | `EXIT_CONFIG_ERROR` | `budget.toml` is malformed, a required configuration value is missing, or another configuration-level mistake was detected. | Fail the job; fix the config. Do **not** retry. |
+| `4` | `EXIT_BUDGET_EXCEEDED` | A measured resource breached a configured `--check` limit. | Fail the job; treat as a budget regression. |
+| `5` | `EXIT_REGRESSION` | A regression was detected beyond tolerance when comparing against a baseline (`--check-baseline`). | Fail the job; treat as a code regression. |
+| `6` | `EXIT_NETWORK_FAILURE` | A network or infrastructure failure (RPC error, the `stellar` CLI could not be spawned, a simulation failed to produce metrics, or `--validate` decode failure). | Retry; results from this run are unreliable. |
+
+The codes are chosen to avoid the values with reserved meaning in POSIX shells (126, 127, and 128 + N for fatal signals) and to stay clear of `clap`'s own exit code `2`, which `cargo-budget-report` uses for argument-parse errors before `main` runs. When more than one outcome occurs in a single run, the most actionable wins: **regression beats budget-exceeded beats network-failure**. A regression is a real signal that should block a PR, whereas a network fault is safe to retry, so surfacing the regression takes priority.
+
+### Example workflow that branches on the exit code
+
+The following snippet maps each outcome to a different action. It assumes the report step has already produced `current_report.json`.
+
+{% code title=".github/workflows/budget.yml (exit-code branching)" %}
+```yaml
+      - name: Run Budget Report
+        if: github.event_name == 'push'
+        id: report
+        continue-on-error: true
+        run: |
+          cargo run --bin cargo-budget-report -- budget-report --json --check --check-baseline budget-baseline.toml > current_report.json
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Classify outcome
+        if: github.event_name == 'push'
+        env:
+          REPORT_CODE: ${{ steps.report.outputs.code }}
+        run: |
+          case "${REPORT_CODE:-0}" in
+            0)  echo "✅ Budget check passed." ;;
+            1)  echo "💥 Unexpected failure — see logs."; exit 1 ;;
+            3)  echo "⚙️ Configuration error — fix budget.toml, do not retry."; exit 3 ;;
+            4)  echo "🚨 Budget exceeded — a limit in budget.toml was breached."; exit 4 ;;
+            5)  echo "📉 Regression beyond tolerance — block the PR."; exit 5 ;;
+            6)  echo "🌐 Network/infrastructure failure — retrying."; exit 6 ;;
+            *)  echo "Unknown exit code ${REPORT_CODE}"; exit 1 ;;
+          esac
+```
+{% endcode %}
+
+> **Note:** `continue-on-error: true` lets the step record `$?` without aborting the job before the classifier runs. The classifier re-emits the same code, so branch protection still sees the real result. A network failure (`6`) is the one case where you might prefer `exit 0` plus a `retry:` annotation rather than failing, depending on how aggressively your pipeline retries transient testnet errors.
+
+---
+
 ## Troubleshooting
 
 ### Missing toolchain

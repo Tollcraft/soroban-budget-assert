@@ -1,5 +1,5 @@
-// @measure local  # discovered by scripts/regenerate-measurements.sh
-#![cfg(not(feature = "sdk20"))]
+// @measure local:sdk22  # discovered by scripts/regenerate-measurements.sh
+#![cfg(feature = "sdk22")]
 
 #[cfg(test)]
 mod calibrate_gap {

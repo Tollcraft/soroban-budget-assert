@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 //! Calibration test for TTL extension budget measurement.
 //!
 //! Measures local CPU and memory cost estimates for extending both instance

@@ -419,7 +419,18 @@ fn run_measurement_pass(
                 .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
         ))
     } else {
-        crate::TransportKind::Live(crate::live::LiveTransport::new(*retry_config, args.quiet))
+        let net_override = match (&args.rpc_url, &args.network_passphrase) {
+            (Some(rpc_url), Some(passphrase)) => Some(crate::live::NetworkOverride {
+                rpc_url: rpc_url.clone(),
+                network_passphrase: passphrase.clone(),
+            }),
+            _ => None,
+        };
+        crate::TransportKind::Live(crate::live::LiveTransport::new(
+            *retry_config,
+            args.quiet,
+            net_override,
+        ))
     };
 
     for package in &metadata.packages {

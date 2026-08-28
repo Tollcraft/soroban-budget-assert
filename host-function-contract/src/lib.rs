@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 //! # Host-Function Benchmark Fixture (`host-function-contract`)
 //!
 //! This crate provides a Soroban smart contract fixture designed specifically for

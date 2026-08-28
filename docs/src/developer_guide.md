@@ -262,17 +262,24 @@ source = "bob"  # changed from "alice"
 
 **Reset the local environment** (use when a stale WASM build produces confusing numbers):
 
-`cargo budget-report` keeps no cache of its own — every run rebuilds the WASM and deploys it from scratch, so there are no cached deploy artifacts to remove. The only stale state that can affect results is the Cargo build output in `target/`, which Cargo normally rebuilds incrementally and correctly. If you want a guaranteed-clean run anyway:
+`cargo budget-report` caches deployed contract ids on disk in `.budget-cache.toml`
+(git-ignored) so an unchanged build is not redeployed on every run. An entry is
+keyed on the compiled wasm's SHA-256, the network, and the source account, so
+**any change to the wasm, network, or source redeploys automatically** — a
+cache hit can only ever reuse an id for a byte-identical build on the same
+network and account.
 
 ```bash
 # Force a from-scratch WASM build (removes all build output)
 cargo clean
 
-# Rebuild and re-deploy
-cargo budget-report
+# Redeploy every contract even on an unchanged build
+cargo budget-report --no-deploy-cache
+# ...or just drop the cache file
+rm -f .budget-cache.toml
 ```
 
-A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32v1-none` if you only want to invalidate the WASM artifacts. Note that each `cargo budget-report` run deploys a *new* contract instance on the target network; previously deployed contract IDs are not tracked or reused, so there is nothing to reset on that side.
+A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32v1-none` if you only want to invalidate the WASM artifacts. The deploy cache *trusts a hit* — it does not check that a cached id still resolves on-chain before reusing it. If a cached contract has been reclaimed by ledger state, use `--no-deploy-cache` (or delete `.budget-cache.toml`) to force a redeploy.
 
 ### Best practices
 
@@ -294,14 +301,15 @@ A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
-* **Corresponding Stellar Protocol**: **Protocol 22**
+* **Supported SDK Version**: `soroban-sdk` = `"27.0.3"` (specifically tested/resolved to `27.0.6` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"27.0.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 27**
 
 ### Compatibility Matrix
 
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
-| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
+| **`22.0.x`** | `22` | **Untested** | Previously supported; superseded by SDK 27 workspace baseline. |
+| **`23.0.x` – `26.0.x`** | `23` – `26` | **Untested** | Not pinned in the workspace; may work but are untested. |
+| **`27.0.x`** | `27` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `27.0.3`, `stellar-xdr` `27.0.0`). |

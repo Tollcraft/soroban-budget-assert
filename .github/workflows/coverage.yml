@@ -38,6 +38,7 @@ jobs:
           cargo llvm-cov --workspace \
             --exclude amm-pool-contract \
             --exclude host-function-contract \
+            --exclude host-function-contract \
             --lcov --output-path lcov.info \
             2>&1 | tee coverage-summary.txt
 

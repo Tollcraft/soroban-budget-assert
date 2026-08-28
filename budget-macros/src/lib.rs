@@ -18,6 +18,9 @@
 
 extern crate proc_macro;
 
+#[cfg(test)]
+mod parser_props;
+
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{quote, ToTokens};
