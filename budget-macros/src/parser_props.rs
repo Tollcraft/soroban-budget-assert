@@ -116,10 +116,12 @@ fn limit_source() -> impl Strategy<Value = String> {
 // ── Whole-attribute generators ─────────────────────────────────────────
 
 fn standalone_spec_src() -> impl Strategy<Value = String> {
-    (limit_source(), proptest::option::of(expr_rhs())).prop_map(|(limit, baseline)| match baseline {
-        Some(b) => format!("{limit}, baseline = {b}"),
-        None => limit,
-    })
+    (limit_source(), proptest::option::of(expr_rhs())).prop_map(
+        |(limit, baseline)| match baseline {
+            Some(b) => format!("{limit}, baseline = {b}"),
+            None => limit,
+        },
+    )
 }
 
 fn budget_spec_src() -> impl Strategy<Value = String> {
@@ -129,7 +131,7 @@ fn budget_spec_src() -> impl Strategy<Value = String> {
         expr_rhs().prop_map(|e| format!("cpu_baseline = {e}")),
         expr_rhs().prop_map(|e| format!("mem_baseline = {e}")),
         Just("env_ident = env".to_string()),
-        Just("wat = 1".to_string()), // unknown key
+        Just("wat = 1".to_string()),          // unknown key
         Just("cpu = 1, cpu = 2".to_string()), // duplicate
     ];
     proptest::collection::vec(clause, 0..5).prop_map(|clauses| {
@@ -237,7 +239,9 @@ mod regressions {
         assert!(!parses_without_panic_is_panic(
             "999999999999999999999999999999"
         ));
-        assert!(!parses_without_panic_is_panic("pct = 999999999999999999999"));
+        assert!(!parses_without_panic_is_panic(
+            "pct = 999999999999999999999"
+        ));
     }
 
     /// `sizes` entries that overflow `u32` are a `syn::Error`, not a panic.

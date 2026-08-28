@@ -95,7 +95,14 @@ impl Transport for LiveTransport {
             "Deploy",
             || {
                 let mut cmd = Command::new("stellar");
-                cmd.args(["contract", "deploy", "--wasm", &wasm_path_str, "--source", source]);
+                cmd.args([
+                    "contract",
+                    "deploy",
+                    "--wasm",
+                    &wasm_path_str,
+                    "--source",
+                    source,
+                ]);
                 cmd.args(&net_args);
                 let output = cmd.output().map_err(|e| {
                     // A missing/unspawnable `stellar` binary is an

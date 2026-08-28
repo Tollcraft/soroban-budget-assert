@@ -1855,7 +1855,10 @@ fn main() -> anyhow::Result<()> {
     // entries for next run but must not fail a completed measurement run.
     if let Err(e) = deploy_cache.save() {
         if !args.quiet {
-            eprintln!("warning: could not write {}: {e:#}", deploy_cache::CACHE_FILE);
+            eprintln!(
+                "warning: could not write {}: {e:#}",
+                deploy_cache::CACHE_FILE
+            );
         }
     }
 
@@ -2161,8 +2164,7 @@ mod tests {
 
     #[test]
     fn build_invoke_args_without_function_args() {
-        let invoke_args =
-            build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &[], None);
+        let invoke_args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &[], None);
         assert_eq!(
             invoke_args,
             vec![
@@ -2189,7 +2191,10 @@ mod tests {
             "unused-alias",
             "do_work",
             &[],
-            Some(("http://localhost:8000/soroban/rpc", "Standalone Network ; February 2017")),
+            Some((
+                "http://localhost:8000/soroban/rpc",
+                "Standalone Network ; February 2017",
+            )),
         );
         assert_eq!(
             invoke_args,
@@ -2728,7 +2733,7 @@ mod tests {
             network_passphrase: None,
             no_deploy_cache: false,
             source_secret: None,
-                        profile: None,
+            profile: None,
             derive_limits: None,
             from: None,
             margin_cpu: None,
@@ -2766,7 +2771,7 @@ mod tests {
             network_passphrase: None,
             no_deploy_cache: false,
             source_secret: None,
-                        profile: None,
+            profile: None,
             derive_limits: None,
             from: None,
             margin_cpu: None,
@@ -2804,7 +2809,7 @@ mod tests {
             network_passphrase: None,
             no_deploy_cache: false,
             source_secret: None,
-                        profile: None,
+            profile: None,
             derive_limits: None,
             from: None,
             margin_cpu: None,
@@ -2845,7 +2850,7 @@ mod tests {
             network_passphrase: None,
             no_deploy_cache: false,
             source_secret: None,
-                        profile: None,
+            profile: None,
             derive_limits: Some("tier-a-limits.env".to_string()),
             from: None,
             margin_cpu: None,

@@ -199,7 +199,7 @@ mod off_by_one_and_zero_length_tests {
             "testnet",
             "transfer",
             &["--value".into(), "!@#$%^&*()".into()],
-            None
+            None,
         );
         assert_eq!(args[11], "--value");
         assert_eq!(args[12], "!@#$%^&*()");

@@ -700,7 +700,7 @@ write_limit = 0
             "testnet",
             "transfer",
             &["--to".into(), "GBP".into(), "--amount".into(), "100".into()],
-            None
+            None,
         );
         // Expected structure: [<11 standard args>, "--to", "GBP", "--amount", "100"]
         assert_eq!(args.len(), 15);
@@ -805,7 +805,14 @@ write_limit = 0
 
     #[test]
     fn build_invoke_args_single_argument_boundary() {
-        let args = build_invoke_args("CCONTRACT", "alice", "testnet", "do_work", &["--n".into()], None);
+        let args = build_invoke_args(
+            "CCONTRACT",
+            "alice",
+            "testnet",
+            "do_work",
+            &["--n".into()],
+            None,
+        );
         // After "--", we expect: ["do_work", "--n"]
         assert_eq!(args[args.len() - 2], "do_work");
         assert_eq!(args[args.len() - 1], "--n");

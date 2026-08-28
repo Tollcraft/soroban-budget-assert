@@ -159,8 +159,8 @@ impl DeployCache {
             return Ok(());
         }
         self.file.version = CACHE_VERSION;
-        let text = toml::to_string_pretty(&self.file)
-            .context("failed to serialise the deploy cache")?;
+        let text =
+            toml::to_string_pretty(&self.file).context("failed to serialise the deploy cache")?;
         std::fs::write(&self.path, text)
             .with_context(|| format!("failed to write deploy cache {}", self.path.display()))?;
         self.dirty = false;
