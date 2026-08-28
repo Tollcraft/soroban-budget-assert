@@ -47,7 +47,11 @@ pub fn resolve_config_value(key: &str) -> ConfigResolution {
 }
 
 pub fn percentage_of(value: u64, pct: u64) -> u64 {
-    value * pct / 100
+    // Widen before multiplying: `value * pct` overflows `u64` for any value
+    // above `u64::MAX / pct`, which panics in debug builds rather than
+    // returning a budget figure. Saturate on the way back down so a `pct`
+    // above 100 clamps instead of wrapping.
+    u64::try_from(u128::from(value) * u128::from(pct) / 100).unwrap_or(u64::MAX)
 }
 
 #[derive(serde::Deserialize, Default, Debug)]

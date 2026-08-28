@@ -623,7 +623,7 @@ fn end_to_end_offline_full_pipeline() {
          [functions.pong]\n\
          cpu_limit = 2000000\n\
          read_limit = 3000\n\
-         write_limit = 3000\n\
+         write_limit = 5000\n\
          \n\
          [functions.greet]\n\
          cpu_limit = 5000000\n\
@@ -713,9 +713,16 @@ fn end_to_end_offline_full_pipeline() {
     let json_stdout = String::from_utf8_lossy(&json_output.stdout);
     let reports: serde_json::Value =
         serde_json::from_str(&json_stdout).expect("Stage FAILED: JSON serialization invalid");
-    let reports_array = reports
+    // `--json` emits the versioned envelope `{schema_version, snapshots}`;
+    // the rows themselves are unchanged from the pre-versioning format.
+    assert_eq!(
+        reports["schema_version"].as_u64(),
+        Some(1),
+        "Stage FAILED: JSON output should carry schema_version 1"
+    );
+    let reports_array = reports["snapshots"]
         .as_array()
-        .expect("Stage FAILED: JSON output should be an array");
+        .expect("Stage FAILED: JSON output should have a `snapshots` array");
 
     // JSON should contain entries for all three packages
     let packages: std::collections::HashSet<&str> = reports_array

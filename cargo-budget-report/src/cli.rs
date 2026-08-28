@@ -259,6 +259,3 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 }
-
-#[cfg(test)]
-mod tests;

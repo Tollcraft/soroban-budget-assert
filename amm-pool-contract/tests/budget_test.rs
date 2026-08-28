@@ -439,7 +439,7 @@ fn test_budget_macro_json_config_invalid_json() {
 
 /// Negative control: CPU budget macro fires when limit is exceeded.
 ///
-/// Sets the CPU limit to ~200K instructions (10x below the ~2M measured cost
+/// Sets the CPU limit to 16K instructions (10x below the ~160K marginal cost
 /// of deposit+swap+withdraw) to verify the `#[budget_cpu_lt]` macro correctly
 /// detects and panics on budget violations.
 ///
@@ -448,13 +448,13 @@ fn test_budget_macro_json_config_invalid_json() {
 #[should_panic(
     expected = "local estimate, real network cost may differ significantly in either direction"
 )]
-#[budget_cpu_lt(200_000, baseline = baseline_cpu())]
+#[budget_cpu_lt(16_000, baseline = baseline_cpu())]
 fn test_negative_control_cpu_budget_fires() {
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
 
-    // Full workflow typically costs ~2M CPU instructions (after baseline
-    // subtraction). Limit of 200K is 10x below that, guaranteeing failure.
+    // Full workflow costs ~160K CPU instructions (after baseline
+    // subtraction). Limit of 16K is 10x below that, guaranteeing failure.
     client.deposit(&user, &10_000_i128, &10_000_i128);
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
@@ -462,7 +462,7 @@ fn test_negative_control_cpu_budget_fires() {
 
 /// Negative control: Memory budget macro fires when limit is exceeded.
 ///
-/// Sets the memory limit to ~50K bytes (10x below the ~500K measured cost
+/// Sets the memory limit to ~1.8K bytes (10x below the ~18K marginal cost
 /// of deposit+swap+withdraw) to verify the `#[budget_mem_lt]` macro correctly
 /// detects and panics on budget violations.
 ///
@@ -471,13 +471,13 @@ fn test_negative_control_cpu_budget_fires() {
 #[should_panic(
     expected = "local estimate, real network cost may differ significantly in either direction"
 )]
-#[budget_mem_lt(50_000, baseline = baseline_mem())]
+#[budget_mem_lt(1_800, baseline = baseline_mem())]
 fn test_negative_control_mem_budget_fires() {
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
 
-    // Full workflow typically costs ~500K memory bytes (after baseline
-    // subtraction). Limit of 50K is 10x below that, guaranteeing failure.
+    // Full workflow costs ~18K memory bytes (after baseline
+    // subtraction). Limit of 1.8K is 10x below that, guaranteeing failure.
     client.deposit(&user, &10_000_i128, &10_000_i128);
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
@@ -494,7 +494,7 @@ fn test_negative_control_mem_budget_fires() {
     expected = "local estimate, real network cost may differ significantly in either direction"
 )]
 #[budget_lt(
-    cpu = 200_000,
+    cpu = 16_000,
     mem = 5_000_000,
     cpu_baseline = baseline_cpu(),
     mem_baseline = baseline_mem()
@@ -520,7 +520,7 @@ fn test_negative_control_combined_cpu_fires() {
 )]
 #[budget_lt(
     cpu = 5_000_000,
-    mem = 50_000,
+    mem = 1_800,
     cpu_baseline = baseline_cpu(),
     mem_baseline = baseline_mem()
 )]

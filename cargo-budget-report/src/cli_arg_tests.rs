@@ -1,17 +1,18 @@
-/// Comprehensive CLI argument parsing tests.
-///
-/// These tests validate:
-/// 1. Each argument parses to the expected value
-/// 2. All documented default values
-/// 3. Precedence between CLI flags and budget.toml (verified at integration level)
-/// 4. Invalid combinations are rejected with useful messages
-///
-/// Tests target specific argument fields rather than whole-struct assertions
-/// to remain stable as the CLI evolves.
+//! Comprehensive CLI argument parsing tests.
+//!
+//! These tests validate:
+//! 1. Each argument parses to the expected value
+//! 2. All documented default values
+//! 3. Precedence between CLI flags and budget.toml (verified at integration level)
+//! 4. Invalid combinations are rejected with useful messages
+//!
+//! Tests target specific argument fields rather than whole-struct assertions
+//! to remain stable as the CLI evolves.
 
 #[cfg(test)]
 mod tests {
     use crate::cli::{BudgetReportArgs, CargoCli};
+    use clap::error::ErrorKind;
     use clap::Parser;
 
     /// Helper to parse BudgetReportArgs from a vector of strings.
@@ -428,10 +429,12 @@ mod tests {
 
     #[test]
     fn test_json_and_csv_together() {
-        // Both json and csv can be set; runtime logic chooses precedence
-        let args = parse_args(&["--json", "--csv"]).unwrap();
-        assert!(args.json, "expected json=true");
-        assert!(args.csv, "expected csv=true");
+        // `--json` and `--csv` name two different output encodings for the
+        // same report, so clap rejects them as a conflicting pair rather
+        // than silently letting one win at runtime.
+        let err = parse_args(&["--json", "--csv"])
+            .expect_err("--json and --csv together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -483,18 +486,18 @@ mod tests {
     }
 
     #[test]
-    fn test_record_and_check_baseline_separate() {
-        // Having both record and check baseline is allowed at parse time
-        // (runtime logic may reject it)
-        let args = parse_args(&[
+    fn test_record_and_check_baseline_conflict() {
+        // Writing a new baseline and checking against an old one are opposite
+        // modes for the same run, so clap rejects the pair at parse time
+        // instead of deferring to runtime.
+        let err = parse_args(&[
             "--record-baseline",
             "new.json",
             "--check-baseline",
             "old.json",
         ])
-        .unwrap();
-        assert_eq!(args.record_baseline, Some("new.json".to_string()));
-        assert_eq!(args.check_baseline, Some("old.json".to_string()));
+        .expect_err("--record-baseline and --check-baseline together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     // ========================================================================
@@ -540,7 +543,7 @@ mod tests {
         let err = result.unwrap_err();
         let err_str = err.to_string();
         assert!(
-            err_str.contains("requires a value") || err_str.contains("argument"),
+            err_str.contains("a value is required"),
             "error should mention missing value, got: {}",
             err_str
         );
@@ -991,19 +994,18 @@ mod tests {
     }
 
     #[test]
-    fn test_record_and_check_baseline_together_allowed_at_parse_time() {
-        // Recording and checking baseline at the same time doesn't make sense
-        // but clap allows it - runtime should reject
-        let args = parse_args(&[
+    fn test_record_and_check_baseline_together_rejected() {
+        // Same conflict as `test_record_and_check_baseline_conflict`; kept as
+        // a separate case so the rejection is covered alongside the other
+        // baseline-flag tests in this section.
+        let err = parse_args(&[
             "--record-baseline",
             "new.json",
             "--check-baseline",
             "old.json",
         ])
-        .unwrap();
-        assert_eq!(args.record_baseline, Some("new.json".to_string()));
-        assert_eq!(args.check_baseline, Some("old.json".to_string()));
-        // Runtime should probably reject this combination
+        .expect_err("--record-baseline and --check-baseline together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -1027,11 +1029,11 @@ mod tests {
     }
 
     #[test]
-    fn test_json_and_csv_together_allowed() {
-        // Both can be set; runtime chooses which takes precedence
-        let args = parse_args(&["--json", "--csv"]).unwrap();
-        assert!(args.json);
-        assert!(args.csv);
-        // Runtime should decide: JSON likely takes precedence
+    fn test_json_and_csv_together_rejected() {
+        // Same conflict as `test_json_and_csv_together`, asserted through the
+        // error kind clap reports rather than the message text.
+        let err = parse_args(&["--json", "--csv"])
+            .expect_err("--json and --csv together should be rejected");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
     }
 }
