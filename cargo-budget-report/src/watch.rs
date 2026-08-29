@@ -494,31 +494,22 @@ fn run_measurement_pass(
             continue;
         }
 
-        // Parse WASM exports
+        // Parse WASM exports and classify what came back (see
+        // `crate::contract_exports`).
         let wasm_bytes = std::fs::read(&wasm_path)?;
         let wasm_size: u32 = wasm_bytes.len().try_into().unwrap_or(u32::MAX);
-        let mut exported_fns: HashSet<String> = HashSet::new();
 
-        for payload in wasmparser::Parser::new(0).parse_all(&wasm_bytes) {
-            if let wasmparser::Payload::ExportSection(export_section) = payload? {
-                for export_item in export_section {
-                    let export_item = export_item?;
-                    if export_item.kind == wasmparser::ExternalKind::Func {
-                        let name = export_item.name.to_string();
-                        if !name.starts_with('_') && name != "memory" {
-                            exported_fns.insert(name);
-                        }
+        let exported_fns: HashSet<String> =
+            match crate::contract_exports::scan_wasm_exports(&wasm_bytes)? {
+                crate::contract_exports::ExportScan::Functions(fns) => fns.into_iter().collect(),
+                other => {
+                    if let Some(diagnostic) = other.diagnostic(&package.name) {
+                        eprintln!("Error: {diagnostic}");
                     }
+                    has_errors = true;
+                    continue;
                 }
-            }
-        }
-
-        if exported_fns.is_empty() {
-            if !args.quiet {
-                eprintln!("No exported functions found in {}", package.name);
-            }
-            continue;
-        }
+            };
 
         let contract_id = crate::deploy_contract_with_retry(
             &mut transport,

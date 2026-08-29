@@ -88,7 +88,10 @@ The CLI emits two companions next to `<OUT>`:
   `#` comments so non-Rust tooling can grep it.
 
 Both files begin with `# tier-a-limits.env`, `# tier-a-limits provenance`
-respectively, and are atomically replaced on each write.
+respectively, and are atomically replaced on each write.  The provenance
+file also documents the protocol version, refresh procedure, and how to
+detect staleness — see
+[`tier-a-limits.provenance.md`](../../tier-a-limits.provenance.md).
 
 ### When to re-derive
 
@@ -120,7 +123,7 @@ A re-derivation flow into git as the worked audit trail.
 
 A diff in `tier-a-limits.env` is **not** automatically correct. Walk through:
 
-1. Look at `tier-a-limits.provenance.md`. Same `tier_b_value`, higher
+1. Look at [`tier-a-limits.provenance.md`](../../tier-a-limits.provenance.md). Same `tier_b_value`, higher
    `tier_a_limit`? The Tier A assertion was too loose and you've widened
    it. Tighten the limit by hand only if you understand why Tier B
    hasn't grown the same way; otherwise update the margin in

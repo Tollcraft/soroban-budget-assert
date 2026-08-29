@@ -7,9 +7,6 @@ on:
   pull_request:
     branches: ["main"]
 
-permissions:
-  contents: write
-
 jobs:
   publish-dry-run:
     name: Dry Run Publish Check
@@ -30,6 +27,8 @@ jobs:
   build:
     name: Build
     if: github.event_name == 'push'
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
@@ -84,6 +83,8 @@ jobs:
     name: Generate Checksums
     needs: build
     if: github.event_name == 'push'
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -112,7 +113,7 @@ jobs:
 
   publish:
     name: Publish to crates.io
-    needs: build
+    needs: [build, checksums]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:

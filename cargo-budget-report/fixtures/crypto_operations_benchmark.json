@@ -1,0 +1,40 @@
+{
+  "operation_type": "Cryptographic operations (hashing, ed25519 verification)",
+  "issue": 414,
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "functions": ["hash_sha256", "hash_keccak256", "verify_ed25519"],
+    "registration": "Env::register(wasm, ())",
+    "notes": "verify_ed25519 invoked via the generated try_ method; the host runs the full scalar multiplication before it can accept or reject, so the metered cost is representative of a real verification regardless of the outcome."
+  },
+  "crypto_surface_sdk_22_0_11": {
+    "measured": ["Crypto::sha256", "Crypto::keccak256", "Crypto::ed25519_verify"],
+    "not_measured": [
+      "Crypto::bls12_381 (sub-module: G1/G2 add, mul, MSM, pairing, map-to-curve, hash-to-curve — own series)",
+      "CryptoHazmat::secp256k1_recover (hazmat feature, unavailable to a plain contract build)",
+      "CryptoHazmat::secp256r1_verify (hazmat feature, unavailable to a plain contract build)"
+    ]
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.91.0",
+  "network": { "method": "simulateTransaction", "network": "Soroban testnet" },
+  "measurements": [
+    { "operation": "sha256", "input_bytes": 64, "local_cpu": 3611572, "local_mem": 1853269, "network_cpu": null, "delta": null },
+    { "operation": "sha256", "input_bytes": 1024, "local_cpu": 3664162, "local_mem": 1853269, "network_cpu": null, "delta": null },
+    { "operation": "sha256", "input_bytes": 8192, "local_cpu": 4056834, "local_mem": 1853269, "network_cpu": null, "delta": null },
+    { "operation": "keccak256", "input_bytes": 64, "local_cpu": 3611078, "local_mem": 1853269, "network_cpu": null, "delta": null },
+    { "operation": "keccak256", "input_bytes": 1024, "local_cpu": 3655846, "local_mem": 1853269, "network_cpu": null, "delta": null },
+    { "operation": "keccak256", "input_bytes": 8192, "local_cpu": 3990110, "local_mem": 1853269, "network_cpu": null, "delta": null },
+    { "operation": "ed25519_verify", "message_bytes": 32, "local_cpu": 3647881, "local_mem": 1853245, "network_cpu": null, "delta": null }
+  ],
+  "local_findings": {
+    "sha256_marginal_cpu_per_byte": 54.8,
+    "keccak256_marginal_cpu_per_byte": 46.6,
+    "instantiation_floor_cpu": 3110000,
+    "note": "network figures pending — require simulateTransaction against Soroban testnet with the same WASM"
+  },
+  "capture": {
+    "local_command": "cargo build --target wasm32v1-none --release -p amm-pool-contract && cargo test -p amm-pool-contract --test measure_crypto_gap -- --nocapture",
+    "recorded_at": "2026-08-26"
+  }
+}

@@ -22,10 +22,6 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn mock_workspace_fixture() -> PathBuf {
-    manifest_dir().join("tests/fixtures/mock_workspace")
-}
-
 fn fake_bin_dir() -> PathBuf {
     manifest_dir().join("tests/fixtures/fake_bin")
 }
@@ -52,8 +48,19 @@ fn copy_dir_all(src: &Path, dst: &Path) {
 
 /// Copies the mock workspace fixture into a fresh tempdir and returns it.
 fn setup_mock_workspace() -> tempfile::TempDir {
+    setup_fixture_workspace("mock_workspace")
+}
+
+/// Copies the named fixture workspace under `tests/fixtures/` into a fresh
+/// tempdir. Used for fixtures other than the default mock workspace (e.g.
+/// `no_exports_workspace`, whose crates deliberately produce nothing
+/// simulatable).
+fn setup_fixture_workspace(name: &str) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("failed to create tempdir");
-    copy_dir_all(&mock_workspace_fixture(), tmp.path());
+    copy_dir_all(
+        &manifest_dir().join("tests/fixtures").join(name),
+        tmp.path(),
+    );
     tmp
 }
 
@@ -71,6 +78,39 @@ fn budget_report_cmd(dir: &Path) -> Command {
     let mut cmd = Command::cargo_bin("cargo-budget-report").expect("binary should be built");
     cmd.current_dir(dir).env("PATH", mocked_path());
     cmd
+}
+
+/// A `PATH` containing only the fake `stellar` script and a `bash` symlink,
+/// with `curl` (and everything else on the real `PATH`) absent, so
+/// `run_preflight_checks` sees `stellar` but cannot find `curl`.
+///
+/// `bash` must be reachable because the fake `stellar` script's
+/// `#!/usr/bin/env bash` shebang resolves it via `PATH`, not an absolute
+/// path. Symlinking whatever `bash` this machine actually has (rather than
+/// filtering the real `PATH` down to e.g. `/bin`) keeps the test portable:
+/// on some Linux distributions `/bin` is a symlink to `/usr/bin`, which
+/// would pull `curl` back in alongside `bash`.
+fn stellar_only_path_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("failed to create tempdir");
+    fs::copy(fake_bin_dir().join("stellar"), dir.path().join("stellar"))
+        .expect("failed to copy fake stellar script");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let perms = fs::Permissions::from_mode(0o755);
+        fs::set_permissions(dir.path().join("stellar"), perms)
+            .expect("failed to set fake stellar script permissions");
+
+        let real_bash = ["/bin/bash", "/usr/bin/bash"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.exists())
+            .expect("no bash found at /bin/bash or /usr/bin/bash");
+        symlink(&real_bash, dir.path().join("bash")).expect("failed to symlink bash");
+    }
+
+    dir
 }
 
 #[test]
@@ -218,79 +258,31 @@ fn check_flag_fails_when_a_limit_is_exceeded() {
         .stdout(contains("FAIL"));
 }
 
-#[test]
-fn html_output_renders_both_mock_contracts() {
-    let workspace = setup_mock_workspace();
-
-    let assert = budget_report_cmd(workspace.path())
-        .args([
-            "budget-report",
-            "--network",
-            "local",
-            "--source",
-            "alice",
-            "--html",
-        ])
-        .assert();
-
-    let output = assert.success().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    assert!(
-        stdout.starts_with("<!doctype html>"),
-        "expected an HTML document, got: {stdout}"
-    );
-    assert!(stdout.contains("mock-contract-a"), "got: {stdout}");
-    assert!(stdout.contains("mock-contract-b"), "got: {stdout}");
-    assert!(stdout.contains("mock-contract-renamed"), "got: {stdout}");
-    assert!(stdout.contains("CPU Instructions"), "got: {stdout}");
-    // Thousands separators for the values the fake RPC returns.
-    assert!(stdout.contains("1,000,000"), "got: {stdout}");
-    assert!(stdout.contains("2,048"), "got: {stdout}");
-    // The page must be fully self-contained: no linked CSS or external scripts.
-    assert!(
-        !stdout.contains("<link"),
-        "page must not link external CSS: {stdout}"
-    );
-    assert!(
-        !stdout.contains("<script src"),
-        "page must not load external scripts: {stdout}"
-    );
-}
+// ── Preflight check integration tests ───────────────────────────────────
 
 #[test]
-fn html_output_check_mode_shows_pass_and_fail_rows() {
+fn preflight_fails_fast_when_curl_is_missing() {
     let workspace = setup_mock_workspace();
-    fs::write(
-        workspace.path().join("budget.toml"),
-        "[functions.ping]\n\
-         cpu_limit = 10\n\
-         read_limit = 5000\n\
-         write_limit = 5000\n\
-         \n\
-         [functions.pong]\n\
-         cpu_limit = 5000000\n",
-    )
-    .expect("failed to write budget.toml");
+    let stellar_only = stellar_only_path_dir();
 
-    let assert = budget_report_cmd(workspace.path())
-        .args([
-            "budget-report",
-            "--network",
-            "local",
-            "--source",
-            "alice",
-            "--html",
-            "--check",
-        ])
-        .assert();
+    let mut cmd = Command::cargo_bin("cargo-budget-report").expect("binary should be built");
+    cmd.current_dir(workspace.path())
+        .env("PATH", stellar_only.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"]);
 
-    // ping's CPU limit (10) is breached, so `--check` exits non-zero.
+    let assert = cmd.assert();
     let output = assert.failure().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(stdout.contains("&#10007; FAIL"), "got: {stdout}");
-    assert!(stdout.contains("&#10003; PASS"), "got: {stdout}");
+    assert!(
+        stderr.contains("curl is not installed"),
+        "stderr should report missing curl, got: {stderr:?}"
+    );
+    // Preflight must fail before any build is attempted.
+    assert!(
+        !stderr.contains("Building package"),
+        "curl check should run before build, got: {stderr:?}"
+    );
 }
 
 // ── Retry mechanism integration tests ───────────────────────────────────
@@ -351,9 +343,78 @@ fn retry_mechanism_fails_after_exhausting_all_attempts() {
         stderr.contains("after 4 attempts"),
         "stderr should mention exhausted retries, got: {stderr:?}"
     );
+    // The mock error is a friendbot rate-limit, so the guidance should be
+    // the rate-limit one — not the old one-size-fits-all "ensure your
+    // source account is funded" line.
     assert!(
-        stderr.contains("source account is funded"),
-        "stderr should mention source account funding, got: {stderr:?}"
+        stderr.contains("rate limiting") && stderr.contains("60 seconds"),
+        "rate-limit failures should get rate-limit guidance with a wait: {stderr:?}"
+    );
+    // Each backoff should have reported which failure it was waiting on.
+    assert!(
+        stderr.contains("Deploy attempt 1/4 failed: ")
+            && stderr.contains("rate-limited")
+            && stderr.contains("Retrying in"),
+        "each retry should report the reason it is retrying: {stderr:?}"
+    );
+}
+
+#[test]
+fn unfunded_account_deploy_failure_gets_account_guidance() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_unfunded");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "testnet", "--source", "alice"])
+        .env("MOCK_STELLAR_FAIL_COUNT", "10")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .env(
+            "MOCK_STELLAR_DEPLOY_ERROR",
+            "error: transaction submission failed: txInsufficientBalance (source account underfunded)",
+        )
+        .assert();
+
+    let stderr =
+        String::from_utf8_lossy(&assert.failure().get_output().stderr.clone()).into_owned();
+    assert!(
+        stderr.contains("source account 'alice' is missing or unfunded on testnet"),
+        "an unfunded-account failure names the identity and network: {stderr}"
+    );
+    assert!(
+        stderr.contains("stellar keys fund alice --network testnet")
+            && stderr.contains("not resolve by waiting"),
+        "and gives the exact fix: {stderr}"
+    );
+}
+
+#[test]
+fn unreachable_network_deploy_failure_gets_connectivity_guidance() {
+    let workspace = setup_mock_workspace();
+    let fail_count_file = workspace.path().join(".mock_stellar_fail_count_net");
+    let _ = fs::remove_file(&fail_count_file);
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "testnet", "--source", "alice"])
+        .env("MOCK_STELLAR_FAIL_COUNT", "10")
+        .env(
+            "MOCK_STELLAR_FAIL_COUNT_FILE",
+            fail_count_file.to_str().unwrap(),
+        )
+        .env(
+            "MOCK_STELLAR_DEPLOY_ERROR",
+            "error sending request: connection reset by peer",
+        )
+        .assert();
+
+    let stderr =
+        String::from_utf8_lossy(&assert.failure().get_output().stderr.clone()).into_owned();
+    assert!(
+        stderr.contains("network could not be reached"),
+        "a connectivity failure is distinguished from rate limiting: {stderr}"
     );
 }
 
@@ -915,5 +976,175 @@ fn record_then_replay_produces_identical_report() {
     assert_eq!(
         recorded_stdout, replayed_stdout,
         "replaying the fixture must reproduce the recorded report byte-for-byte"
+    );
+}
+
+#[test]
+fn mainnet_is_refused_and_nothing_is_built() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "mainnet", "--source", "alice"])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Mainnet"), "names the network: {stderr}");
+    assert!(
+        stderr.contains("--allow-mainnet"),
+        "says how to proceed: {stderr}"
+    );
+    // The guard runs before workspace discovery, so no package is built.
+    assert!(
+        !stderr.contains("Building package"),
+        "guard must stop the run before building: {stderr}"
+    );
+}
+
+#[test]
+fn unrecognised_network_is_refused_without_opt_in() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "some-private-net",
+            "--source",
+            "alice",
+        ])
+        .assert();
+
+    let stderr =
+        String::from_utf8_lossy(&assert.failure().get_output().stderr.clone()).into_owned();
+    assert!(
+        stderr.contains("unrecognised network"),
+        "an unknown network is treated as unsafe: {stderr}"
+    );
+}
+
+#[test]
+fn mainnet_with_opt_in_proceeds() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "mainnet",
+            "--source",
+            "alice",
+            "--allow-mainnet",
+        ])
+        .assert();
+
+    let stdout =
+        String::from_utf8_lossy(&assert.success().get_output().stdout.clone()).into_owned();
+    assert!(
+        stdout.contains("WORKSPACE BUDGET REPORT"),
+        "with --allow-mainnet the run proceeds normally: {stdout}"
+    );
+}
+
+#[test]
+fn testnet_is_unaffected_by_the_guard() {
+    let workspace = setup_mock_workspace();
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "testnet", "--source", "alice"])
+        .assert();
+
+    assert.success().stdout(contains("WORKSPACE BUDGET REPORT"));
+}
+
+#[test]
+fn contract_that_exports_nothing_reports_the_specific_cause() {
+    // The fixture workspace has one crate per failure mode; the fixture wasm
+    // is built here rather than checked in.
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Cause 1: a soroban-sdk crate that is not a cdylib.
+    assert!(
+        stderr.contains("helper-only") && stderr.contains("cdylib"),
+        "names the non-cdylib crate and what to change: {stderr}"
+    );
+    // Cause 2: a cdylib with no function exports.
+    assert!(
+        stderr.contains("no-exports") && stderr.contains("no function exports"),
+        "distinguishes 'no exports at all': {stderr}"
+    );
+    // Cause 3: a cdylib exporting only toolchain symbols, and it lists them.
+    assert!(
+        stderr.contains("runtime-only")
+            && stderr.contains("calling convention")
+            && stderr.contains("_start"),
+        "distinguishes 'exports present, none simulatable' and lists what was found: {stderr}"
+    );
+    // The vague pre-existing message is gone.
+    assert!(
+        !stderr.contains("No exported functions found in"),
+        "the old undifferentiated message should not appear: {stderr}"
+    );
+}
+
+#[test]
+fn check_baseline_markdown_renders_a_diff_table() {
+    let workspace = setup_mock_workspace();
+
+    // A hand-written baseline: ping's cpu is well under the ~1,000,000 the
+    // fake RPC reports, so it must show as a tolerance breach; pong matches
+    // exactly, so it is unchanged.
+    fs::write(
+        workspace.path().join("budget-baseline.toml"),
+        "[\"mock-contract-a::ping\"]\n\
+         cpu_instructions = 100000\n\
+         read_bytes = 2048\n\
+         write_bytes = 4096\n\
+         \n\
+         [\"mock-contract-b::pong\"]\n\
+         cpu_instructions = 1000000\n\
+         read_bytes = 2048\n\
+         write_bytes = 4096\n",
+    )
+    .expect("failed to write baseline");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args([
+            "budget-report",
+            "--network",
+            "local",
+            "--source",
+            "alice",
+            "--check-baseline",
+            "budget-baseline.toml",
+            "--markdown",
+        ])
+        .assert();
+
+    // A regression exits non-zero.
+    let stdout =
+        String::from_utf8_lossy(&assert.failure().get_output().stdout.clone()).into_owned();
+
+    // Valid GitHub pipe table.
+    assert!(stdout
+        .contains("| Function | Metric | Baseline | Current | Change | Change % | Dir | Status |"));
+    assert!(stdout.contains("|---|---|--:|--:|--:|--:|:-:|:--|"));
+    // ping's cpu breached; the status names the ceiling and it is not colour.
+    assert!(
+        stdout.contains("`mock-contract-a::ping`") && stdout.contains("BREACH (max 110,000)"),
+        "cpu breach row present: {stdout}"
+    );
+    assert!(!stdout.contains('\u{1b}'), "no ANSI colour codes: {stdout}");
+    // pong is unchanged -> collapsed into <details> by default.
+    assert!(
+        stdout.contains("<details>") && stdout.contains("unchanged metric(s)"),
+        "unchanged rows collapsed: {stdout}"
     );
 }

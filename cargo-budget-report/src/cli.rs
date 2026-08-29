@@ -30,6 +30,18 @@ pub struct BudgetReportArgs {
     #[arg(long)]
     pub source: Option<String>,
 
+    /// Permit the run to build and deploy against a non-disposable network.
+    ///
+    /// `cargo budget-report` deploys a contract and simulates calls against
+    /// it. Against testnet, futurenet, or a local network that is free and
+    /// throwaway. Against Stellar Mainnet it funds a source account and
+    /// pushes a contract using real funds. Without this flag the run stops
+    /// before building anything when the resolved network is Mainnet — or
+    /// when it cannot be recognised as disposable, which is treated the same
+    /// way rather than assumed safe.
+    #[arg(long, default_value_t = false)]
+    pub allow_mainnet: bool,
+
     #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
@@ -65,6 +77,25 @@ pub struct BudgetReportArgs {
     /// precedence over `tolerance` in `budget.toml`.
     #[arg(long)]
     pub tolerance: Option<String>,
+
+    /// Render the `--check-baseline` comparison as a GitHub-flavored
+    /// Markdown diff table instead of the plain-text one.
+    ///
+    /// Each row shows baseline, current, absolute change, and percentage
+    /// change; direction is an ASCII marker (not colour) so it survives CI
+    /// logs and step summaries, which is this format's main destination.
+    /// Only meaningful with `--check-baseline`; ignored otherwise. `--json`
+    /// wins if both are passed.
+    #[arg(long, default_value_t = false)]
+    pub markdown: bool,
+
+    /// Drop rows whose value is unchanged from the baseline in the
+    /// `--check-baseline` comparison.
+    ///
+    /// In the Markdown output the default instead collapses unchanged rows
+    /// into a `<details>` block; this flag omits them from both formats.
+    #[arg(long, default_value_t = false)]
+    pub hide_unchanged: bool,
 
     /// Suppress non-essential progress messages and warnings on stderr.
     ///

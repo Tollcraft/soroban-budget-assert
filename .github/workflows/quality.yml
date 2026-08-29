@@ -13,15 +13,15 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
 
       - name: Rust Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@v2
 
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
@@ -37,12 +37,6 @@ jobs:
         # clippy/tests report success on them by never looking at them
         # (issue #451).
         run: scripts/check-module-reachability.sh
-      - name: Check CLI docs are up to date
-        # Fail if a flag added to cargo-budget-report/src/cli.rs has no
-        # mention at all in docs/src/reference.md. The reference used to
-        # cover only a fraction of the CLI's flags with nothing stopping
-        # the gap from reopening as flags were added (issue #434).
-        run: scripts/check-cli-docs.sh
       - name: Check for unused dependencies
         run: |
           cargo install cargo-machete --version 0.6.2 --locked

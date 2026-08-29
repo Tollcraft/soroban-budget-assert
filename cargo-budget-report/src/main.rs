@@ -8,10 +8,8 @@ use anyhow::Context;
 mod arg_spec;
 mod cli;
 mod compare;
-mod deploy_cache;
 mod fixture;
 mod html_output;
-mod json_output;
 mod live;
 mod markdown;
 mod record;
@@ -21,12 +19,11 @@ use cargo_metadata::{CrateType, MetadataCommand};
 
 use compare::{
     build_baseline, check_against_baseline, max_allowed as max_allowed_metric, parse_tolerance,
-    render_report_text, Baseline, Measurement, Tolerance,
+    render_report_markdown, render_report_text, Baseline, Measurement, RenderOptions, Tolerance,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -36,10 +33,14 @@ use tabled::settings::object::Rows;
 use tabled::settings::Color as TabledColor;
 use tabled::settings::Modify;
 use tabled::{Table, Tabled};
-use wasmparser::Parser as WasmParser;
 
+mod contract_exports;
+mod deploy_diagnostics;
 mod derive;
 mod error;
+mod json_output;
+mod network_guard;
+mod wasm_exports;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -204,12 +205,18 @@ where
         if attempt > 0 {
             let delay_secs = config.initial_backoff.as_secs() * 2u64.pow(attempt - 1);
             if !quiet {
+                // Keeps the "<label> attempt N/M failed" / "Retrying in" wording
+                // other call sites and tests rely on, and adds the reason so the
+                // user can see which failure class they are waiting on.
                 eprintln!(
-                    "{label} attempt {}/{} failed. Retrying in {} s...",
-                    attempt, config.max_attempts, delay_secs
+                    "{label} attempt {}/{} failed: {}. Retrying in {} s...",
+                    attempt,
+                    config.max_attempts,
+                    deploy_diagnostics::summarize(&last_error),
+                    delay_secs
                 );
             }
-            thread::sleep(Duration::from_secs(delay_secs));
+            backoff_sleep(Duration::from_secs(delay_secs), quiet);
         }
 
         match op() {
@@ -220,6 +227,30 @@ where
     }
 
     Err(exhausted(&last_error))
+}
+
+/// Sleep for the backoff interval, showing a spinner on an interactive
+/// stderr so the wait does not look like a hang. Falls back to a plain
+/// sleep when output is suppressed, redirected, or the delay is zero
+/// (`--retry-backoff-secs 0`, and the paths the test suite exercises).
+fn backoff_sleep(delay: Duration, quiet: bool) {
+    if quiet || delay.is_zero() || !std::io::stderr().is_terminal() {
+        thread::sleep(delay);
+        return;
+    }
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.yellow} {msg}")
+            .unwrap(),
+    );
+    spinner.set_message(format!(
+        "backing off {} s before the next attempt",
+        delay.as_secs()
+    ));
+    spinner.enable_steady_tick(Duration::from_millis(120));
+    thread::sleep(delay);
+    spinner.finish_and_clear();
 }
 
 /// Commented budget.toml template written by `cargo budget-report --init`.
@@ -877,7 +908,7 @@ fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
 /// field, or an undecodable response) is reported as
 /// `Ok(SimulationOutcome::Failed(..))` so the caller can move on to the next
 /// function instead of aborting the whole report.
-pub(crate) fn simulate_function(
+fn simulate_function(
     transport: &mut impl transport::Transport,
     contract_id: &str,
     source: &str,
@@ -1270,6 +1301,44 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
             }
         }
     }
+    // ── curl ────────────────────────────────────────────────────────────
+    // Used by `simulate_transaction_rpc` for every `simulateTransaction`
+    // call. Unlike rustup, curl is not optional, so its absence is a hard
+    // error rather than a silent skip.
+    if !quiet {
+        eprint!("Checking curl... ");
+    }
+    let curl_check = Command::new("curl").arg("--version").output();
+    match curl_check {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::Message(
+                "curl is not installed or not on PATH.\n\
+                 Install it with your system package manager, e.g.:\n  \
+                 Debian/Ubuntu: sudo apt-get install curl\n  \
+                 macOS:         brew install curl\n\
+                 See: https://curl.se/download.html"
+                    .to_string(),
+            ));
+        }
+        Err(e) => {
+            return Err(Error::CommandFailed(format!(
+                "failed to execute curl --version: {}",
+                e
+            )));
+        }
+        Ok(output) if !output.status.success() => {
+            return Err(Error::CommandFailed(format!(
+                "curl failed to run.\n\
+                 stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        Ok(_output) => {
+            if !quiet {
+                eprintln!("found");
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1284,7 +1353,7 @@ fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> 
 /// exponential backoff and skips retrying deterministic failures. All this
 /// function does is report the outcome with the familiar "source account is
 /// funded" hint.
-pub(crate) fn deploy_contract_with_retry(
+fn deploy_contract_with_retry(
     transport: &mut impl transport::Transport,
     wasm_path: &Path,
     source: &str,
@@ -1648,6 +1717,7 @@ fn run() -> Result<i32> {
             .clone()
             .or(toml_config.source.clone())
             .context("missing --source or budget.toml source field")?;
+        network_guard::ensure_deploy_allowed(&network, args.allow_mainnet)?;
         return watch::watch_loop(
             &args,
             metadata,
@@ -1684,6 +1754,10 @@ fn run() -> Result<i32> {
         .or(toml_config.source.clone())
         .context("missing --source or budget.toml source field")?;
 
+    // Refuse to build/deploy against Mainnet (or an unrecognised network)
+    // unless --allow-mainnet was passed. This runs before workspace
+    // discovery so no contract is built, funded, or deployed first.
+    network_guard::ensure_deploy_allowed(&network, args.allow_mainnet)?;
     if let Some(o) = &net_override {
         if !args.quiet {
             eprintln!("Targeting custom RPC endpoint {}", o.rpc_url);
@@ -1710,38 +1784,10 @@ fn run() -> Result<i32> {
     let build_profile = args.profile.as_deref().unwrap_or("release");
 
     // All network interaction happens through the transport. Production runs
-    // use `LiveTransport` (which owns the retry policy); `--record` wraps it
-    // in a `RecordingTransport` that captures every response, and `--replay`
-    // serves responses back from a recorded fixture with no network at all.
-    let mut transport = if let Some(replay_path) = &args.replay {
-        TransportKind::Replay(replay::ReplayTransport::new(
-            fixture::FixtureFile::load(replay_path)
-                .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
-        ))
-    } else if args.record.is_some() {
-        TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
-            retry_config,
-            args.quiet,
-            net_override.clone(),
-        )))
-    } else {
-        TransportKind::Live(live::LiveTransport::new(
-            retry_config,
-            args.quiet,
-            net_override.clone(),
-        ))
-    };
-
-    // Deploy cache (#79): reuse a contract id across runs when the wasm
-    // hash, network, and source all match. `--replay` never deploys, so it
-    // has nothing to cache; `--no-deploy-cache` bypasses lookups but still
-    // records fresh deploys so a later cached run stays warm.
-    let mut deploy_cache = deploy_cache::DeployCache::load(std::path::Path::new("."));
-
-    // Union of every function exported by every contract in the workspace.
-    // Used at the end of the run (issue #399) to validate that every function
-    // configured in `budget.toml` actually exists.
-    let mut all_exported: HashSet<String> = HashSet::new();
+    // use `LiveTransport` (which owns the retry policy); `ReplayTransport`
+    // (fed by `RecordingTransport`) is available to tests and a follow-up
+    // CLI flag.
+    let mut transport = live::LiveTransport::new(retry_config, args.quiet);
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -1749,6 +1795,16 @@ fn run() -> Result<i32> {
             .iter()
             .any(|target| target.crate_types.contains(&CrateType::CDyLib));
         if !is_cdylib {
+            // A crate that pulls in soroban-sdk as a normal dependency but
+            // is not a cdylib produces no WASM at all — the most common
+            // "why isn't my contract showing up" misconfiguration. Say so
+            // instead of skipping in silence.
+            let looks_like_contract = package.dependencies.iter().any(|dep| {
+                dep.name == "soroban-sdk" && dep.kind == cargo_metadata::DependencyKind::Normal
+            });
+            if looks_like_contract && !args.quiet {
+                eprintln!("{}", contract_exports::not_a_cdylib_message(&package.name));
+            }
             continue;
         }
 
@@ -1806,33 +1862,27 @@ fn run() -> Result<i32> {
             continue;
         }
 
-        // Parse WASM exports
+        // Parse WASM exports and classify what came back. A cdylib that
+        // produces nothing simulatable has three distinct causes, each with
+        // its own message — see `contract_exports`.
         let wasm_bytes = std::fs::read(&wasm_path)?;
         let wasm_size: u32 = wasm_bytes.len().try_into().unwrap_or(u32::MAX);
-        let mut exported_fns: HashSet<String> = HashSet::new();
 
-        for payload in WasmParser::new(0).parse_all(&wasm_bytes) {
-            if let wasmparser::Payload::ExportSection(export_section) = payload? {
-                for export_item in export_section {
-                    let export_item = export_item?;
-                    if export_item.kind == wasmparser::ExternalKind::Func {
-                        let name = export_item.name.to_string();
-                        // Ignore internal and common exports
-                        if !name.starts_with('_') && name != "memory" {
-                            exported_fns.insert(name.clone());
-                            all_exported.insert(name);
-                        }
-                    }
+        let exported_fns: HashSet<String> = match contract_exports::scan_wasm_exports(&wasm_bytes)?
+        {
+            contract_exports::ExportScan::Functions(fns) => fns.into_iter().collect(),
+            other => {
+                if let Some(diagnostic) = other.diagnostic(&package.name) {
+                    eprintln!("Error: {diagnostic}");
                 }
+                // A crate explicitly built as a cdylib that exports no
+                // contract entrypoint is a real misconfiguration: fail the
+                // run so CI does not treat it as "nothing to report".
+                has_errors = true;
+                continue;
             }
-        }
-
-        if exported_fns.is_empty() {
-            if !args.quiet {
-                eprintln!("No exported functions found in {}", package.name);
-            }
-            continue;
-        }
+        };
+        all_exported.extend(exported_fns.iter().cloned());
 
         let spinner = if args.quiet {
             None
@@ -1849,31 +1899,14 @@ fn run() -> Result<i32> {
             Some(pb)
         };
 
-        let wasm_std_path = wasm_path.as_std_path();
-        let wasm_sha = deploy_cache::wasm_hash(wasm_std_path)?;
-        let cached_id = if args.no_deploy_cache {
-            None
-        } else {
-            deploy_cache
-                .get(&wasm_sha, &network, &source)
-                .map(str::to_string)
-        };
-
-        let (contract_id, from_cache) = match cached_id {
-            Some(id) => (id, true),
-            None => {
-                let id = deploy_contract_with_retry(
-                    &mut transport,
-                    wasm_std_path,
-                    &source,
-                    &network,
-                    &package.name,
-                    &retry_config,
-                )?;
-                deploy_cache.put(package.name.as_str(), &wasm_sha, &network, &source, &id);
-                (id, false)
-            }
-        };
+        let contract_id = deploy_contract_with_retry(
+            &mut transport,
+            wasm_path.as_std_path(),
+            &source,
+            &network,
+            &package.name,
+            &retry_config,
+        )?;
 
         if let Some(spinner) = spinner {
             spinner.finish_and_clear();
@@ -2138,14 +2171,19 @@ fn run() -> Result<i32> {
                 default_tolerance,
                 &tolerance_overrides,
             );
+            let render_opts = RenderOptions {
+                hide_unchanged: args.hide_unchanged,
+            };
             if args.json {
                 let json = render_check_report_json(&report, default_tolerance);
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json).context("Failed to serialize JSON")?
                 );
+            } else if args.markdown {
+                print!("{}", render_report_markdown(&report, render_opts));
             } else {
-                print!("{}", render_report_text(&report));
+                print!("{}", render_report_text(&report, render_opts));
             }
             if report.has_regressions() {
                 return Ok(EXIT_REGRESSION);
@@ -2200,6 +2238,9 @@ fn run() -> Result<i32> {
         println!("{}", json_output::render_json(&reports));
     } else if args.markdown {
         print!("{}", markdown::render_markdown(&reports));
+        let json_output =
+            serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
+        println!("{}", json_output);
     } else if args.html {
         print!("{}", html_output::render_html(&reports, args.check));
     } else {
@@ -3001,6 +3042,7 @@ mod tests {
             force: false,
             network: None,
             source: None,
+            allow_mainnet: false,
             json: false,
             markdown: false,
             check: false,
@@ -3009,6 +3051,8 @@ mod tests {
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
+            markdown: false,
+            hide_unchanged: false,
             quiet: false,
             validate: false,
             record: None,
@@ -3040,6 +3084,7 @@ mod tests {
             force: false,
             network: None,
             source: None,
+            allow_mainnet: false,
             json: false,
             markdown: false,
             check: false,
@@ -3048,6 +3093,8 @@ mod tests {
             record_baseline: Some("budget-baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
+            markdown: false,
+            hide_unchanged: false,
             quiet: false,
             validate: false,
             record: None,
@@ -3079,6 +3126,7 @@ mod tests {
             force: false,
             network: None,
             source: None,
+            allow_mainnet: false,
             json: false,
             markdown: false,
             check: false,
@@ -3087,6 +3135,8 @@ mod tests {
             record_baseline: None,
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
+            markdown: false,
+            hide_unchanged: false,
             quiet: false,
             validate: false,
             record: None,
@@ -3121,6 +3171,7 @@ mod tests {
             force: false,
             network: None,
             source: None,
+            allow_mainnet: false,
             json: false,
             markdown: false,
             check: false,
@@ -3129,6 +3180,8 @@ mod tests {
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
+            markdown: false,
+            hide_unchanged: false,
             quiet: false,
             validate: false,
             record: None,

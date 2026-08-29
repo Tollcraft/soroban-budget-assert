@@ -12,6 +12,10 @@ set -euo pipefail
 # survives across separate process invocations.
 FAIL_COUNT="${MOCK_STELLAR_FAIL_COUNT:-0}"
 FAIL_COUNT_FILE="${MOCK_STELLAR_FAIL_COUNT_FILE:-}"
+# Set MOCK_STELLAR_DEPLOY_ERROR to control the stderr text a failed `deploy`
+# emits, so tests can exercise the deploy-failure classification (rate
+# limiting vs. outage vs. unreachable network vs. unfunded account).
+DEPLOY_ERROR="${MOCK_STELLAR_DEPLOY_ERROR:-Error: friendbot rate-limited (try again later)}"
 
 case "${1:-}" in
   --version)
@@ -27,7 +31,7 @@ case "${1:-}" in
             call_num=$(cat "$FAIL_COUNT_FILE")
             if [ "$call_num" -lt "$FAIL_COUNT" ]; then
                 echo "$((call_num + 1))" > "$FAIL_COUNT_FILE"
-                echo "Error: friendbot rate-limited (try again later)" >&2
+                echo "$DEPLOY_ERROR" >&2
                 exit 1
             fi
         fi

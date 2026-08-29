@@ -1,0 +1,5 @@
+# Pinned to the workspace CI toolchain rather than the older channel the
+# sibling mock_workspace uses; nothing here needs the older compiler.
+[toolchain]
+channel = "1.91.0"
+targets = ["wasm32-unknown-unknown"]

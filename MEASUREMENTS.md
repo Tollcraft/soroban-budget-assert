@@ -424,77 +424,257 @@ For the isolated VM benchmark, the delta is calculated as:
 (689,312 − 634,912) / 634,912 = +8.6%
 ```
 
-## Map operations
+## Cryptographic operations
 
-This section records the local-vs-network cost gap for Soroban [`Map`](https://docs.rs/soroban-sdk/latest/soroban_sdk/struct.Map.html) operations — insert, get, remove, iterate — isolated from storage, event, and compute side-effects, using the [`host-function-contract`](host-function-contract/README.md) fixture crate.
+Hashing and signature verification are among the most expensive host calls, and
+the operations most likely to push a single invocation over its CPU budget.
+They are also where the local estimate has particular reason to mislead:
+locally they run as native Rust, on the network through the host's metered
+implementation, so there is no reason to expect the gap to match the
+VM-instruction figures already recorded.
 
-Map is the collection whose cost scales least intuitively: to a Rust developer a `Map` lookup reads as the `O(1)` `HashMap`-style operation, but in Soroban it is a host call with its own per-operation cost curve, and the difference compounds inside loops. Measuring the actual cost gives the existing Map-usage lints an empirical basis rather than a structural argument. This section quantifies both the local-vs-network gap and, crucially, how per-operation cost scales with map size.
+`soroban_sdk::crypto::Crypto` (the non-hazmat surface) exposes exactly:
+`sha256`, `keccak256`, `ed25519_verify`, and `bls12_381()`. Each is measured
+separately below **except** `bls12_381()`, which is a whole sub-module
+(G1/G2 add, mul, MSM, pairing, map-to-curve, hash-to-curve) and warrants its
+own series. `CryptoHazmat` additionally exposes `secp256k1_recover` and
+`secp256r1_verify`, both gated behind the `hazmat` SDK feature and unavailable
+to a plain contract build. A new hashing or signature primitive added to
+`Crypto` will show up here as a visible gap — no fixture, no row.
 
 ### Methodology
 
-The local estimate is collected per operation and per map size by the `measure_map_gap` test in `host-function-contract/tests/measure_map_gap.rs`, which registers the WASM via `Env::register`, resets the budget to unlimited, and reads `cost_estimate().budget().cpu_instruction_cost()`.
+Local estimates come from `Env::cost_estimate().budget()` in
+`amm-pool-contract/tests/measure_crypto_gap.rs`, which registers the WASM,
+resets the budget, and makes one call per fixture:
 
+```bash
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test measure_crypto_gap -- --nocapture
 ```
-cargo build -p host-function-contract --target wasm32v1-none --release
-cargo test -p host-function-contract --test measure_map_gap -- --nocapture
-```
 
-The network figure is collected per operation and size by deploying the same WASM to Soroban testnet and decoding the `resources.instructions` field from each `simulateTransaction` response. The capture record (all figures) is checked in at [`cargo-budget-report/fixtures/map_operations_benchmark.json`](cargo-budget-report/fixtures/map_operations_benchmark.json).
+`verify_ed25519` is invoked through the generated `try_` method: the host runs
+the full scalar multiplication before it can accept or reject, so the metered
+cost is representative of a real verification whether or not an arbitrary
+64-byte value validates.
 
-Four functions in [`host-function-contract/src/lib.rs`](host-function-contract/src/lib.rs) isolate the operations: `map_insert`, `map_get`, `map_remove`, `map_iterate`. Each builds a `size`-entry `Map<u32, u32>` (the insert function *is* the build), then `map_get` issues `size` lookups, `map_remove` issues `size` removals, and `map_iterate` walks all `size` entries. Because every non-insert function performs an identical `size`-entry build, the **per-operation marginal cost** is computed by subtracting the `map_insert(size)` figure: `(map_<op>(size) − map_insert(size)) / size`. Map sizes are 100, 500, and 1,000 — larger sizes exceed the host's hard per-invocation memory limit (the Map's host memory grows super-linearly with size in the SDK-27 host), so these are the largest values measurable in a single invocation.
+The network figure for each row requires a `simulateTransaction` run against
+Soroban testnet with the same WASM. The complete capture record is at
+[`cargo-budget-report/fixtures/crypto_operations_benchmark.json`](cargo-budget-report/fixtures/crypto_operations_benchmark.json).
 
 ### Figures
 
-Raw CPU instructions (local, network) and the per-operation marginal cost, by map size:
+| Operation | Input size | Local CPU | Local mem | Network CPU | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---|---:|---:|---:|---:|---:|---|---|---|---|
+| SHA-256 | 64 B | 3,611,572 | 1,853,269 | — | — | `amm-pool-contract::hash_sha256` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.91.0` | 2026-08-26 |
+| SHA-256 | 1,024 B | 3,664,162 | 1,853,269 | — | — | `amm-pool-contract::hash_sha256` | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| SHA-256 | 8,192 B | 4,056,834 | 1,853,269 | — | — | `amm-pool-contract::hash_sha256` | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| Keccak-256 | 64 B | 3,611,078 | 1,853,269 | — | — | `amm-pool-contract::hash_keccak256` | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| Keccak-256 | 1,024 B | 3,655,846 | 1,853,269 | — | — | `amm-pool-contract::hash_keccak256` | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| Keccak-256 | 8,192 B | 3,990,110 | 1,853,269 | — | — | `amm-pool-contract::hash_keccak256` | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| ed25519_verify | 32 B message | 3,647,881 | 1,853,245 | — | — | `amm-pool-contract::verify_ed25519` | size-opt | `rustc 1.91.0` | 2026-08-26 |
 
-| Operation | Size | Local CPU | Network CPU | Delta | Local per-op | Network per-op |
-|---|---|---:|---:|---:|---:|---:|
-| Insert | 100 | 755,807 | 846,437 | −10.7% | 7,558 | 8,464 |
-| Insert | 500 | 3,285,855 | 3,452,056 | −4.8% | 6,572 | 6,904 |
-| Insert | 1,000 | 8,475,569 | 8,839,998 | −4.1% | 8,476 | 8,840 |
-| Get | 100 | 1,104,263 | 1,190,352 | −7.2% | 3,485 | 3,439 |
-| Get | 500 | 5,031,111 | 5,248,256 | −4.1% | 3,491 | 3,592 |
-| Get | 1,000 | 11,971,325 | 12,439,038 | −3.8% | 3,496 | 3,599 |
-| Remove | 100 | 1,297,233 | 1,387,737 | −6.5% | 5,414 | 5,413 |
-| Remove | 500 | 6,894,789 | 7,187,147 | −4.1% | 7,218 | 7,470 |
-| Remove | 1,000 | 17,948,187 | 18,655,121 | −3.8% | 9,473 | 9,815 |
-| Iterate | 100 | 1,117,331 | 1,204,544 | −7.2% | 3,615 | 3,581 |
-| Iterate | 500 | 5,078,579 | 5,298,791 | −4.2% | 3,585 | 3,694 |
-| Iterate | 1,000 | 12,057,293 | 12,529,614 | −3.8% | 3,582 | 3,690 |
+### Findings (local)
 
-Build profile: size-opt (`opt-level="z"`, LTO, `codegen-units=1`). Toolchain: rustc 1.91.0. Date: 2026-08-27.
+- **Hashing cost does scale with input length, locally.** SHA-256 rises
+  3,611,572 → 4,056,834 across 64 B → 8,192 B, a marginal **~54.8 CPU/byte**;
+  Keccak-256 rises 3,611,078 → 3,990,110, **~46.6 CPU/byte**. The ~3.6 M floor
+  common to every row is the WASM instantiation cost the host pays before any
+  contract byte runs (`ConstantProductPool::noop` measures it in isolation at
+  ~3.11 M) — it dwarfs the hashing work at these sizes, which is exactly why a
+  network figure is needed before any margin is derived.
+- **SHA-256 and Keccak-256 are within ~2 % of each other** at every size.
+- **ed25519_verify** adds ~36 K CPU over the floor for a 32-byte message —
+  cheaper, locally, than hashing 8 KB. Whether that ordering survives on the
+  network is an open question and the reason this row exists.
+- Memory bytes are effectively flat (~1.853 M) across all hashing inputs, so
+  the local estimator books no per-byte memory cost for hashing.
 
-Delta is `(local − network) / network`; a negative value means the local estimate *underestimates* the network cost. For every Map operation at every size the local estimate underestimates the network cost, by **3.8%–10.7%**. As with the host-function series, the raw percentage is largest at the smallest map size (where the fixed module-instantiation baseline is a larger fraction of the total) and converges to roughly **−4%** at size 1,000.
+> **A large divergence, if the network figures show one, is the most useful
+> thing this section can report** — the gap for metered crypto has no reason to
+> track the +8.6 % / +88.6 % figures recorded for VM and mixed work.
 
-### Scaling behaviour (the substance of the result)
+## Token transfers
 
-The per-operation marginal cost is the quantity that reveals whether Map operations are constant-time:
+A token transfer is the single most common expensive operation in deployed
+Soroban contracts. It is a compound operation — a cross-contract call into the
+token contract plus storage writes on both sides — so its cost cannot be
+inferred by adding up the parts. It is also where a mistaken budget has the
+most practical consequence: a payout loop that fits locally but exceeds the
+budget on the network fails *after* having already moved some of the tokens.
 
-- **Get is constant.** Local per-lookup is 3,485 → 3,491 → 3,496 across sizes 100/500/1,000; network is 3,439 → 3,592 → 3,599. The per-lookup cost is flat: getting an entry from a 1,000-entry map costs the same as from a 100-entry map.
-- **Iterate is constant.** Local per-entry is 3,615 → 3,585 → 3,582; network is 3,581 → 3,694 → 3,690. Flat.
-- **Insert is roughly constant-to-modest.** Local per-insert is 7,558 → 6,572 → 8,476; network is 8,464 → 6,904 → 8,840. No monotonic growth with size.
-- **Remove is super-linear.** Local per-remove grows 5,414 → 7,218 → 9,473 (a 10× map-size increase raises per-remove cost ~75%); network grows 5,413 → 7,470 → 9,815. **Remove is not constant-time** — each removal costs more as the map grows, consistent with a delete that shifts/rewrites the remaining entries in the host's persistent map representation.
+### Methodology
 
-**Implication for lints and Tier A margins.** The three Map lints and any local-vs-network margin can lean on the following: (1) the local estimate underestimates network for all four operations, so a margin derived from local Map estimates must be at least ~4% (larger at small maps) to avoid under-budgeting on-chain; (2) get/iterate are safe to model as `O(1)`-per-call in both local and network metering, while insert is roughly flat but ~2× get; (3) **remove must be modelled as size-dependent** — its per-call cost grows with map size, so a remove-heavy loop's cost compounds with the map's peak size, not just the number of removes. A margin that is flat with respect to map size (correct for get/iterate) would under-budget a remove-heavy workload at scale.
+`amm-pool-contract::do_token_transfers(token, to, amount, count)` loops
+`count` SAC `transfer` calls. The measurement test uses the SDK's built-in
+Stellar Asset Contract (`Env::register_stellar_asset_contract_v2`) as `token`
+and mints the pool contract a balance first:
 
-### Reproduction
+```bash
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test measure_token_transfer_gap -- --nocapture
+```
 
-To reproduce this measurement from a clean checkout:
+Network figure: `simulateTransaction` against testnet with the same WASM and a
+deployed SAC. Capture record:
+[`cargo-budget-report/fixtures/token_transfer_benchmark.json`](cargo-budget-report/fixtures/token_transfer_benchmark.json).
 
-1. Build the WASM: `cargo build -p host-function-contract --target wasm32v1-none --release`
-2. Capture local figures: `cargo test -p host-function-contract --test measure_map_gap -- --nocapture`. The `INSERT/GET/REMOVE/ITERATE size=…` lines give the local CPU estimates.
-3. Deploy the WASM to Soroban testnet: `stellar contract deploy --wasm target/wasm32v1-none/release/host_function_contract.wasm --source <funded-key> --network testnet`
-4. For each operation and size, build the invocation XDR with `stellar contract invoke --id <deployed-id> --source <funded-key> --network testnet --build-only -- map_<op> --size <n>`, POST it to the testnet RPC `simulateTransaction` method, and decode the `result.transactionData` base64 as `SorobanTransactionData` (via `stellar xdr dec --type SorobanTransactionData`). The `resources.instructions` field is the network CPU figure.
-5. Compute each delta = `(local − network) / network` and the per-operation marginal cost `(map_<op>(size) − map_insert(size)) / size`, and update the tables above. The full capture record is at [`cargo-budget-report/fixtures/map_operations_benchmark.json`](cargo-budget-report/fixtures/map_operations_benchmark.json).
+### Figures
+
+| Transfers | Local CPU | Local mem | Network CPU | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---:|---:|---:|---:|---:|---|---|---|---|
+| 1 | 3,748,650 | 1,873,575 | — | — | `amm-pool-contract::do_token_transfers` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.91.0` | 2026-08-26 |
+| 5 | 4,301,770 | 1,948,299 | — | — | same | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| 20 | 6,375,970 | 2,228,514 | — | — | same | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| 50 | 10,524,370 | 2,788,944 | — | — | same | size-opt | `rustc 1.91.0` | 2026-08-26 |
+
+### Findings (local)
+
+- **Per-transfer cost is constant.** The marginal CPU between every adjacent
+  pair of counts is **exactly 138,280** (1→5, 5→20, 20→50 all identical), and
+  the marginal memory is **~18,682 bytes/transfer**, also constant. So a batch
+  of N transfers costs `floor + N·138,280` CPU locally, with no super-linear
+  term — batching does not change the per-unit price at the local-estimate
+  level.
+- The first transfer carries the same ~3.6 M instantiation floor seen
+  everywhere else; a single-transfer measurement is ~96 % floor.
+- Whether the *network* also charges a constant per-transfer price — or whether
+  cross-contract dispatch and dual-sided storage writes introduce a
+  count-dependent term — is the practically important question the network
+  figures will answer.
+
+## Cross-contract call depth
+
+`cross_contract_test.rs` measures the single-hop case. This measures what
+happens deeper: a contract calling a contract that calls a third. Depth matters
+because contracts compose in practice — a router calling a pool calling a token
+is three levels — and each level's dispatch, `Val` conversion and
+authorization context accumulate.
+
+### Methodology
+
+`RelayContract` (a new fixture in `amm-pool-contract/src/lib.rs`, *not* a
+change to `cross_contract_test.rs`, which other work depends on) forwards a
+call along a chain of addresses. The test registers N instances of the WASM,
+passes instances `2..=N` as the chain to instance 1, and measures one call
+into instance 1:
+
+```bash
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract --test measure_call_depth_gap -- --nocapture
+```
+
+Network figure: `simulateTransaction` against testnet with N deployed
+instances. Capture record:
+[`cargo-budget-report/fixtures/cross_contract_depth_benchmark.json`](cargo-budget-report/fixtures/cross_contract_depth_benchmark.json).
+
+### Figures
+
+| Depth (frames) | Local CPU | Local mem | Network CPU | Delta CPU | Fixture | Build profile | Toolchain | Date |
+|---:|---:|---:|---:|---:|---|---|---|---|
+| 1 | 3,603,572 | 1,853,165 | — | — | `amm-pool-contract::RelayContract::relay` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.91.0` | 2026-08-26 |
+| 2 | 7,219,701 | 3,706,954 | — | — | same | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| 3 | 10,836,389 | 5,561,184 | — | — | same | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| 4 | 14,452,965 | 7,415,855 | — | — | same | size-opt | `rustc 1.91.0` | 2026-08-26 |
+
+### Findings (local)
+
+- **Per-hop cost is constant and accumulation is strictly linear.** Each
+  additional frame adds **~3,616,400 CPU** (1→2, 2→3, 3→4 within 600
+  instructions of each other) and **~1,853,900 memory bytes**. `relay` itself
+  does almost nothing; the per-hop cost *is* the module instantiation floor,
+  paid once per frame — the same effect `cross_contract_test.rs` documents for
+  its 100-iteration loop, where the per-invocation floor is ~99 % of the
+  measured work.
+- **No protocol depth limit was encountered through depth 4.** The Soroban
+  host does impose a maximum call-stack depth; confirming its exact value (and
+  whether the near-floor per-hop cost holds right up to it) is left to the
+  network pass.
+- Implication: on the local estimate, a 3-level `router → pool → token`
+  composition is priced at ~3× a single contract call. If the network's
+  per-hop overhead is materially *below* the local floor (likely — the floor is
+  a local-VM artefact), depth-heavy designs are being over-penalised by local
+  estimates and the Tier A margin for them should reflect that.
+
+## Wasm size and deploy cost
+
+Every other measurement here concerns what a contract costs to *run*. This one
+concerns what it costs to *deploy* — a function of compiled size, subject to
+its own network limit. Deploy cost is a one-off, which is why it is overlooked,
+but it is also the cost an author can do least about after the fact (shrinking
+WASM usually means structural change), so a documented size↔cost relationship
+is what lets someone decide whether an abstraction is worth its bytes.
+
+### Methodology
+
+`Env::register(&[u8], ())` drives the same host path a real deploy does —
+`upload_contract_wasm` + `CreateContractV2`, no constructor args (verified
+against soroban-sdk 22.0.11, see `budget_test.rs`) — so the budget cost
+recorded immediately after `register`, before any invocation, is the local
+estimate of deploy cost.
+`amm-pool-contract/tests/measure_deploy_cost_gap.rs` measures three real
+contracts of materially different compiled size (size from real code —
+`bloat-contract` is a new fixture of independent algorithms, since constant
+padding compresses differently under `opt-level = "z"` + LTO and would
+misrepresent the relationship):
+
+```bash
+cargo build --release --target wasm32v1-none \
+  -p amm-pool-contract -p host-function-contract -p bloat-contract
+cargo test -p amm-pool-contract --test measure_deploy_cost_gap -- --nocapture
+```
+
+**The release profile matters.** The workspace `[profile.release]` sets
+`opt-level = "z"`, `lto = true`, `strip = "symbols"`, `codegen-units = 1`. An
+unoptimised build would not reflect what is deployed, so all three wasms are
+built `--release`. Changing the release profile is out of scope for this
+measurement.
+
+Network figure: `simulateTransaction` on the upload/create operations against
+testnet, plus the live `maxContractSizeBytes` from `getNetworkLimits`. Capture
+record:
+[`cargo-budget-report/fixtures/deploy_cost_benchmark.json`](cargo-budget-report/fixtures/deploy_cost_benchmark.json).
+
+### Figures
+
+| Contract | WASM bytes | Local CPU (register) | Local mem | Network CPU | Delta CPU | Build profile | Toolchain | Date |
+|---|---:|---:|---:|---:|---:|---|---|---|
+| `host-function-contract` | 827 | 864,805 | 2,314,575 | — | — | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.91.0` | 2026-08-26 |
+| `bloat-contract` | 14,357 | 4,243,953 | 3,092,549 | — | — | size-opt | `rustc 1.91.0` | 2026-08-26 |
+| `amm-pool-contract` | 29,906 | 7,218,127 | 3,710,193 | — | — | size-opt | `rustc 1.91.0` | 2026-08-26 |
+
+### Findings (local)
+
+- **Deploy cost is approximately linear in WASM size.** Marginal CPU per byte
+  is 249.8 (827 → 14,357 B) then 191.3 (14,357 → 29,906 B) — a slightly
+  *decreasing* marginal rate, consistent with a fixed base cost amortising over
+  size. A linear fit through the three points is `CPU ≈ 0.47 M + 226·bytes`
+  (R² ≈ 0.997). It is linear-with-offset, not stepped.
+- Memory bytes also grow with size but sub-linearly (2.31 M → 3.09 M → 3.71 M).
+- **Contract size limit.** The ceiling is the `maxContractSizeBytes` ledger
+  configuration setting, readable at runtime via the `getNetworkLimits` RPC
+  method — the same call `cargo-budget-report` already uses for its
+  share-of-limit column. Its Protocol 22 network default is **65,536 bytes
+  (64 KiB)**; the network pass will record the live value for testnet, since a
+  ledger setting can be raised by validator vote. All three fixtures sit well
+  under it (largest is 29,906 B ≈ 46 %).
 
 ## Operation-type coverage
 
 | Operation type | Issue | Status |
 |---|---|---|
 | Storage-write operations | [#44](https://github.com/Tollcraft/soroban-budget-assert/issues/44) | Measured in the existing mixed-operation fixtures |
-| Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Measured in the [Host-function calls](#host-function-calls) section below |
+| Host-function-call operations | [#86](https://github.com/Tollcraft/soroban-budget-assert/issues/86) | Open |
 | VM-instruction-heavy operations | [#87](https://github.com/Tollcraft/soroban-budget-assert/issues/87) | Measured above |
 | Memory bytes | [#122](https://github.com/Tollcraft/soroban-budget-assert/issues/122) | In progress |
 | TTL extension | TBD | In progress — calibration test at `amm-pool-contract/tests/calibrate_extend_ttl.rs` |
-| Map operations | TBD | Measured in the [Map operations](#map-operations) section above |
+| Cryptographic operations (hashing, ed25519) | [#414](https://github.com/Tollcraft/soroban-budget-assert/issues/414) | Local measured — `measure_crypto_gap.rs`; network pending |
+| Token transfers | [#415](https://github.com/Tollcraft/soroban-budget-assert/issues/415) | Local measured — `measure_token_transfer_gap.rs`; network pending |
+| Cross-contract call depth | [#416](https://github.com/Tollcraft/soroban-budget-assert/issues/416) | Local measured — `measure_call_depth_gap.rs`; network pending |
+| Wasm size vs. deploy cost | [#417](https://github.com/Tollcraft/soroban-budget-assert/issues/417) | Local measured — `measure_deploy_cost_gap.rs`; network pending |
+| Storage-write operations | #44 | Measured in the existing mixed-operation fixtures |
+| Host-function-call operations | #86 | Measured in the host-function-contract fixture |
+| VM-instruction-heavy operations | #87 | Measured above |
+| Memory bytes | #122 | Measured |
+| TTL extension | TBD | Local measured — network figure pending (see [TTL extension](#ttl-extension) section) |
 

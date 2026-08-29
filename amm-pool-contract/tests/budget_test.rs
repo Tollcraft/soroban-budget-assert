@@ -662,20 +662,22 @@ fn test_read_bytes_budget_within_limit() {
     let read_bytes = env.cost_estimate().resources().disk_read_bytes;
     println!("Read bytes (WASM deposit+swap+withdraw): {read_bytes}");
 
-    // Generous upper bound (measured 25,784 locally) — tighten once a clean
+    // Generous upper bound (measured 30,312 locally) — tighten once a clean
     // baseline is recorded.
     //
     // `read_bytes` counts the contract's Wasm module, which the host reads from
     // the ledger on every invocation, so this figure tracks module *size* far
     // more than it tracks storage access. Adding the `noop` baseline export
     // grew the module 24,505 -> 25,380 bytes, taking read_bytes 24,912 ->
-    // 25,784 and past the old 25,000 bound. The ceiling moves rather than the
-    // export being dropped, because `noop` is what makes every CPU/memory
-    // assertion in this file measure marginal cost instead of the
-    // instantiation floor.
+    // 25,784 and past the old 25,000 bound. The crypto / token-transfer /
+    // call-depth measurement fixtures (issues #414-#416) then grew it further,
+    // 25,380 -> 29,906 bytes and read_bytes 25,784 -> 30,312, past the 30,000
+    // bound. The ceiling moves rather than the fixtures being dropped: those
+    // fixtures are what let their gap series be measured at all, the same
+    // rationale under which `noop` was kept.
     assert!(
-        read_bytes < 30_000,
-        "Read bytes {read_bytes} exceeded the expected limit of 30,000 \
+        read_bytes < 36_000,
+        "Read bytes {read_bytes} exceeded the expected limit of 36,000 \
          - local estimate, real network cost may differ significantly in either direction"
     );
 }

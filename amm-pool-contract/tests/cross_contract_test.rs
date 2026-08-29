@@ -55,10 +55,14 @@ fn test_cross_contract_wasm() {
 ///
 /// The ceiling was raised 300M -> 350M because the old one was stale: this
 /// measured 313,884,035 before the `noop` export existed and 314,972,209
-/// after, so it was already ~4.6% over. 350M restores roughly the headroom the
-/// original bound was chosen with.
+/// after, so it was already ~4.6% over. 350M restored roughly the headroom the
+/// original bound was chosen with. It moves again, 350M -> 420M, for the same
+/// reason: each iteration re-instantiates the module, so this figure tracks
+/// module *size*, and the crypto / token-transfer / call-depth fixtures
+/// (issues #414-#416) grew it 25,380 -> 29,906 bytes, taking the measurement
+/// 314,972,209 -> 364,044,978.
 #[test]
-#[budget_cpu_lt(350_000_000)]
+#[budget_cpu_lt(420_000_000)]
 fn test_cross_contract_macro_gated() {
     let env = Env::default();
 

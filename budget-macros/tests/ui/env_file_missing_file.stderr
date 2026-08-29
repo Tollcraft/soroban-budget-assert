@@ -1,0 +1,5 @@
+error: env_file "definitely/not/a/real/limits.env" was not found at macro-expansion time (looked relative to CARGO_MANIFEST_DIR and the build's working directory). Create the file, fix the path, or pass it as a `const` if it is generated during the build.
+ --> tests/ui/env_file_missing_file.rs:6:28
+  |
+6 | #[budget_cpu_lt(env_file = "definitely/not/a/real/limits.env", env = "SOME_LIMIT")]
+  |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

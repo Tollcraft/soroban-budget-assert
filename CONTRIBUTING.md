@@ -18,7 +18,8 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 3. If you've changed APIs, update the documentation.
 4. Add a changelog entry in `CHANGELOG.md` under the `## Unreleased` section for any user-visible change.
 5. Ensure the test suite passes.
-6. Issue that pull request!
+6. If you are adding a new cost metric, follow the [Adding a New Cost Metric](docs/src/adding_a_metric.md) guide to ensure all coordinated edits are made.
+7. Issue that pull request!
 
 ## Local Development
 

@@ -13,6 +13,7 @@
 - [Deriving Limits](deriving_limits.md)
 - [CI Tutorial](ci_tutorial.md)
 - [Cross-Contract Testing](cross_contract_testing.md)
+- [Adding a New Cost Metric](adding_a_metric.md)
 
 ## Reference & Architecture
 - [Tool Reference](reference.md)

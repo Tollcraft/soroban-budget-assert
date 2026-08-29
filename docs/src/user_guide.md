@@ -60,6 +60,10 @@ The CLI finds every contract in the workspace, builds it to WASM, deploys to tes
 
 If this step fails partway through — friendbot funding, deploy, or simulation — see the [Testnet Troubleshooting Guide](testnet_troubleshooting.md) for what each failure means and how to resolve it.
 
+{% hint style="danger" %}
+This command deploys a contract and funds a source account. Against testnet, futurenet, or a local network that costs nothing. If `network` in `budget.toml` (or `--network`) resolves to **Stellar Mainnet**, the run stops before building anything and tells you so — deploying there would spend real funds. An unrecognised network is refused the same way rather than assumed safe. Pass `--allow-mainnet` only if you deliberately mean to target such a network. See [Mainnet guard](reference.md#mainnet-guard) in the Tool Reference.
+{% endhint %}
+
 {% hint style="warning" %}
 This is not your transaction fee. The three metrics are inputs to the non-refundable resource fee; rent, refundable fees, transaction size, footprint entry counts, and the inclusion fee are not measured. If you are budgeting what users will actually pay — especially for a contract that writes persistent state, where rent often dominates — read [Measurement scope](reference.md#measurement-scope) first.
 {% endhint %}
@@ -160,6 +164,14 @@ tolerance = 0.05                    # tighter override for a known-sensitive cal
 ```
 
 A single bad commit can no longer ride the `--check-baseline` gate; the rest of the workflow (tier-A macros, the textual report, `--json` for scripts) is unchanged.
+
+To surface the comparison in the PR's checks, append a Markdown diff table to the job summary:
+
+```bash
+cargo budget-report --check-baseline --markdown >> "$GITHUB_STEP_SUMMARY"
+```
+
+It shows baseline, current, absolute and percentage change per metric, with a text direction marker (no colour) and a status that separates a real tolerance breach from a value that merely moved. Add `--hide-unchanged` to keep it to the rows that changed. See [Baseline comparison output](reference.md#baseline-comparison-output-check-baseline).
 
 ## Step 7 (optional): Watch mode for iterative development
 

@@ -349,13 +349,72 @@ pub struct MetricComparison {
 }
 
 impl MetricComparison {
-    pub fn limits_label(&self) -> String {
-        let max = max_allowed(self.baseline, self.tolerance.value);
-        format!(
-            "baseline={}, max_allowed={} (baseline * {:.4})",
-            self.baseline, max, self.tolerance.value
-        )
+    /// Signed absolute change, `current - baseline`.
+    pub fn abs_change(&self) -> i64 {
+        i128::from(self.current) as i64 - i128::from(self.baseline) as i64
     }
+
+    /// Signed percentage change relative to the baseline. `None` when the
+    /// baseline is zero (any non-zero current is an undefined percentage).
+    pub fn pct_change(&self) -> Option<f64> {
+        if self.baseline == 0 {
+            return None;
+        }
+        Some((self.abs_change() as f64 / self.baseline as f64) * 100.0)
+    }
+
+    /// True when the value is byte-for-byte unchanged from the baseline.
+    pub fn is_unchanged(&self) -> bool {
+        self.current == self.baseline
+    }
+
+    /// Direction of travel, as a colour-independent marker.
+    pub fn direction(&self) -> Direction {
+        match self.abs_change() {
+            0 => Direction::Flat,
+            n if n > 0 => Direction::Up,
+            _ => Direction::Down,
+        }
+    }
+
+    /// The `max_allowed` ceiling this comparison was judged against.
+    pub fn max_allowed(&self) -> u64 {
+        max_allowed(self.baseline, self.tolerance.value)
+    }
+}
+
+/// Direction of a metric's change, rendered without relying on colour so it
+/// survives CI logs and GitHub step summaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// `current > baseline` — more resource used.
+    Up,
+    /// `current < baseline` — less resource used.
+    Down,
+    /// No change.
+    Flat,
+}
+
+impl Direction {
+    /// A short arrow marker: `^` up, `v` down, `=` flat. ASCII so it is
+    /// unambiguous in any terminal or log.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Direction::Up => "^",
+            Direction::Down => "v",
+            Direction::Flat => "=",
+        }
+    }
+}
+
+/// Controls how a [`CheckReport`] is rendered by [`render_report_text`] and
+/// [`render_report_markdown`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderOptions {
+    /// Drop rows whose value is unchanged from the baseline. In Markdown the
+    /// default (unset) collapses them into a `<details>` block instead of
+    /// dropping them; setting this omits them entirely from both formats.
+    pub hide_unchanged: bool,
 }
 
 /// One function's full set of metric findings.
@@ -526,7 +585,7 @@ fn split_key(key: &str) -> Option<(String, String)> {
 }
 
 /// Format a `CheckReport` for human display (terminal table-style output).
-pub fn render_report_text(report: &CheckReport) -> String {
+pub fn render_report_text(report: &CheckReport, opts: RenderOptions) -> String {
     let mut out = String::new();
     out.push_str("\n=== BASELINE CHECK REPORT ===\n");
 
@@ -537,7 +596,7 @@ pub fn render_report_text(report: &CheckReport) -> String {
 
     if !report.compared.is_empty() {
         out.push_str("\nComparisons:\n");
-        out.push_str(&render_comparison_table(&report.compared));
+        out.push_str(&render_comparison_table(&report.compared, opts));
     }
 
     if !report.new.is_empty() {
@@ -556,63 +615,222 @@ pub fn render_report_text(report: &CheckReport) -> String {
         out.push_str("  Suggestion: re-run with `--record-baseline` to clean them up.\n");
     }
 
+    let counts = ChangeCounts::of(report);
     out.push_str("\nSummary:\n");
-    let regressions = report.regression_count();
-    let improvements = report
-        .compared
-        .iter()
-        .flat_map(|f| f.metrics.iter())
-        .filter(|m| matches!(m.verdict, Verdict::Improvement))
-        .count();
-    out.push_str(&format!("  regressions: {regressions}\n"));
-    out.push_str(&format!("  improvements: {improvements}\n"));
+    out.push_str(&format!("  regressions: {}\n", counts.regressions));
+    out.push_str(&format!("  improvements: {}\n", counts.improvements));
+    out.push_str(&format!("  within tolerance: {}\n", counts.moved_ok));
+    out.push_str(&format!("  unchanged: {}\n", counts.unchanged));
     out.push_str(&format!("  new functions: {}\n", report.new.len()));
     out.push_str(&format!("  stale entries: {}\n", report.stale.len()));
     out
 }
 
-fn render_comparison_table(rows: &[FunctionComparison]) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "  {:<24} {:<14} {:>14} {:>14} {:>12} verdict\n",
-        "function", "metric", "baseline", "current", "tolerance"
-    ));
-    for row in rows {
-        for m in &row.metrics {
-            out.push_str(&format!(
-                "  {:<24} {:<14} {:>14} {:>14} {:>11.2}% {}\n",
-                format!("{}::{}", row.package, row.function),
-                m.metric.label(),
-                m.baseline,
-                m.current,
-                m.tolerance.value * 100.0,
-                verdict_label(m.verdict),
-            ));
-        }
-        if row.has_regressions() {
-            for m in row
-                .metrics
-                .iter()
+/// Per-verdict tallies used by both renderers' summary lines.
+struct ChangeCounts {
+    regressions: usize,
+    improvements: usize,
+    /// Increased but still inside tolerance.
+    moved_ok: usize,
+    unchanged: usize,
+}
+
+impl ChangeCounts {
+    fn of(report: &CheckReport) -> Self {
+        let all = || report.compared.iter().flat_map(|f| f.metrics.iter());
+        Self {
+            regressions: all()
                 .filter(|m| matches!(m.verdict, Verdict::Regression))
-            {
-                out.push_str(&format!(
-                    "    ! regression: {} = {} ({})\n",
-                    m.metric.label(),
-                    m.current,
-                    m.limits_label()
-                ));
-            }
+                .count(),
+            improvements: all()
+                .filter(|m| matches!(m.verdict, Verdict::Improvement))
+                .count(),
+            moved_ok: all()
+                .filter(|m| matches!(m.verdict, Verdict::Pass) && !m.is_unchanged())
+                .count(),
+            unchanged: all().filter(|m| m.is_unchanged()).count(),
         }
+    }
+}
+
+/// Integer with `,` thousands separators, kept dependency-free so `compare`
+/// stays free of the main crate's formatting helpers.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
     }
     out
 }
 
-fn verdict_label(v: Verdict) -> &'static str {
-    match v {
-        Verdict::Pass => "ok",
-        Verdict::Improvement => "improved",
-        Verdict::Regression => "REGRESSED",
+fn signed_grouped(n: i64) -> String {
+    if n < 0 {
+        format!("-{}", grouped(n.unsigned_abs()))
+    } else {
+        format!("+{}", grouped(n as u64))
     }
+}
+
+fn status_label(m: &MetricComparison) -> String {
+    match m.verdict {
+        Verdict::Regression => format!("BREACH (max {})", grouped(m.max_allowed())),
+        Verdict::Improvement => "improved".to_string(),
+        Verdict::Pass if m.is_unchanged() => "unchanged".to_string(),
+        Verdict::Pass => "within tolerance".to_string(),
+    }
+}
+
+fn render_comparison_table(rows: &[FunctionComparison], opts: RenderOptions) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  {:<26} {:<16} {:>14} {:>14} {:>13} {:>9} {:>4}  status\n",
+        "function", "metric", "baseline", "current", "change", "change%", "dir"
+    ));
+    let mut hidden = 0usize;
+    for row in rows {
+        for m in &row.metrics {
+            if opts.hide_unchanged && m.is_unchanged() {
+                hidden += 1;
+                continue;
+            }
+            let pct = match m.pct_change() {
+                Some(p) => format!("{p:+.2}%"),
+                None => "n/a".to_string(),
+            };
+            out.push_str(&format!(
+                "  {:<26} {:<16} {:>14} {:>14} {:>13} {:>9} {:>4}  {}\n",
+                format!("{}::{}", row.package, row.function),
+                m.metric.label(),
+                grouped(m.baseline),
+                grouped(m.current),
+                signed_grouped(m.abs_change()),
+                pct,
+                m.direction().marker(),
+                status_label(m),
+            ));
+        }
+    }
+    if hidden > 0 {
+        out.push_str(&format!("  ({hidden} unchanged metric(s) hidden)\n"));
+    }
+    out
+}
+
+/// Render a [`CheckReport`] as a GitHub-flavored Markdown diff table.
+///
+/// This is the form written into `$GITHUB_STEP_SUMMARY` by CI, so it has to
+/// be valid there: a plain pipe table, `<details>` for the collapsed rows,
+/// and no colour (direction is carried by an ASCII marker and the signed
+/// change columns). Rows are baseline / current / absolute change /
+/// percentage change per metric, with a status that tells a tolerance
+/// breach apart from a value that merely moved.
+///
+/// Default: changed rows in the main table, unchanged rows collapsed into a
+/// `<details>` block. With [`RenderOptions::hide_unchanged`], unchanged rows
+/// are omitted entirely.
+pub fn render_report_markdown(report: &CheckReport, opts: RenderOptions) -> String {
+    let mut out = String::new();
+    out.push_str("### Baseline comparison\n\n");
+
+    if report.compared.is_empty() && report.new.is_empty() && report.stale.is_empty() {
+        out.push_str("_No overlap between baseline and current measurements._\n");
+        return out;
+    }
+
+    let counts = ChangeCounts::of(report);
+    out.push_str(&format!(
+        "**{} regressed · {} improved · {} within tolerance · {} unchanged**",
+        counts.regressions, counts.improvements, counts.moved_ok, counts.unchanged
+    ));
+    if !report.new.is_empty() || !report.stale.is_empty() {
+        out.push_str(&format!(
+            " · {} new · {} stale",
+            report.new.len(),
+            report.stale.len()
+        ));
+    }
+    out.push_str("\n\n");
+
+    let mut changed: Vec<(&FunctionComparison, &MetricComparison)> = Vec::new();
+    let mut unchanged: Vec<(&FunctionComparison, &MetricComparison)> = Vec::new();
+    for row in &report.compared {
+        for m in &row.metrics {
+            if m.is_unchanged() {
+                unchanged.push((row, m));
+            } else {
+                changed.push((row, m));
+            }
+        }
+    }
+
+    if changed.is_empty() {
+        out.push_str("_No metric changed._\n");
+    } else {
+        out.push_str(&markdown_table(&changed));
+    }
+
+    if !opts.hide_unchanged && !unchanged.is_empty() {
+        out.push_str(&format!(
+            "\n<details>\n<summary>{} unchanged metric(s)</summary>\n\n",
+            unchanged.len()
+        ));
+        out.push_str(&markdown_table(&unchanged));
+        out.push_str("\n</details>\n");
+    }
+
+    if !report.new.is_empty() {
+        let names: Vec<String> = report
+            .new
+            .iter()
+            .map(|e| format!("`{}::{}`", e.package, e.function))
+            .collect();
+        out.push_str(&format!(
+            "\n**New functions** (no baseline entry — re-run `--record-baseline` to capture): {}\n",
+            names.join(", ")
+        ));
+    }
+    if !report.stale.is_empty() {
+        let names: Vec<String> = report
+            .stale
+            .iter()
+            .map(|e| format!("`{}::{}`", e.package, e.function))
+            .collect();
+        out.push_str(&format!(
+            "\n**Stale entries** (in baseline, not in current WASM — re-run `--record-baseline` to clean up): {}\n",
+            names.join(", ")
+        ));
+    }
+
+    out
+}
+
+fn markdown_table(rows: &[(&FunctionComparison, &MetricComparison)]) -> String {
+    let mut out = String::new();
+    out.push_str("| Function | Metric | Baseline | Current | Change | Change % | Dir | Status |\n");
+    out.push_str("|---|---|--:|--:|--:|--:|:-:|:--|\n");
+    for (row, m) in rows {
+        let pct = match m.pct_change() {
+            Some(p) => format!("{p:+.2}%"),
+            None => "n/a".to_string(),
+        };
+        out.push_str(&format!(
+            "| `{}::{}` | {} | {} | {} | {} | {} | {} | {} |\n",
+            row.package,
+            row.function,
+            m.metric.label(),
+            grouped(m.baseline),
+            grouped(m.current),
+            signed_grouped(m.abs_change()),
+            pct,
+            m.direction().marker(),
+            status_label(m),
+        ));
+    }
+    out
 }
 
 /// Build a `Baseline` from the current run's measurements, ready to write to
@@ -1128,5 +1346,174 @@ mod tests {
             .iter()
             .find(|m| m.metric == metric)
             .expect("metric present in function")
+    }
+
+    // -- diff table rendering ----------------------------------------------
+
+    /// Build a `CheckReport` by comparing `current` against `baseline` at the
+    /// default 10% tolerance — the same path `--check-baseline` takes.
+    fn report_from(
+        baseline: &[(&str, &str, u64, u64, u64)],
+        current: &[(&str, &str, u64, u64, u64)],
+    ) -> CheckReport {
+        let mut base = Baseline::default();
+        for (pkg, f, c, r, w) in baseline {
+            base.entries.insert(
+                function_key(pkg, f),
+                BaselineEntry::from_measurement(m(*c, *r, *w)),
+            );
+        }
+        let mut cur: BTreeMap<String, BTreeMap<String, Measurement>> = BTreeMap::new();
+        for (pkg, f, c, r, w) in current {
+            cur.entry(pkg.to_string())
+                .or_default()
+                .insert(f.to_string(), m(*c, *r, *w));
+        }
+        check_against_baseline(&base, &cur, Tolerance::new(0.10), &BTreeMap::new())
+    }
+
+    /// Compare `actual` against the golden file at
+    /// `tests/golden/<name>`, rewriting it when `UPDATE_GOLDEN=1`.
+    fn assert_golden(name: &str, actual: &str) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden")
+            .join(name);
+        if std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1") {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, actual).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "missing golden {}: {e} (run with UPDATE_GOLDEN=1)",
+                path.display()
+            )
+        });
+        assert_eq!(actual, expected, "golden mismatch for {name}");
+    }
+
+    #[test]
+    fn metric_comparison_change_arithmetic() {
+        let mc = MetricComparison {
+            metric: MetricKind::CpuInstructions,
+            baseline: 1000,
+            current: 1250,
+            tolerance: Tolerance::new(0.10),
+            verdict: Verdict::Regression,
+        };
+        assert_eq!(mc.abs_change(), 250);
+        assert_eq!(mc.pct_change(), Some(25.0));
+        assert_eq!(mc.direction(), Direction::Up);
+        assert!(!mc.is_unchanged());
+
+        let zero_base = MetricComparison {
+            baseline: 0,
+            current: 5,
+            ..mc
+        };
+        assert_eq!(
+            zero_base.pct_change(),
+            None,
+            "pct is undefined over a zero baseline"
+        );
+    }
+
+    #[test]
+    fn golden_regression_case() {
+        // cpu blows past 10%, read improves, write moves but stays within
+        // tolerance, wasm is unchanged; plus one new fn and one stale entry.
+        let report = report_from(
+            &[
+                ("amm", "swap", 1_000_000, 4_096, 512),
+                ("amm", "removed", 10, 0, 0),
+            ],
+            &[
+                ("amm", "swap", 1_500_000, 2_048, 540),
+                ("amm", "brand_new", 200, 0, 0),
+            ],
+        );
+        assert_golden(
+            "baseline_diff_regression.md",
+            &render_report_markdown(&report, RenderOptions::default()),
+        );
+        assert_golden(
+            "baseline_diff_regression.txt",
+            &render_report_text(&report, RenderOptions::default()),
+        );
+    }
+
+    #[test]
+    fn golden_improvement_case() {
+        let report = report_from(
+            &[("amm", "swap", 1_000_000, 4_096, 512)],
+            &[("amm", "swap", 700_000, 3_000, 400)],
+        );
+        assert_golden(
+            "baseline_diff_improvement.md",
+            &render_report_markdown(&report, RenderOptions::default()),
+        );
+    }
+
+    #[test]
+    fn golden_no_change_case() {
+        let report = report_from(
+            &[("amm", "swap", 1_000_000, 4_096, 512)],
+            &[("amm", "swap", 1_000_000, 4_096, 512)],
+        );
+        // Default collapses the unchanged rows into <details>.
+        assert_golden(
+            "baseline_diff_no_change.md",
+            &render_report_markdown(&report, RenderOptions::default()),
+        );
+        // hide_unchanged drops them entirely.
+        assert_golden(
+            "baseline_diff_no_change_hidden.md",
+            &render_report_markdown(
+                &report,
+                RenderOptions {
+                    hide_unchanged: true,
+                },
+            ),
+        );
+    }
+
+    #[test]
+    fn markdown_is_step_summary_safe() {
+        let report = report_from(
+            &[("amm", "swap", 1_000, 100, 50)],
+            &[("amm", "swap", 1_400, 90, 50)],
+        );
+        let md = render_report_markdown(&report, RenderOptions::default());
+        // A GitHub pipe table needs a header row and a delimiter row.
+        assert!(md.contains("| Function | Metric |"));
+        assert!(md.contains("|---|---|--:|--:|--:|--:|:-:|:--|"));
+        // No ANSI escape sequences.
+        assert!(!md.contains('\u{1b}'), "must not carry colour codes");
+        // Direction is text, not colour.
+        assert!(md.contains(" ^ ") || md.contains("| ^ |"));
+    }
+
+    #[test]
+    fn hide_unchanged_removes_rows_from_text_output() {
+        let report = report_from(
+            &[("amm", "swap", 1_000, 100, 50), ("amm", "ping", 5, 5, 5)],
+            &[("amm", "swap", 1_400, 100, 50), ("amm", "ping", 5, 5, 5)],
+        );
+        let shown = render_report_text(&report, RenderOptions::default());
+        let hidden = render_report_text(
+            &report,
+            RenderOptions {
+                hide_unchanged: true,
+            },
+        );
+        assert!(
+            shown.contains("read_bytes"),
+            "unchanged read_bytes shown by default"
+        );
+        assert!(hidden.contains("unchanged metric(s) hidden"));
+        assert!(
+            hidden.matches("swap").count() < shown.matches("swap").count(),
+            "hiding unchanged rows shrinks the table"
+        );
     }
 }

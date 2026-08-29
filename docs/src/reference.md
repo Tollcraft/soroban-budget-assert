@@ -21,7 +21,7 @@ fn unit_test() {
 #[budget_cpu_lt(850000)]
 fn result_test() -> Result<(), Box<dyn std::error::Error>> {
     let env = Env::default();
-    let wasm = std::fs::read("../target/wasm32v1-none/release/my_contract.wasm")?;
+    let wasm = std::fs::read("../target/wasm32-unknown-unknown/release/my_contract.wasm")?;
     // ... the check runs after `Ok(())` is evaluated, and it is still the test's value ...
     Ok(())
 }
@@ -55,7 +55,7 @@ fn test_expensive_function() {
     let env = Env::default();
 
     let wasm = std::fs::read(
-        "../target/wasm32v1-none/release/my_contract.wasm",
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
     ).expect("build the WASM first");
     let contract_id = env.register_contract_wasm(None, wasm.as_slice());
     let client = MyContractClient::new(&env, &contract_id);
@@ -107,33 +107,6 @@ On failure the test panics with:
 ```
 CPU instruction cost {actual} exceeded limit {N} - local estimate, real network cost may differ significantly in either direction
 ```
-
-**Percentage limit** — express the limit as a percentage of a network-wide reference limit:
-
-```rust
-use budget_macros::budget_cpu_lt;
-use soroban_sdk::Env;
-
-#[test]
-#[budget_cpu_lt(pct = 25, of = env_file = "tier-a-limits.env", env = "NETWORK__CPU")]
-fn test_cpu_stays_under_quarter_of_network() {
-    let env = Env::default();
-    // ... test logic ...
-}
-```
-
-The `pct = N` form reads a reference limit from the source specified by `of` (which accepts the same `env_file` + `env`, `env`, or `config` forms as an absolute limit) and computes `reference × N / 100` at test runtime. The resolved absolute limit is what gets compared against the measured cost.
-
-`N` must be between 1 and 100 inclusive. The `of` clause is required — `pct` without `of` is a compile error.
-
-On failure the test panics with a message that shows the percentage, the resolved absolute limit, and the actual value:
-```
-CPU instruction cost {actual} exceeded limit {resolved} (25% of network limit) - local estimate, real network cost may differ significantly in either direction
-```
-
-{% hint style="info" %}
-Percentage limits are particularly useful when network limits may change across protocol versions. Instead of hard-coding an absolute number, you express intent ("use no more than a quarter of the network's CPU allowance") and the resolved value adapts when the reference limit in `tier-a-limits.env` is updated.
-{% endhint %}
 
 ### `#[budget_mem_lt(N)]`
 
@@ -190,7 +163,7 @@ fn test_memory_budget() {
     let env = Env::default();
 
     let wasm = std::fs::read(
-        "../target/wasm32v1-none/release/my_contract.wasm",
+        "../target/wasm32-unknown-unknown/release/my_contract.wasm",
     ).expect("build the WASM first");
     let contract_id = env.register_contract_wasm(None, wasm.as_slice());
     let client = MyContractClient::new(&env, &contract_id);
@@ -256,77 +229,45 @@ fn test_read_bytes_with_env_file() {
 }
 ```
 
-### `#[budget_events_lt(N)]`
-
-Asserts that the number of contract events emitted by `env` is strictly less than `N`.
-
-Unlike the byte-count macros, which measure `memory_bytes_cost` as a proxy, the event count is read directly from the local test environment's recorded event set (`env.events().all().events().len()`), so it is a real measurement rather than an estimate.
-
-**Static limit:**
+**Config-driven limit** — read from `budget.json` in the process working directory:
 
 ```rust
-use budget_macros::budget_events_lt;
-
 #[test]
-#[budget_events_lt(10)]
-fn test_emits_few_events() {
+#[budget_read_bytes_lt(config = "read_bytes")]
+fn test_read_bytes_with_json_config() {
     let env = Env::default();
     // ...
 }
 ```
 
-**Dynamic limit (env var / `.env` file):**
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+measurement before it is compared, so the *marginal* read-bytes cost is what is
+asserted, exactly as for `budget_cpu_lt` / `budget_mem_lt` / `budget_write_bytes_lt`.
+The subtraction saturates at 0.
 
 ```rust
 #[test]
-#[budget_events_lt(env = "MAX_EVENTS")]
-fn test_emits_few_events_env() {
+#[budget_read_bytes_lt(4096, baseline = instantiation_floor_read_bytes())]
+fn test_marginal_read_bytes() {
     let env = Env::default();
     // ...
 }
 ```
 
-All of the limit forms supported by the other single-metric macros work here too: a literal `N`, `env = "VAR"`, `env_file = "file.env", env = "VAR"`, `config = "key"`, and `pct = P, of = env_file = "file.env", env = "VAR"`.
-
-### `#[budget_ledger_entries_lt(N)]`
-
-Asserts that the total number of ledger entries touched by `env` (disk reads plus disk writes) is strictly less than `N`.
-
-The entry count is read directly from the local test environment's cost tracker (`ContractCostType::DiskReadEntries` + `ContractCostType::DiskWriteEntries`), so it is a real measurement of storage-access breadth rather than an estimate. On assertion failure the error message reports the read, write, and total entry counts separately.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_ledger_entries_lt;
-
-#[test]
-#[budget_ledger_entries_lt(32)]
-fn test_touches_few_entries() {
-    let env = Env::default();
-    // ...
-}
+Failure message format:
 ```
-
-**Dynamic limit:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(env = "MAX_LEDGER_ENTRIES")]
-fn test_touches_few_entries_env() {
-    let env = Env::default();
-    // ...
-}
+Read bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, underestimates real network cost
 ```
-
-As with `budget_events_lt`, every limit form (literal, `env`, `env_file`, `config`, `pct`) is accepted.
+and with a baseline:
+```
+Read bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
+```
 
 ### `#[budget_scaling(…)]` — growth-model assertion
 
 Asserts that the CPU cost *grows* according to a declared model as input size
-increases.  Unlike the fixed-ceiling macros (`budget_cpu_lt`, etc.) which test
-a single point, this is a **multi-point** assertion: the macro measures the
-annotated function at several input sizes and validates that the cost-growth
-curve matches the declared model.
+increases.  This is a multi-point assertion: the macro measures the annotated
+function at several caller-provided sizes and validates the cost-growth curve.
 
 ```rust
 use budget_macros::budget_scaling;
@@ -337,196 +278,91 @@ use soroban_sdk::Env;
     model = linear,
     tolerance = 0.3,
 )]
-fn operation_scales_linearly(size: u32) {
-    let env = Env::default();
-    env.cost_estimate().budget().reset_unlimited();
-    // ... do work proportional to `size` ...
+fn operation_scales_linearly(env: Env, size: u32) {
+    // body runs once per input size with `env` and `size` in scope
 }
 ```
-
-The macro transforms the annotated function into a `#[test]` that iterates over
-each size, creates a fresh `Env`, runs the body, and records the CPU cost. It
-then compares consecutive (size, cost) pairs against the model's predicted
-ratio.
 
 **Attribute fields:**
 
-| Field       | Type              | Required | Description |
-|-------------|-------------------|----------|-------------|
-| `sizes`     | `[u32; N]` (N≥2) | yes | Input sizes to measure, in ascending order. |
-| `model`     | `linear` / `quadratic` | yes | Expected growth model. |
-| `tolerance` | `f64`             | yes | Max allowed relative deviation from expected ratio (e.g. `0.3` = 30%). |
+| Field       | Type              | Description |
+|-------------|-------------------|-------------|
+| `sizes`     | `[u32; N]` (N≥2) | Input sizes to measure. |
+| `model`     | `linear` / `quadratic` | Expected growth model. |
+| `tolerance` | `f64`             | Max allowed relative deviation (e.g. `0.3` = 30%). |
 
-All three fields are required. Omitting any of them is a compile error.
+**How it works:**
 
-#### Worked example
+1. For each `size` in `sizes` a fresh `Env` is created and its budget reset.
+2. The function body executes (it may read `env` and `size`).
+3. `cpu_instruction_cost()` is recorded.
+4. Consecutive (size, cost) pairs are compared: the observed cost ratio is
+   checked against the ratio the model predicts.
 
-Consider a contract function that iterates over a `Vec` and performs a storage
-write on each element.  The storage writes are Soroban host calls — each one
-costs roughly 43,000–46,000 CPU instructions on testnet (see
-[MEASUREMENTS.md](../MEASUREMENTS.md)).  The cost should therefore grow
-linearly with the number of writes.
+**Growth models:**
 
-```rust
-use budget_macros::budget_scaling;
+- **`linear`** — cost ∝ n.  Expected ratio = `size_{i+1} / size_i`.
+- **`quadratic`** — cost ∝ n².  Expected ratio = `(size_{i+1} / size_i)²`.
 
-#[budget_scaling(
-    sizes = [10, 50, 100],
-    model = linear,
-    tolerance = 0.3,
-)]
-fn storage_writes_scale_linearly(size: u32) {
-    let env = soroban_sdk::Env::default();
-    env.cost_estimate().budget().reset_unlimited();
+If the absolute deviation `|observed/expected - 1|` exceeds `tolerance`, the
+test panics with a diagnostic that lists the offending size, expected and
+observed ratios, deviation, and all measurements.
 
-    let contract_id = env.register_contract_wasm(None, WASM);
-    let client = MyContractClient::new(&env, &contract_id);
+**Limitations:**
 
-    env.as_contract(|| {
-        for i in 0..size {
-            // Each iteration performs a host-call storage write.
-            env.storage().persistent().set(&i, &i);
-        }
-    });
-}
-```
+- The body must not use `return`, `break`, or `continue` that would exit the
+  measurement loop.
+- A fresh `Env` is created per iteration — setup that must persist across sizes
+  should be extracted outside the macro.
+- Small base costs can mask the growth signal at tiny sizes; choose sizes where
+  the measured work dominates.
+- Only CPU cost is checked.
 
-The macro generates roughly this test:
+### Applying a budget attribute to an `impl` block
+
+`#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`,
+`#[budget_read_bytes_lt]` and `#[budget_lt]` may be placed on an `impl` block.
+The limit then applies to **every** `fn` in the block:
 
 ```rust
-#[test]
-fn storage_writes_scale_linearly() {
-    const __SIZES: &[u32] = &[10, 50, 100];
-    const __TOLERANCE: f64 = 0.3;
-    let mut __measurements: Vec<(u32, u64)> = Vec::new();
+struct Contract;
 
-    for &size in __SIZES {
-        let env = soroban_sdk::Env::default();
-        env.cost_estimate().budget().reset_unlimited();
-        // --- original body runs here, `size` is the loop variable ---
-        let cost = env.cost_estimate().budget().cpu_instruction_cost();
-        __measurements.push((size, cost));
+#[budget_cpu_lt(1_000_000)]
+impl Contract {
+    fn deposit() {
+        let env = Env::default();
+        // ... asserted against 1_000_000 ...
     }
 
-    // Compare consecutive pairs:
-    // (10→50): expected ratio = 5.0, observed = cost_50 / cost_10
-    // (50→100): expected ratio = 2.0, observed = cost_100 / cost_50
-    for i in 1..__measurements.len() {
-        let (prev_s, prev_c) = __measurements[i - 1];
-        let (curr_s, curr_c) = __measurements[i];
-        let expected = curr_s as f64 / prev_s as f64; // linear model
-        let observed = curr_c as f64 / prev_c as f64;
-        let deviation = (observed / expected - 1.0).abs();
-        assert!(deviation <= __TOLERANCE, "...");
+    fn withdraw() {
+        let env = Env::default();
+        // ... also asserted against 1_000_000 ...
+    }
+
+    // Per-method override: this method's own attribute wins; the block
+    // limit does not also apply.
+    #[budget_cpu_lt(4_000_000)]
+    fn rebalance() {
+        let env = Env::default();
     }
 }
 ```
 
-#### Growth models
+Semantics:
 
-| Model | Prediction | Expected ratio between consecutive sizes |
-|-------|-----------|------------------------------------------|
-| `linear` | cost ∝ n | `size_{i+1} / size_i` |
-| `quadratic` | cost ∝ n² | `(size_{i+1} / size_i)²` |
-
-For `sizes = [10, 100, 1000]` with `model = linear`:
-
-- 10→100: expected ratio = 10.0 (cost should ~10× when input 10×)
-- 100→1000: expected ratio = 10.0
-
-With `model = quadratic`:
-
-- 10→100: expected ratio = 100.0 (cost should ~100× when input 10×)
-- 100→1000: expected ratio = 100.0
-
-#### Failure output
-
-When the observed ratio deviates beyond the tolerance, the test panics with a
-diagnostic that includes everything needed to diagnose the problem:
-
-```
-Scaling check failed at size 100:
-    Expected ratio: ~10.00 (model = linear)
-    Observed ratio: ~2.50
-    Deviation: 0.75 > tolerance 0.30
-    Measured sizes:  [10, 100, 1000]
-    Measured costs:  [143887, 359717, 899293]
-    Expected growth: linear (cost ∝ n)
-```
-
-This tells you: at size 100, the cost was 2.5× the cost at size 10, but the
-model predicted 10× — the function is sub-linear.
-
-#### When to use `budget_scaling` vs a fixed ceiling
-
-A fixed-ceiling macro (`budget_cpu_lt(N)`) answers: *"Is this function's cost
-below N?"* — a single-point regression gate.  Use it when:
-
-- The function's cost does not meaningfully vary with input size (constant
-  host-call count, fixed iteration).
-- You have a known budget ceiling from a network limit or a Tier A derivation.
-- You want a simple pass/fail gate in CI.
-
-A scaling assertion answers: *"Does this function's cost grow at the rate I
-expect?"* — a shape check.  Use it when:
-
-- The function takes a variable-size input (a `Vec`, a loop bound, a page
-  count) and you want to catch accidental cost blowups at larger sizes.
-- A fixed ceiling would mask a regression: a function at size 10 might cost
-  100k (well under a 1M ceiling), but at size 1000 it might cost 50M — the
-  ceiling passes at both sizes if you only test the small input, but a scaling
-  assertion catches the non-linear blowup.
-- You want to enforce a complexity class: *"this must be O(n), not O(n²)"*.
-
-The two are complementary.  A scaling assertion guards the **shape** of the cost
-curve; a fixed ceiling guards the **magnitude** at a specific operating point.
-A mature test suite often has both: a scaling test to prevent algorithmic
-regressions, and a ceiling test at the expected production input size to catch
-absolute regressions.
-
-#### Relationship to MEASUREMENTS.md §"Gap vs input size"
-
-The [MEASUREMENTS.md](../MEASUREMENTS.md) section "Gap vs input size" measures
-how the local-vs-network cost gap behaves as `n` grows.  The key finding: for
-the AMM pool contract's `do_expensive_work` function, both the WASM local
-estimate (2,661,315) and testnet simulated cost (1,410,984) are **constant**
-across all measured input sizes (1,000 through 100,000), producing a stable
-+88.6% delta.
-
-This invariance exists because Soroban's budget meters **host function calls**
-(storage writes, Vec allocations), not raw WASM arithmetic.  The compute loop
-(`n` iterations of `wrapping_add(wrapping_mul)`) is invisible to both local and
-network metering.  The storage loop is internally capped at `n.min(100)`, so it
-saturates at n=100 and is flat thereafter.
-
-The practical consequence for `budget_scaling`: if your function's cost is
-dominated by host calls that scale with input (e.g., per-element storage
-writes), a `linear` scaling assertion will pass.  If the cost is dominated by
-raw WASM arithmetic that Soroban does not meter, the cost will appear constant
-and a `linear` scaling assertion will **fail** — the macro is telling you the
-truth about what the metering infrastructure measures, which may differ from
-what you expect based on algorithmic complexity.
-
-When a scaling assertion fails, check whether the failing cost is dominated by
-metered host calls or un-metered compute.  If it is un-metered compute, the
-correct response is usually to adjust the model to `linear` with a flat expected
-ratio (the cost is constant from the meter's perspective), or to accept that
-the scaling assertion is not meaningful for that function and use a fixed
-ceiling instead.
-
-#### Limitations
-
-- The function body must not use `return`, `break`, or `continue` that would
-  exit the measurement loop prematurely.
-- Each iteration creates a fresh `Env` — setup that must persist across sizes
-  (e.g., contract deployment) should be placed inside the body so it runs per
-  iteration.
-- Small base costs (Env creation, budget reset) can dominate and mask the
-  growth signal at very small sizes.  Use sizes large enough that the measured
-  work dominates the overhead.
-- Only CPU instruction cost is checked.  Memory scaling is not yet supported.
-- The `#[test]` attribute is added automatically if not present.  User
-  attributes (like `#[should_panic]`) are preserved.
+- **Every function is instrumented**, `pub` or not. "Twelve entry points, one
+  ceiling" is the motivating case, and a thirteenth added later is asserted
+  automatically rather than shipping unbudgeted.
+- **A method with its own `#[budget_*]` attribute is governed by that**, not the
+  block limit — it is never asserted twice. This is also the opt-out: a helper
+  that should not be budgeted can carry `#[budget_cpu_lt(env = "UNSET")]`, whose
+  unset-env limit resolves to "no limit".
+- **A failure names the method** — the panic message carries `` [fn `name`] ``.
+- Every method must have a local `env` in scope, exactly as for the
+  single-function form. A pure helper with no `env` belongs outside the block.
+- `#[budget_scaling]` is **not** supported on `impl` blocks (it rewrites a
+  function into a `#[test]`), and neither are modules or traits — those still
+  fail with a compile error.
 
 ### Requirements and caveats
 
@@ -540,167 +376,36 @@ ceiling instead.
 - The macro checks the *local* estimate, which can sit above or below the real network cost depending on the build profile. Set `N` a few percent above the measured local number to catch regressions, and use `cargo budget-report` for the network ground truth (see the End-User Guide).
 {% endhint %}
 
-### Marginal-cost baseline subtraction
+### Limit sources and their precedence
 
-Every budget macro accepts an optional `baseline = <expr>` parameter (or
-`cpu_baseline` / `mem_baseline` on `budget_lt`). When present, the macro
-subtracts the baseline from the raw measurement before comparing against the
-limit. The number being asserted is the **marginal cost** — the cost of the
-function under test *minus* the cost of the test infrastructure that would
-exist even if the function did nothing.
+Every budget macro accepts the limit as one of four forms. They do not stack —
+a limit comes from exactly one source, decided by the keys you write:
 
-#### Why this exists
+| Form | Where the limit is read from | When |
+|---|---|---|
+| `N` (integer literal) | the attribute itself | macro expansion |
+| `config = "KEY"` | `budget.json` in the process working directory | test runtime |
+| `env = "VAR"` | the `VAR` process environment variable | test runtime |
+| `env_file = "PATH", env = "VAR"` | the `VAR` key inside the `KEY=VALUE` file at `PATH` | test runtime |
 
-When a Soroban test invokes a contract function through the local test VM, the
-VM pays a fixed cost before your contract logic runs: it parses the WASM
-module, instantiates it, sets up the host environment, and tears it all down
-afterward. This **instantiation floor** is deterministic for a given module but
-large — on the AMM pool contract it measures ~3.1M CPU instructions — and it
-exists on every call regardless of which function you invoke.
+`env_file` **overrides `env` for that one test**: with both keys present the
+limit is read from the file, never from the process environment, so two tests
+in the same suite can resolve the same logical limit from different files by
+carrying different `env_file` paths. A test with no `env_file` is unaffected
+and keeps reading `VAR` from the process environment.
 
-The Tier B network limits (what `cargo budget-report` measures via
-`simulateTransaction`) do not include this floor. The network charges for the
-transaction itself, not for the local VM's setup overhead. A raw local
-measurement that includes the floor therefore cannot be compared against a
-network-derived limit — the floor inflates the number by millions of
-instructions and masks the actual cost of the function.
+**`env_file` path resolution.** A *literal* path (`env_file = "../limits.env"`)
+must resolve to a file at macro-expansion time — checked against
+`CARGO_MANIFEST_DIR`, the build's working directory, and a `budget-macros/`
+fallback — or the build fails with an error naming the path. A *non-literal*
+path (`env_file = SOME_CONST`) is assumed to be produced by the build and is
+resolved at test runtime instead; a missing file then panics the test (it is
+never treated as "no limit"). At runtime the file is re-read per assertion, so
+the mechanism is thread-safe and needs no `unsafe std::env::set_var`.
 
-The baseline subtraction removes that floor. What remains is the cost your
-function adds *on top of* the infrastructure, which is the quantity the Tier A
-limits describe.
-
-#### How it works
-
-The macro generates code equivalent to:
-
-```rust
-let raw_cost = env.cost_estimate().budget().cpu_instruction_cost();
-let baseline_cost = baseline_expr; // evaluated once, after raw_cost
-let marginal = raw_cost.saturating_sub(baseline_cost);
-assert!(marginal < limit, "...");
-```
-
-Two details matter:
-
-1. **Saturating subtraction.** If the raw measurement is below the baseline
-   (noise around a near-zero marginal cost), the result is clamped to 0 rather
-   than wrapping to `u64::MAX`. This reports honestly as "no measurable marginal
-   cost" instead of a spurious failure.
-
-2. **Measurement order.** The raw measurement is captured *before* the baseline
-   expression is evaluated, so a baseline helper that spins up its own `Env`
-   cannot perturb the number being asserted on.
-
-#### What the marginal number represents
-
-The marginal cost is the CPU instructions (or memory bytes) that your function
-consumes **beyond** the fixed WASM instantiation overhead. It is the quantity
-that changes when your function's logic changes — adding a storage write, an
-extra loop iteration, or an authorization check will move the marginal number,
-while the floor stays constant.
-
-#### What it does not represent
-
-The marginal cost is **not** the cost the network will charge. The network
-charges the full transaction cost, which includes its own VM execution overhead,
-host function call costs, and protocol-level metering that differs from the
-local estimate. The marginal cost is a *local* number that isolates your
-function's contribution from the test harness's fixed overhead — it is a
-regression gate, not a network budget.
-
-The relationship between marginal cost and network cost depends on the
-local-vs-network gap (see [MEASUREMENTS.md](../MEASUREMENTS.md)), which varies
-by build profile, SDK version, and protocol version.
-
-#### Worked example
-
-Suppose you have a contract with a `deposit` function and a deliberately-empty
-`noop` function. You measure both locally:
-
-| Quantity | Value |
-|----------|-------|
-| `deposit` raw CPU cost | 5,842,136 |
-| `noop` CPU cost (baseline) | 3,143,886 |
-| **Marginal cost** | **2,698,250** |
-
-Without the baseline, you would need a Tier A limit above 5.8M to avoid
-false failures — but the Tier B network measurement for `deposit` might be
-2.1M, and a limit of 5.8M would never catch a regression that doubles the
-function's cost to 4.2M (still under 5.8M).
-
-With the baseline, the Tier A limit is set against the 2.7M marginal cost.
-A regression that doubles the function's cost would push the marginal to ~5.3M,
-which would fail the assertion and be caught in CI.
-
-```rust
-#[test]
-#[budget_cpu_lt(
-    env_file = "tier-a-limits.env",
-    env = "TIER_A__CONTRACT__DEPOSIT__CPU",
-    baseline = baseline_cpu(),
-)]
-fn test_deposit_budget() {
-    let env = Env::default();
-    let client = setup(&env);
-    env.cost_estimate().budget().reset_unlimited();
-    client.deposit(&user, &token_a, &amount);
-}
-```
-
-The `baseline_cpu()` function calls `noop` through the same WASM pipeline and
-returns its CPU cost. The assertion checks:
-
-```
-CPU instruction cost 2698250 exceeded limit 2100000
-(marginal: 2698250 measured - 3143886 baseline)
-```
-
-#### Choosing a limit under the marginal-cost model
-
-1. **Start from Tier B.** Run `cargo budget-report --json` to get the
-   network-simulated cost for the function. This is the ground truth for what
-   the network charges.
-
-2. **Derive the Tier A limit.** Use `cargo budget-report --derive-limits` with
-   a margin in `budget.toml` to apply a safety buffer. The margin accounts for
-   the local-vs-network gap and version drift. See [Deriving Limits](deriving_limits.md)
-   for the full workflow.
-
-3. **The limit you get is already marginal.** The Tier B number from
-   `simulateTransaction` measures the full transaction cost, which does not
-   include the local WASM floor. The margin is applied to *that* number. When
-   your macro assertion subtracts the baseline, the marginal cost it checks
-   against is already in the same units as the Tier B figure.
-
-4. **Do not add the floor back.** If you have already derived a Tier A limit
-   from a Tier B report (which excludes the floor), and you are using
-   `baseline = baseline_cpu()` (which subtracts the floor), the numbers are
-   already aligned. Adding the floor to the limit would double-count it.
-
-#### Syntax
-
-Single-metric macros (`budget_cpu_lt`, `budget_mem_lt`,
-`budget_write_bytes_lt`, `budget_read_bytes_lt`, `budget_events_lt`,
-`budget_ledger_entries_lt`):
-
-```rust
-#[budget_cpu_lt(N, baseline = baseline_expr)]
-#[budget_mem_lt(N, baseline = baseline_expr)]
-```
-
-The two-metric `budget_lt` macro uses separate keys:
-
-```rust
-#[budget_lt(
-    cpu = N,
-    mem = M,
-    cpu_baseline = baseline_cpu_expr,
-    mem_baseline = baseline_mem_expr,
-)]
-```
-
-The baseline expression is any Rust expression that evaluates to `u64` at test
-runtime — a function call, a constant, or an inline block.
+The checked-in `tier-a-limits.env` file is the recommended source for
+Tier A limits. Its provenance, refresh procedure, and staleness-detection
+guidance live in [`tier-a-limits.provenance.md`](../../tier-a-limits.provenance.md).
 
 ## Soroban Budget API
 
@@ -844,14 +549,23 @@ This is a real functional gap, not just missing prose — no flag or `budget.tom
 ### Keeping this page current
 
 The real failure mode here is drift, not the one-time gap this page used to have: a flag added to `cli.rs` in a future PR with no corresponding row here. [`scripts/check-cli-docs.sh`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/scripts/check-cli-docs.sh) is a CI-enforced drift check (wired into `quality.yml`) that derives every `--kebab-case` flag name from `cli.rs`'s `#[arg(...)]`-decorated fields and fails the build if any of them is not at least mentioned somewhere in this file. It catches a flag being completely undocumented; it cannot catch prose that is present but wrong, incomplete, or stale relative to the flag's actual behavior — that still needs human review, ideally by running the flag rather than trusting its `--help` text (see the `--color` and `--csv`/`--json`/`--html` findings above, both of which the flags' own help text does not mention).
+| Flag | Required | Meaning |
+|---|---|---|
+| `--network` | yes (flag or `budget.toml`) | Network to deploy and simulate against, e.g. `testnet` |
+| `--source` | yes (flag or `budget.toml`) | Funded identity used for deploy fees and as the simulation source |
+| `--json` | no | Emit the report as pretty-printed JSON instead of a table |
+| `--html` | no | Emit the report as a single self-contained HTML page — no external CSS, scripts, or fonts, so it renders from a `file://` URL and from a downloaded CI artifact. Rows mirror the JSON output; with `--check` each row also shows its limit and pass/fail status |
+| `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
+| `--record <PATH>` | no | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` reproduce the same report offline. Mutually exclusive with `--replay` |
+| `--replay <PATH>` | no | Replay a run from a fixture written by `--record`. The whole pipeline runs offline — no `stellar` CLI, no `curl`, no network access — and the report is byte-identical to the recorded run. Mutually exclusive with `--record` |
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
-External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32v1-none` Rust target installed. `--replay` is the exception — it needs none of the network tooling (no `stellar`, no `curl`), only the workspace itself. `--derive-limits`, `--init`, and `--record-baseline`/`--check-baseline` need neither network tooling nor a funded identity either, since none of them build, deploy, or simulate anything.
+External requirements: the `stellar` CLI on `PATH`, a funded source identity on the target network, and the `wasm32-unknown-unknown` Rust target installed. `--replay` is the exception — it needs none of the network tooling (no `stellar`, no `curl`), only the workspace itself.
 
 ### Required release profile for comparable measurements
 
-`cargo budget-report` builds each contract with `cargo build --target wasm32v1-none --release`, so the workspace `[profile.release]` is part of the measured input. To compare against the figures published by this project, use the same profile:
+`cargo budget-report` builds each contract with `cargo build --target wasm32-unknown-unknown --release`, so the workspace `[profile.release]` is part of the measured input. To compare against the figures published by this project, use the same profile:
 
 {% code title="Cargo.toml" %}
 ```toml
@@ -1019,67 +733,20 @@ Each simulated function produces four rows (or four JSON objects) when its simul
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
-[Measurement scope](#measurement-scope). JSON output (`--json`) is an object with a schema
-version and a `snapshots` array suited to CI:
+[Measurement scope](#measurement-scope). JSON output (`--json`) is an array suited to CI:
 
 ```json
-{
-  "schema_version": 1,
-  "snapshots": [
-    {
-      "package": "amm-pool-contract",
-      "function": "do_expensive_work",
-      "metric": "CPU Instructions",
-      "value": 756678
-    }
-  ]
-}
+[
+  {
+    "package": "amm-pool-contract",
+    "function": "do_expensive_work",
+    "metric": "CPU Instructions",
+    "value": 756678
+  }
+]
 ```
 
 When `--check --json` is used, configured functions gain `limit` and `pass` (see [the `--check` section above](#check-enforcing-regression-limits-against-network-verified-costs)); the shape for unconfigured functions is unchanged.
-
-### JSON schema version
-
-Every JSON document emitted by `cargo budget-report --json` includes a
-`schema_version` integer at the top level.  The current version is **1**.
-
-#### Versioning policy
-
-- The version is incremented when the JSON structure changes in a way
-  that requires consumers to update their parsing logic.  Adding a new
-  optional field to snapshot entries does **not** require a version bump;
-  removing or renaming a field, changing a field's type, or restructuring
-  the document **does**.
-- The `schema_version` field itself must always be present and must always
-  be an integer.
-- Consumers should read `schema_version` to decide which parsing branch
-  to use.  Unknown version numbers should be rejected with a clear error
-  rather than silently parsed.
-
-#### Breaking schema changes
-
-The following are considered breaking changes that require incrementing
-`schema_version`:
-
-- Removing, renaming, or changing the type of an existing field.
-- Changing the meaning of an existing field.
-- Moving snapshot entries out of the `snapshots` array.
-- Changing `schema_version` from an integer to another type.
-
-The following are **not** breaking and do **not** require a version bump:
-
-- Adding a new optional field to snapshot entries.
-- Adding a new top-level field alongside `schema_version` and `snapshots`.
-- Extending the set of possible `metric` values.
-
-#### Pre-version historical records
-
-Records produced before `schema_version` was introduced (i.e. records
-where the JSON is a bare array rather than a `{schema_version, snapshots}`
-object) are treated as **implicit version 0**.  The `record-history` CI
-job's measurement gate already accepts both forms — the bare array and
-the wrapped object — so existing historical data remains compatible
-without migration.
 
 ### HTML output (`--html`)
 
@@ -1111,7 +778,7 @@ total.### In scope
 | `CPU Instructions` | `resources.instructions` — metered CPU instruction count |
 | `Read Bytes` | `resources.disk_read_bytes` — bytes read from disk-backed ledger entries |
 | `Write Bytes` | `resources.write_bytes` — bytes written to ledger entries |
-| `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32v1-none --release` |
+| `WASM Bytes` | Compiled WASM binary size — the file size on disk after `cargo build --target wasm32-unknown-unknown --release` |
 | `Memory Bytes` (Protocol 22+) | `result.cost.memBytes` — memory-bytes cost from the Protocol 22 JSON-RPC `cost` block; absent on older protocol responses |
 
 These four (or five on Protocol 22+) quantities are *inputs* to the **non-refundable resource fee**. They are not the whole of it.
@@ -1165,18 +832,17 @@ answering "how much will my users pay".
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"27.0.3"` (specifically tested/resolved to `27.0.6` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"27.0.0"` (used for decoding transaction simulation responses)
-* **Corresponding Stellar Protocol**: **Protocol 27**
+* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 22**
 
 ### Compatibility Matrix
 
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Untested** | Previously supported; superseded by SDK 27 workspace baseline. |
-| **`23.0.x` – `26.0.x`** | `23` – `26` | **Untested** | Not pinned in the workspace; may work but are untested. |
-| **`27.0.x`** | `27` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `27.0.3`, `stellar-xdr` `27.0.0`). |
+| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
+| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
 
 ## `budget.toml` schema reference
 
@@ -1194,7 +860,7 @@ This is the complete reference for the `budget.toml` file. It was verified again
 |---|---|---|---|---|
 | `network` | string | no | none | Target network for deploy/simulate (`"testnet"`, `"futurenet"`, `"local"`, or a custom network from your Stellar CLI config). Falls back to `--network`; if neither is set the run aborts with `missing --network or budget.toml network field`. |
 | `source` | string | no | none | Stellar source identity used for deployment fees and as simulation source. Falls back to `--source`; if neither is set the run aborts. |
-| `tolerance` | number (fraction) **or** percentage string (`"10%"`) | no | `0.10` | Default regression tolerance for `--check-baseline`. Overridable per function (see below) and by `--tolerance`. Resolved as: per-function `tolerance` → `--tolerance` flag → this key → `0.10`. |
+| `tolerance` | number (fraction) | no | `0.10` | Default regression tolerance for `--check-baseline`. Overridable per function (see below) and by `--tolerance`. |
 | `[margin]` | table | no | none | Per-metric margin multipliers consumed only by `--derive-limits`. See [below](#margin-deriving-tier-a-limits). |
 | `[scenarios.<name>]` | table of tables | no | none | Function-to-scenario mapping consumed only by `--derive-limits`. See [below](#scenariosnamemapping-functions-to-derived-scenario-limits). |
 | `[functions.<name>]` | table of tables | no | none | Per-function configuration. See [below](#functionsnameper-function-configuration). |
@@ -1225,45 +891,17 @@ The section key `<name>` must match the **exported WASM function name exactly** 
 
 | Field | Type | Required | Default | Effect |
 |---|---|---|---|---|
-| `args` | array of strings **or** arg-spec tables | no | `[]` | Arguments for `stellar contract invoke -- <fn> …`. A bare string is forwarded verbatim; a table is a typed spec (see below). The two forms can be mixed in one list. Functions without an entry are simulated with no arguments. |
+| `args` | array of strings | no | `[]` | Forwarded verbatim after the `--` separator to `stellar contract invoke -- <fn> <args>`. Functions without an entry are simulated with no arguments. |
 | `cpu_limit` | integer (u64) | no | none | Inclusive upper bound on the measured `CPU Instructions` metric in `--check` mode. |
 | `read_limit` | integer (u64) | no | none | Inclusive upper bound on `Read Bytes`. |
 | `write_limit` | integer (u64) | no | none | Inclusive upper bound on `Write Bytes`. |
-| `tolerance` | number (fraction) **or** percentage string (`"5%"`) | no | global tolerance | Per-function regression-tolerance override applied during `--check-baseline`. Takes precedence over `--tolerance`. |
+| `tolerance` | number (fraction) | no | global tolerance | Per-function regression-tolerance override applied during `--check-baseline`. Takes precedence over `--tolerance`. |
 
 - A missing `*_limit` field means that metric is **reported but not enforced**.
 - Limits are inclusive: a measurement equal to the limit passes.
 - There is deliberately no limit field for `WASM Bytes` — binary size is reported but can never be enforced through this file.
 - **Unknown keys inside a `[functions.*]` block produce a parse error** (e.g. a typo like `cpu_lmit` fails the run instead of silently doing nothing).
-- A malformed `tolerance` value (neither a number nor a percentage string, e.g. `tolerance = "abc"`) is a configuration error that fails the run before any simulation starts.
-- The tolerance **actually applied** to each measurement is shown in the `--check-baseline` report: the text table prints a `tolerance` column, and the JSON output carries a `tolerance` field on every `passes`, `improvements`, and `regressions` entry. This is what makes a passing result interpretable — you can see whether a function was judged under its own override, the global value, or the default.
 - Under `--check`, a configured function whose *simulation fails* counts as a check failure even when none of its limits are set, so a broken invocation cannot masquerade as a pass.
-
-#### Typed argument specs
-
-A flat string list only works for functions taking scalars a human can type. For an entry point taking an address, a symbol, or a structured value, give a table instead:
-
-```toml
-[functions.transfer]
-args = [
-  { name = "from",   type = "address", generate = true },
-  { name = "to",     type = "address", value = "GAAAA…WHF" },
-  { name = "amount", type = "i128",    value = "1000000" },
-  { name = "memo",   type = "symbol",  value = "topup" },
-  { name = "opts",   type = "json",    value = { retries = 3, dry_run = false } },
-]
-```
-
-Each table renders to a `--<name> <value>` pair, so the result is identical to the string list you would otherwise write by hand.
-
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | yes | The parameter name; rendered as `--<name>`. |
-| `type` | yes | One of: `u32` `i32` `u64` `i64` `u128` `i128` `u256` `i256`, `bool`, `symbol`, `string`, `bytes` (hex, `0x` optional), `address`, `json` (alias `struct` / `vec` / `map`). |
-| `value` | usually | The literal value. Optional for `bool` (defaults `false`) and for `address` with `generate = true`. For `json`, an inline table/array forwarded to the CLI as JSON. |
-| `generate` | no | `address` only. Derives a deterministic valid `G…` strkey from `name` — for a function that needs *an* address but not a specific funded one. Not a real account; fine for `--build-only`, not for a run that must actually authorize. |
-
-An unknown `type`, or a missing required `value`, fails the run with an error naming the function and argument — never a silent skip.
 
 {% hint style="warning" %}
 A `[functions.<name>]` entry whose name does not match any exported function of any workspace package is **silently ignored** — no warning, no error, nothing measured. This is the file's main trap: a typo in a function name looks identical to a function you chose not to configure. Cross-check names against the export list (e.g. `stellar contract invoke --help` output or a passing report row) when limits mysteriously fail to apply.
@@ -1293,9 +931,11 @@ Consumed only by `cargo budget-report --derive-limits`; ignored by every other m
 
 Each field is individually optional *at parse time*, but the block is usable only when **complete**: if no `--margin-*` flags are given, an incomplete `[margin]` block produces the same `no margin supplied` error as no block at all. All four values must be finite and `>= 1.0`; a sub-1.0 margin would tighten the limit below the measured Tier B value and is rejected. No default is ever picked silently — margins are treated as audit-trail data.
 
+For the current margin values, the Tier A limits they produce, and the protocol version the numbers correspond to, see [`tier-a-limits.provenance.md`](../../tier-a-limits.provenance.md).
+
 ### `scenarios.<name>`: mapping functions to derived scenario limits
 
-Consumed only by `--derive-limits`. Each scenario sums the Tier B values of its component functions into a single Tier A limit under one environment-variable key.
+Consumed only by `--derive-limits`. Each scenario sums the Tier B values of its component functions into a single Tier A limit under one environment-variable key. See [`tier-a-limits.provenance.md`](../../tier-a-limits.provenance.md) for the current derived limits and their refresh procedure.
 
 | Field | Type | Required | Default | Effect |
 |---|---|---|---|---|
@@ -1392,14 +1032,3 @@ Effects of this file:
 - `withdraw` has an entry but no `*_limit` fields, so its metrics are reported and it participates in `--check`'s fail-on-simulation-error rule, but no metric is enforced.
 - If `amm-pool-contract` were renamed tomorrow, every section above would keep working unchanged except `[scenarios.full_workflow]`, whose `package` value must match the annotation used by Tier A tests.
 - If `initialize` had been misspelled (e.g. `[functions.initialise]`), nothing would error and nothing would fail: the orphaned entry would be ignored, `initialize` would run unconfigured with no arguments, and none of its metrics would be enforced — the only symptom is missing rows in a later report.
-### `--rpc-url`
-Override the RPC URL for Soroban CLI invocation.
-
-### `--network-passphrase`
-Override the network passphrase for Soroban CLI invocation.
-
-### `--no-deploy-cache`
-Bypass deploying cache when running budget report.
-
-### `--source-secret`
-Supply a stellar secret key (S...) for deploy and invoke.

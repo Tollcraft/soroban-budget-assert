@@ -1,0 +1,30 @@
+{
+  "operation_type": "Token transfers",
+  "issue": 415,
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "function": "do_token_transfers",
+    "arguments": { "token": "<Stellar Asset Contract address>", "to": "<generated Address>", "amount": 1, "count": "1 | 5 | 20 | 50" },
+    "token": "SDK built-in Stellar Asset Contract via Env::register_stellar_asset_contract_v2; minted to the pool contract before the measured calls",
+    "registration": "Env::register(wasm, ())"
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.91.0",
+  "network": { "method": "simulateTransaction", "network": "Soroban testnet", "requires": "a deployed SAC; see budget.toml [functions.do_token_transfers]" },
+  "measurements": [
+    { "transfers": 1, "local_cpu": 3748650, "local_mem": 1873575, "network_cpu": null, "delta": null },
+    { "transfers": 5, "local_cpu": 4301770, "local_mem": 1948299, "network_cpu": null, "delta": null },
+    { "transfers": 20, "local_cpu": 6375970, "local_mem": 2228514, "network_cpu": null, "delta": null },
+    { "transfers": 50, "local_cpu": 10524370, "local_mem": 2788944, "network_cpu": null, "delta": null }
+  ],
+  "local_findings": {
+    "per_transfer_cpu": 138280,
+    "per_transfer_cpu_is_constant": true,
+    "per_transfer_mem_bytes": 18682,
+    "note": "marginal cost is identical across every adjacent pair of counts; network figures pending"
+  },
+  "capture": {
+    "local_command": "cargo build --target wasm32v1-none --release -p amm-pool-contract && cargo test -p amm-pool-contract --test measure_token_transfer_gap -- --nocapture",
+    "recorded_at": "2026-08-26"
+  }
+}

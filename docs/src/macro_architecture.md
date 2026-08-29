@@ -151,7 +151,15 @@ For `budget_lt` (combined CPU + mem), the attribute is parsed as a `BudgetSpec` 
 
 ### 3. Function Parsing
 
-The `item` token stream is parsed as `syn::ItemFn` (`lib.rs:373`). If parsing fails (e.g., the macro is placed on a struct), the error is returned directly to rustc.
+The `item` token stream is routed through `expand_targets()`:
+
+- Parses as `syn::ItemFn` first — the common case, a `#[test] fn`. The per-function expansion runs with an empty function label.
+- On failure, parses as `syn::ItemImpl`. Every `fn` in the block is expanded in turn, each with its own name as the label, unless it already carries one of the `BUDGET_ATTR_NAMES` attributes — those are left for their own attribute to expand, so a per-method limit overrides the block-level one. A block that instruments no methods is a compile error.
+- On both failures, the original `ItemFn` parse error is returned, so `#[budget_*]` on a struct or a trait still fails with "expected `fn`".
+
+The function label is threaded into the assertion-failure message (`assert_messages()`) as `` [fn `name`] `` for impl-block methods and omitted entirely for a bare `fn`, so a block-level failure names the specific method without changing the message for the single-function case.
+
+Applying a budget attribute to a module or a trait is not supported. `#[budget_scaling]` rewrites a function into a `#[test]` and is `fn`-only.
 
 ### 4. Limit Expression Generation
 

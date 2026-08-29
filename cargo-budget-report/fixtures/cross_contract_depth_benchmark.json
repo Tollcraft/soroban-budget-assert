@@ -1,0 +1,33 @@
+{
+  "operation_type": "Cross-contract call depth (beyond depth one)",
+  "issue": 416,
+  "fixture": {
+    "contract": "amm-pool-contract",
+    "function": "RelayContract::relay",
+    "arguments": { "chain": "Vec<Address> of instances 2..=N", "acc": 0 },
+    "method": "N instances of the same WASM registered; instances 2..=N passed as the chain to instance 1, so one call into instance 1 reaches call depth N",
+    "registration": "Env::register(wasm, ())",
+    "note": "a new fixture contract, not a change to cross_contract_test.rs"
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, codegen-units=1)",
+  "toolchain": "rustc 1.91.0",
+  "network": { "method": "simulateTransaction", "network": "Soroban testnet", "requires": "N deployed instances of the relay contract" },
+  "measurements": [
+    { "depth_frames": 1, "local_cpu": 3603572, "local_mem": 1853165, "network_cpu": null, "delta": null },
+    { "depth_frames": 2, "local_cpu": 7219701, "local_mem": 3706954, "network_cpu": null, "delta": null },
+    { "depth_frames": 3, "local_cpu": 10836389, "local_mem": 5561184, "network_cpu": null, "delta": null },
+    { "depth_frames": 4, "local_cpu": 14452965, "local_mem": 7415855, "network_cpu": null, "delta": null }
+  ],
+  "local_findings": {
+    "per_hop_cpu": 3616400,
+    "per_hop_cpu_is_constant": true,
+    "per_hop_mem_bytes": 1853900,
+    "accumulation": "strictly linear",
+    "protocol_depth_limit_encountered": null,
+    "note": "each hop re-instantiates the module; per-hop cost is the local-VM instantiation floor. No protocol depth limit hit through depth 4 — the host's max call-stack depth is to be confirmed in the network pass. Network figures pending."
+  },
+  "capture": {
+    "local_command": "cargo build --target wasm32v1-none --release -p amm-pool-contract && cargo test -p amm-pool-contract --test measure_call_depth_gap -- --nocapture",
+    "recorded_at": "2026-08-26"
+  }
+}

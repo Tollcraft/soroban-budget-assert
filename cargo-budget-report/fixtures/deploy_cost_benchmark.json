@@ -1,0 +1,30 @@
+{
+  "operation_type": "Wasm size vs. deploy cost",
+  "issue": 417,
+  "fixture": {
+    "method": "Env::register(&[u8], ()) — same host path as a real deploy: upload_contract_wasm + CreateContractV2, no constructor args (verified against soroban-sdk 22.0.11, see budget_test.rs). Budget read immediately after register, before any invocation.",
+    "contracts": ["host-function-contract", "bloat-contract", "amm-pool-contract"],
+    "note": "bloat-contract is a new fixture of independent real algorithms; size comes from real code, not padding (constant padding compresses differently under opt-level=z + LTO)."
+  },
+  "build_profile": "size-opt (opt-level=\"z\", lto=true, strip=\"symbols\", codegen-units=1) — the workspace [profile.release]; an unoptimised build would not reflect what is deployed",
+  "toolchain": "rustc 1.91.0",
+  "network": { "method": "simulateTransaction on the upload/create operations", "network": "Soroban testnet", "size_limit_source": "maxContractSizeBytes ledger setting via getNetworkLimits RPC (the call cargo-budget-report already uses for its share-of-limit column)" },
+  "measurements": [
+    { "contract": "host-function-contract", "wasm_bytes": 827, "local_cpu": 864805, "local_mem": 2314575, "network_cpu": null, "delta": null },
+    { "contract": "bloat-contract", "wasm_bytes": 14357, "local_cpu": 4243953, "local_mem": 3092549, "network_cpu": null, "delta": null },
+    { "contract": "amm-pool-contract", "wasm_bytes": 29906, "local_cpu": 7218127, "local_mem": 3710193, "network_cpu": null, "delta": null }
+  ],
+  "local_findings": {
+    "relationship": "approximately linear in wasm size, with a fixed base cost",
+    "marginal_cpu_per_byte": [249.8, 191.3],
+    "linear_fit": "CPU ~= 0.47M + 226*bytes (R^2 ~= 0.997)",
+    "stepped": false,
+    "contract_size_limit_bytes": 65536,
+    "contract_size_limit_provenance": "maxContractSizeBytes ledger configuration setting; Protocol 22 network default is 65536 (64 KiB). A ledger setting can be raised by validator vote — the network pass records the live testnet value via getNetworkLimits.",
+    "note": "network figures pending"
+  },
+  "capture": {
+    "local_command": "cargo build --release --target wasm32v1-none -p amm-pool-contract -p host-function-contract -p bloat-contract && cargo test -p amm-pool-contract --test measure_deploy_cost_gap -- --nocapture",
+    "recorded_at": "2026-08-26"
+  }
+}

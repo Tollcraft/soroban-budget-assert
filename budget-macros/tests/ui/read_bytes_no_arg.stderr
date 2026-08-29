@@ -1,0 +1,7 @@
+error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, or `config = "KEY"`
+ --> tests/ui/read_bytes_no_arg.rs:5:1
+  |
+5 | #[budget_read_bytes_lt]
+  | ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_read_bytes_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

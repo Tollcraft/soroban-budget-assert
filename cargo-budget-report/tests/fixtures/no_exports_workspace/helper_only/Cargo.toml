@@ -1,0 +1,11 @@
+[package]
+name = "helper-only"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+soroban-sdk = { path = "../soroban_sdk_stub" }

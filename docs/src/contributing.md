@@ -12,6 +12,7 @@ We welcome contributions to `soroban-budget-assert`.
 - All new CLI features must support the `--json` flag.
 - Macro changes must include corresponding `#[test]` cases in the `amm-pool-contract`.
 - Do not introduce panics in the CLI; use `anyhow::Result` for graceful error handling.
+- When adding a new cost metric, follow the [Adding a New Cost Metric](adding_a_metric.md) guide to ensure all coordinated edits are made.
 
 ## ⚙️ Supported Versions & Compatibility
 
