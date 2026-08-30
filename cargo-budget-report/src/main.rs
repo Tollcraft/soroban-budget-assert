@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
@@ -1963,6 +1964,79 @@ fn run() -> Result<i32> {
                     .map_err(|e| Error::Message(format!("{e:#}")))?,
                 None => Vec::new(),
             };
+            tasks.push((function.clone(), func_args));
+        }
+
+        let workers = concurrency.min(tasks.len()).max(1);
+        if !args.quiet && !tasks.is_empty() && workers > 1 {
+            eprintln!(
+                "Simulating {} functions concurrently (max {})...",
+                tasks.len(),
+                concurrency
+            );
+        }
+
+        // Replay and recording transports are single-use fixtures that
+        // cannot be shared across threads, so a replay/record run stays
+        // serialized through the shared transport. Live runs give each
+        // worker its own transport so retries and backoff sleeps happen
+        // inside the worker: a rate-limited request backs off without
+        // stalling unrelated concurrent requests.
+        let serialized_transport = args.replay.is_some() || args.record.is_some();
+        let transport_guard = Arc::new(std::sync::Mutex::new(&mut transport));
+        let collected = Arc::new(std::sync::Mutex::new(Vec::with_capacity(tasks.len())));
+        let next_task = std::sync::atomic::AtomicUsize::new(0);
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                let collected = Arc::clone(&collected);
+                let transport_guard = Arc::clone(&transport_guard);
+                let next_task = &next_task;
+                let contract_id = contract_id.clone();
+                let source = source.clone();
+                let network = network.clone();
+                let package_name = package.name.clone();
+                let net_override = net_override.clone();
+                let tasks = &tasks;
+                scope.spawn(move || loop {
+                    let index = next_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= tasks.len() {
+                        break;
+                    }
+                    if workers == 1 && !args.quiet {
+                        eprintln!("Simulating function '{}'...", tasks[index].0);
+                    }
+                    let (function, func_args) = &tasks[index];
+                    let outcome = if serialized_transport {
+                        let mut guard = transport_guard.lock().unwrap();
+                        simulate_function(
+                            &mut **guard,
+                            &contract_id,
+                            &source,
+                            &network,
+                            function,
+                            func_args,
+                            &package_name,
+                        )
+                    } else {
+                        let mut worker_transport = live::LiveTransport::new(
+                            retry_config,
+                            args.quiet,
+                            net_override.clone(),
+                        );
+                        simulate_function(
+                            &mut worker_transport,
+                            &contract_id,
+                            &source,
+                            &network,
+                            function,
+                            func_args,
+                            &package_name,
+                        )
+                    };
+                    collected.lock().unwrap().push((index, outcome));
+                });
+            }
+        });
 
             let outcome = simulate_function(
                 &mut transport,
@@ -1980,7 +2054,7 @@ fn run() -> Result<i32> {
                     read_bytes,
                     write_bytes,
                     transaction_data_xdr,
-                } => {
+                }) => {
                     // Record the measurement for baseline/snapshot mode. This
                     // was previously only wired up in stale pre-refactor
                     // code; it belongs here in the success arm.
@@ -2055,7 +2129,7 @@ fn run() -> Result<i32> {
                         }
                     }
                 }
-                SimulationOutcome::Failed(failure) => {
+                Ok(SimulationOutcome::Failed(failure)) => {
                     has_errors = true;
                     if !args.quiet {
                         match &failure {
@@ -2086,6 +2160,24 @@ fn run() -> Result<i32> {
                             &mut reports,
                             &contract.package_name,
                             function,
+                            function_config,
+                        );
+                    }
+                }
+                Err(err) => {
+                    // A persistent transport failure for one function (retries
+                    // exhausted) must not abandon the rest of the run: record
+                    // it as an infrastructure failure and keep going.
+                    has_errors = true;
+                    if !args.quiet {
+                        eprintln!("Warning: Simulation failed for {}: {:#}", function, err);
+                    }
+                    if let (true, Some(function_config)) = (args.check, func_config) {
+                        checks_failed = true;
+                        emit_check_failure_entries(
+                            &mut reports,
+                            &package.name,
+                            &function,
                             function_config,
                         );
                     }
@@ -3112,6 +3204,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -3153,6 +3246,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -3194,6 +3288,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -3238,6 +3333,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),

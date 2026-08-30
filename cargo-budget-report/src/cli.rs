@@ -10,6 +10,10 @@ pub enum CargoCli {
     BudgetReport(BudgetReportArgs),
 }
 
+/// Conservative default for `--concurrency` (functions in flight per
+/// package). See the flag help text for the rationale.
+pub const DEFAULT_CONCURRENCY: usize = 4;
+
 /// CLI arguments for `cargo budget-report`.
 ///
 /// All fields are optional; missing values fall back to the corresponding
