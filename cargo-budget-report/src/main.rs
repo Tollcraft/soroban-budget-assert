@@ -1,4 +1,4 @@
-use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
+use crate::cli::{BudgetReportArgs, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
 use crate::error::{
     Error, Result, SimulationFailure, SimulationOutcome, EXIT_BUDGET_EXCEEDED,
@@ -11,11 +11,12 @@ mod compare;
 mod fixture;
 mod html_output;
 mod live;
+mod markdown;
 mod record;
 mod replay;
 mod transport;
 use cargo_metadata::{CrateType, MetadataCommand};
-use clap::Parser;
+
 use compare::{
     build_baseline, check_against_baseline, max_allowed as max_allowed_metric, parse_tolerance,
     render_report_markdown, render_report_text, Baseline, Measurement, RenderOptions, Tolerance,
@@ -33,8 +34,6 @@ use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::settings::object::Rows;
 use tabled::settings::Color as TabledColor;
 use tabled::settings::Modify;
-use tabled::{Table, Tabled};
-
 mod contract_exports;
 mod deploy_cache;
 mod deploy_diagnostics;
@@ -463,23 +462,89 @@ impl MeasuredResources {
 /// consumers (table, JSON, CSV) can render per-metric pass/fail status.
 #[derive(Serialize)]
 pub(crate) struct CostReport {
-    package: String,
-    function: String,
-    metric: &'static str,
+    pub(crate) package: String,
+    pub(crate) function: String,
+    pub(crate) metric: &'static str,
     /// The measured value, or `None` if the simulation failed to produce one
     /// (only emitted in `--check` mode for functions declared in
     /// `budget.toml`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    value: Option<u32>,
+    pub(crate) value: Option<u32>,
     /// Configured upper bound for the metric, if any. Emitted in `--check`
     /// mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u64>,
+    pub(crate) limit: Option<u64>,
     /// `true` if the measured value is within the configured limit, `false`
     /// if it exceeds the limit **or** the simulation failed for a configured
     /// function. Emitted in `--check` mode only.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pass: Option<bool>,
+    pub(crate) pass: Option<bool>,
+}
+
+fn load_cost_reports(path: &Path) -> Result<Vec<CostReport>> {
+    let contents = if path == Path::new("-") {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| Error::Message(format!("failed to read JSON from stdin: {e}")))?;
+        buf
+    } else {
+        std::fs::read_to_string(path)
+            .map_err(|e| Error::Message(format!("failed to read {}: {e}", path.display())))?
+    };
+
+    #[derive(serde::Deserialize)]
+    struct RawReport {
+        package: String,
+        function: String,
+        metric: String,
+        #[serde(default)]
+        value: Option<u32>,
+        #[serde(default)]
+        limit: Option<u64>,
+        #[serde(default)]
+        pass: Option<bool>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum ReportShape {
+        Wrapped { snapshots: Vec<RawReport> },
+        Bare(Vec<RawReport>),
+    }
+
+    let parsed: ReportShape = serde_json::from_str(&contents)
+        .map_err(|e| Error::Message(format!("failed to parse report JSON: {e}")))?;
+
+    let raw_list = match parsed {
+        ReportShape::Wrapped { snapshots } => snapshots,
+        ReportShape::Bare(items) => items,
+    };
+
+    let reports = raw_list
+        .into_iter()
+        .map(|r| {
+            let static_metric: &'static str = match r.metric.as_str() {
+                "CPU Instructions" => "CPU Instructions",
+                "Memory Bytes" => "Memory Bytes",
+                "Read Bytes" => "Read Bytes",
+                "Write Bytes" => "Write Bytes",
+                "WASM Bytes" => "WASM Bytes",
+                _ => Box::leak(r.metric.into_boxed_str()),
+            };
+            CostReport {
+                package: r.package,
+                function: r.function,
+                metric: static_metric,
+                value: r.value,
+                limit: r.limit,
+                pass: r.pass,
+            }
+        })
+        .collect();
+
+    Ok(reports)
 }
 
 /// A `CostReport` formatted for rendering in the plain-text [`Table`] output.
@@ -1586,7 +1651,7 @@ fn main() {
 /// tolerance, and network/infrastructure failure. Any unexpected error
 /// bubbles up as `Err` and is mapped to its variant's code by the caller.
 fn run() -> Result<i32> {
-    let CargoCli::BudgetReport(args) = CargoCli::parse();
+    let args = crate::cli::parse_args();
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
@@ -1603,6 +1668,16 @@ fn run() -> Result<i32> {
         let toml_config = load_budget_toml("budget.toml")?;
         run_derive_mode(&args, &toml_config)?;
         return Ok(EXIT_SUCCESS);
+    }
+
+    if args.markdown {
+        let from_path = args.from.as_deref().unwrap_or("current_report.json");
+        let pathbuf = PathBuf::from(from_path);
+        if pathbuf.exists() || from_path == "-" {
+            let reports = load_cost_reports(&pathbuf)?;
+            print!("{}", markdown::render_markdown(&reports));
+            return Ok(EXIT_SUCCESS);
+        }
     }
 
     // ── Preflight environment checks ──────────────────────────────────
@@ -2370,6 +2445,9 @@ fn run() -> Result<i32> {
         }
         csv_writer.flush().context("Failed to flush CSV writer")?;
     } else if args.json {
+        println!("{}", json_output::render_json(&reports));
+    } else if args.markdown {
+        print!("{}", markdown::render_markdown(&reports));
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
@@ -3176,6 +3254,7 @@ mod tests {
             source: None,
             allow_mainnet: false,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,
@@ -3218,6 +3297,7 @@ mod tests {
             source: None,
             allow_mainnet: false,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,
@@ -3260,6 +3340,7 @@ mod tests {
             source: None,
             allow_mainnet: false,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,
@@ -3305,6 +3386,7 @@ mod tests {
             source: None,
             allow_mainnet: false,
             json: false,
+            markdown: false,
             check: false,
             csv: false,
             html: false,

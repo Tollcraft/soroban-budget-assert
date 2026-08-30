@@ -745,6 +745,208 @@ fn test_storage_read_wasm_local() {
     println!("MEMORY_BYTES={}", mem);
 }
 
+/// Measures actual local Tier A WASM budget metrics for `amm-pool-contract`
+/// functions and exports `current_report.json` to the workspace root.
+#[test]
+fn test_export_tier_a_budget_report() {
+    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
+    let wasm_bytes = match std::fs::read(wasm_path) {
+        Ok(b) => b,
+        Err(_) => return, // Skip if WASM has not been pre-compiled
+    };
+    let wasm_size = wasm_bytes.len() as u32;
+
+    // 1) do_expensive_work
+    let (exp_cpu, exp_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_expensive_work(&10_000);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    // 2) require_auth_only
+    let (auth_cpu, auth_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        let user = Address::generate(&env);
+        client.initialize();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        client.require_auth_only(&user);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    // 3) allocate_vec — use a small n to stay within the 40 MB host
+    //    invocation memory ceiling (10_000 blows through it at ~400 MB).
+    let (alloc_cpu, alloc_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.allocate_vec(&100);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    // 4) do_event_heavy_work
+    let (ev_cpu, ev_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_event_heavy_work(&5);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    struct Row {
+        package: &'static str,
+        function: &'static str,
+        metric: &'static str,
+        value: Option<u32>,
+    }
+
+    let rows = vec![
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "CPU Instructions",
+            value: Some(exp_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Memory Bytes",
+            value: Some(exp_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "WASM Bytes",
+            value: Some(wasm_size),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "CPU Instructions",
+            value: Some(auth_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Memory Bytes",
+            value: Some(auth_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "CPU Instructions",
+            value: Some(alloc_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Memory Bytes",
+            value: Some(alloc_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "CPU Instructions",
+            value: Some(ev_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Memory Bytes",
+            value: Some(ev_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Write Bytes",
+            value: None,
+        },
+    ];
+
+    let mut json_str = String::from("{\n  \"schema_version\": 1,\n  \"snapshots\": [\n");
+    for (i, r) in rows.iter().enumerate() {
+        json_str.push_str("    {\n");
+        json_str.push_str(&format!("      \"package\": \"{}\",\n", r.package));
+        json_str.push_str(&format!("      \"function\": \"{}\",\n", r.function));
+        json_str.push_str(&format!("      \"metric\": \"{}\",\n", r.metric));
+        if let Some(val) = r.value {
+            json_str.push_str(&format!("      \"value\": {}\n", val));
+        } else {
+            json_str.push_str("      \"value\": null\n");
+        }
+        json_str.push_str("    }");
+        if i + 1 < rows.len() {
+            json_str.push(',');
+        }
+        json_str.push('\n');
+    }
+    json_str.push_str("  ]\n}\n");
+
+    let _ = std::fs::write("../current_report.json", &json_str);
+    let _ = std::fs::write("current_report.json", &json_str);
+}
+
 // ── Negative-control budget tests ──────────────────────────────────────
 //
 // These tests validate the budget assertion machinery itself by deliberately

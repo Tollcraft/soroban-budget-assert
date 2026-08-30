@@ -49,6 +49,10 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
+    /// Emit the report as Markdown instead of a table, JSON, or CSV.
+    #[arg(long, default_value_t = false)]
+    pub markdown: bool,
+
     /// Enforce per-function limits declared in `budget.toml`.
     ///
     /// When set, each measured metric is compared against its configured
@@ -77,17 +81,6 @@ pub struct BudgetReportArgs {
     /// precedence over `tolerance` in `budget.toml`.
     #[arg(long)]
     pub tolerance: Option<String>,
-
-    /// Render the `--check-baseline` comparison as a GitHub-flavored
-    /// Markdown diff table instead of the plain-text one.
-    ///
-    /// Each row shows baseline, current, absolute change, and percentage
-    /// change; direction is an ASCII marker (not colour) so it survives CI
-    /// logs and step summaries, which is this format's main destination.
-    /// Only meaningful with `--check-baseline`; ignored otherwise. `--json`
-    /// wins if both are passed.
-    #[arg(long, default_value_t = false)]
-    pub markdown: bool,
 
     /// Drop rows whose value is unchanged from the baseline in the
     /// `--check-baseline` comparison.
