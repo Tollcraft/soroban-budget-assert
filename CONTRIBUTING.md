@@ -145,7 +145,7 @@ Create and fund a testnet identity:
 stellar keys generate alice --network testnet --fund
 ```
 
-Build the WASM contract and run tests:
+Run the tests. The contract WASM is built automatically when missing or stale, so no manual `cargo build` step is needed:
 ```powershell
 cargo build -p amm-pool-contract --release --target wasm32v1-none
 cargo test --workspace
@@ -193,6 +193,11 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+`cargo test --workspace` works on a clean checkout: the WASM-dependent tests
+build the contract artifact on demand via the shared helper in
+`amm-pool-contract/tests/common/` (issue #499), so a separate manual
+`cargo build` is never required before testing.
 
 Please follow the styling and architectural patterns already used in the codebase.
 

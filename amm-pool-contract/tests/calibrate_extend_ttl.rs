@@ -26,6 +26,8 @@
 
 #![cfg(not(feature = "sdk20"))]
 
+mod common;
+
 use amm_pool_contract::ConstantProductPoolClient;
 use soroban_sdk::Env;
 

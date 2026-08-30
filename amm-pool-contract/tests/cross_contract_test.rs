@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod common;
+
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient, HelperContract};
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::{Address, Env};

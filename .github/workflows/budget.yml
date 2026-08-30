@@ -49,6 +49,10 @@ jobs:
       # without reaching the network. This allows pull_request runs on forks —
       # where secrets are withheld — to run cleanly and publish actual measurements.
 
+      # Warm-up build only: the WASM-dependent tests build the artifact
+      # themselves on demand (amm-pool-contract/tests/common, issue #499), so
+      # this step is redundant but makes contract compile errors surface
+      # earlier and warms the build cache for the test step.
       - name: Build Contracts
         # All contract fixtures the Tier A / measurement tests register from
         # `target/wasm32v1-none/release/`. The measurement tests for the
