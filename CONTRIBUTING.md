@@ -28,6 +28,36 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 - Run `cargo test --workspace` in the workspace root to run the full workspace test suite.
 - Run `cargo run -p cargo-budget-report -- budget-report` (or `cargo build`) to test the CLI locally.
 
+### Calibration Harnesses vs. Regular Tests
+
+The test directories in `amm-pool-contract/tests/` contain both **regular tests** (which assert correctness) and **calibration harnesses** (which measure and record cost figures for `MEASUREMENTS.md`).
+
+**Calibration harnesses** are marked `#[ignore]` and excluded from the default `cargo test` run. They exist to generate the numbers in `MEASUREMENTS.md`, not to check correctness. Each harness file includes a doc comment explaining:
+- What it measures
+- How to run it deliberately
+- Where the output is recorded
+
+**Regular tests** run by default and assert correctness. Both types can coexist in the same file, but harness functions are clearly marked.
+
+**To run calibration harnesses:**
+
+```bash
+# Build the WASM contract first
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+
+# Run a specific harness (e.g., calibrate_gap)
+cargo test -p amm-pool-contract --test calibrate_gap -- --ignored --nocapture
+
+# Run all calibration harnesses
+cargo test -p amm-pool-contract --test 'calibrate_*' -- --ignored --nocapture
+cargo test -p amm-pool-contract --test 'measure_*' -- --ignored --nocapture
+```
+
+When you add a new measurement harness, ensure it:
+1. Has a doc comment (at module or crate level) explaining what it measures, how to run it, and where output goes
+2. Marks all measurement functions with `#[ignore]`
+3. Keeps any genuine correctness assertions in separate, non-ignored tests if they belong in the same file
+
 ## Documentation
 
 The documentation site is built with [GitBook](https://www.gitbook.com/) and published from `docs/src/` via Git Sync.

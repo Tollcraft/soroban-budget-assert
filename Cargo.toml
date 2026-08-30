@@ -38,11 +38,8 @@ lto = true
 
 # The workspace release profile above targets small WASM contracts. The CLI
 # binary needs different trade-offs: faster startup and better diagnostics.
-# NOTE: `panic` and `lto` cannot be set in package-specific profile overrides
-# (Cargo rejects them); they apply to the entire linked binary. To override
-# them for the CLI, build with CARGO_PROFILE_RELEASE_PANIC=unwind or use a
-# dedicated profile. (#500)
+# Only the settings Cargo allows in a per-package override are set here
+# (`panic` and `lto` cannot be overridden per-package). (#500)
 [profile.release.package.cargo-budget-report]
 opt-level = 3
 codegen-units = 16
-

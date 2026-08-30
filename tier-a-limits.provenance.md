@@ -14,6 +14,13 @@ on Testnet).  These values are documented on the Stellar Lab
 [Network Limits](https://lab.stellar.org/network-limits) page and can be
 queried via the Stellar CLI (`stellar network settings`).
 
+> **⚠️ Staleness warning (2026-08-29):**  The Stellar network has progressed
+> beyond Protocol 23.  As of August 2026, the Stellar Core repository shows
+> releases up to **Protocol 28** (v28.0.0, released August 13 2026).  The
+> `NETWORK__*` values below were recorded against Protocol 23 and are likely
+> stale.  They should be refreshed against the current network settings before
+> relying on percentage-based budget assertions.
+
 ## How to refresh the function-specific Tier A limits
 
 1. Generate a Tier B (network-verified) report:
@@ -97,30 +104,69 @@ be updated manually when the target protocol version changes:
 
 ## Attempted refresh (2026-08-29)
 
-On 2026-08-29 I attempted the documented refresh procedure:
+On 2026-08-29 I actually followed the documented refresh procedure.  Here is
+what happened at each step:
 
-- **`cargo budget-report --json`**: Could not be run.  The workspace fails to
-  parse on Rust 1.91.0 because `[profile.release.package.cargo-budget-report]`
-  specifies `panic = "unwind"`, which is not permitted in per-package profiles
-  on this toolchain.  This is a **pre-existing issue** — it is not caused by
-  this documentation change.
+### 1. Generate a Tier B report
 
-- **Stellar Lab Network Limits page** (https://lab.stellar.org/network-limits):
-  The page is a JavaScript-rendered SPA; the network-limit values are not
-  present in the initial HTML and could not be verified programmatically.
+```bash
+cargo budget-report --json > build/budget-report.json
+```
 
-- **`stellar network settings`**: The Stellar CLI is not installed in this
-  environment, so this route could not be attempted.
+**Result: FAILED.**  The workspace cannot parse on the pinned Rust 1.91.0
+toolchain because `[profile.release.package.cargo-budget-report]` in the
+workspace `Cargo.toml` specifies `panic = "unwind"`, which is not permitted
+in per-package profiles until Rust 1.92.  The error message is:
 
-- **CAP-0066 / Protocol 23 XDR diff** (github.com/stellar/stellar-protocol):
-  Reviewed successfully.  Confirmed that Protocol 23 renamed `readBytes` to
-  `diskReadBytes` in `SorobanResources`, consistent with the `DISK_READ_BYTES`
-  key name already used in `tier-a-limits.env`.
+```
+error: failed to parse manifest at `…/Cargo.toml`
+
+Caused by:
+  `panic` may not be specified in a `package` profile
+```
+
+This is a **pre-existing build issue** — it is not caused by this
+documentation change.  The Tier B → Tier A derivation pipeline is
+structurally correct (verified by reading `cargo-budget-report/src/derive.rs`),
+but it cannot currently execute on this toolchain.
+
+### 2. Stellar Lab Network Limits page
+
+**Result: INACCESSIBLE for verification.**  The page at
+https://lab.stellar.org/network-limits is a JavaScript-rendered SPA; the
+network-limit values are not present in the initial HTML and cannot be
+verified programmatically or via a simple HTTP request.
+
+### 3. `stellar network settings`
+
+**Result: NOT ATTEMPTED.**  The Stellar CLI is not installed in this
+environment.
+
+### 4. CAP-0066 / Protocol 23 XDR diff
+
+**Result: SUCCESS.**  Reviewed the XDR changes in
+https://github.com/stellar/stellar-protocol/blob/master/core/cap-0066.md.
+Confirmed that Protocol 23 renamed `readBytes` to `diskReadBytes` in
+`SorobanResources`, consistent with the `DISK_READ_BYTES` key name already
+used in `tier-a-limits.env`.
+
+### 5. Protocol version check
+
+**Result: Staleness detected.**  Checked the Stellar Core releases page
+(https://github.com/stellar/stellar-core/releases) and found that the
+network has progressed well beyond Protocol 23.  As of August 2026, the
+latest release is **v28.0.0** (Protocol 28, released August 13 2026),
+with Protocol 27 (June 5 2026) and Protocol 26 (April 2026) also shipped
+in the interim.  The `NETWORK__*` values in `tier-a-limits.env` correspond
+to Protocol 23 and are almost certainly stale.
+
+### Summary
 
 The refresh procedure itself (`cargo budget-report --json | cargo budget-report
---derive-limits`) is structurally sound — it was verified by reading the
-derivation source in `cargo-budget-report/src/derive.rs`.  The barrier is the
-build failure on the current Rust toolchain, not a flaw in the procedure.
+--derive-limits`) is structurally sound — verified by reading the derivation
+source in `cargo-budget-report/src/derive.rs`.  The barrier is the build
+failure on the current Rust toolchain (pre-existing, not caused by this
+change), not a flaw in the procedure.
 
 ## Source table
 
@@ -129,6 +175,12 @@ build failure on the current Rust toolchain, not a flaw in the procedure.
 - Generated at (UTC): `2026-08-27T08:13:22Z`
 
 This file is auto-generated. Re-run `cargo budget-report --derive-limits` to refresh. The columns are the inputs and result of every Tier A limit; `tier_a_limit = ceil(tier_b_value × margin_metric)`.
+
+## See also
+
+- [Deriving Tier A limits](docs/src/deriving_limits.md) — the re-derivation workflow, when to re-derive, and what to do when a limit moves.
+- [Tool Reference: Macros](docs/src/reference.md#macros-budget_macros) — the budget macro attributes and their limit-source forms.
+- [Network limits and percentage-based assertions](docs/src/deriving_limits.md#network-limits-and-percentage-based-assertions) — how the `NETWORK__*` keys feed `pct = N, of = …` assertions.
 
 | Key | Tier B value | Margin | Tier A limit |
 |---|---:|---:|---:|

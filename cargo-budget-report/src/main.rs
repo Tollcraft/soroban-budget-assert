@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
@@ -40,7 +41,6 @@ mod derive;
 mod error;
 mod json_output;
 mod network_guard;
-mod wasm_exports;
 mod watch;
 
 /// Maximum number of total deployment attempts (1 initial + 3 retries)
@@ -1363,10 +1363,15 @@ fn deploy_contract_with_retry(
 ) -> Result<String> {
     match transport.deploy_contract(wasm_path, source, network, package_name) {
         Ok(contract_id) => Ok(contract_id),
-        Err(err) => Err(Error::Message(format!(
-            "Failed to deploy {} after {} attempts. Ensure your source account is funded.\nLast error: {}",
-            package_name, retry_config.max_attempts, err
-        ))),
+        Err(err) => {
+            let last_error = err.to_string();
+            let class = deploy_diagnostics::classify(&last_error);
+            Err(Error::Message(format!(
+                "Failed to deploy {package_name} after {} attempts.\n{}\nLast error: {last_error}",
+                retry_config.max_attempts,
+                class.guidance(source, network),
+            )))
+        }
     }
 }
 
@@ -1784,14 +1789,14 @@ fn run() -> Result<i32> {
     let build_profile = args.profile.as_deref().unwrap_or("release");
 
     // All network interaction happens through the transport. Production runs
-    // use `LiveTransport` (which owns the retry policy); `ReplayTransport`
-    // (fed by `RecordingTransport`) is available to tests and a follow-up
-    // CLI flag.
-    let mut transport: TransportKind = if let Some(replay_path) = &args.replay {
-        TransportKind::Replay(
-            replay::ReplayTransport::load(Path::new(replay_path))
+    // use `LiveTransport` (which owns the retry policy); `--record` wraps it
+    // in a `RecordingTransport` that captures every response, and `--replay`
+    // serves responses back from a recorded fixture with no network at all.
+    let mut transport = if let Some(replay_path) = &args.replay {
+        TransportKind::Replay(replay::ReplayTransport::new(
+            fixture::FixtureFile::load(replay_path)
                 .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
-        )
+        ))
     } else if args.record.is_some() {
         TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
             retry_config,
@@ -1806,8 +1811,46 @@ fn run() -> Result<i32> {
         ))
     };
 
-    let mut deploy_cache = deploy_cache::DeployCache::load(std::path::Path::new("."));
-    let mut all_exported = HashSet::new();
+    // Issue #459: a determinate progress bar has to know the total work up
+    // front. Every contract is built and its exports scanned first, so the
+    // total (packages x their exported functions) is known before the first
+    // network call; deploy + simulate then run under one bar covering the
+    // whole run instead of just the short deploy step.
+    struct PreparedContract {
+        package_name: String,
+        wasm_path: std::path::PathBuf,
+        wasm_size: u32,
+        exported_fns: Vec<String>,
+    }
+
+    /// Clears the progress bar on drop so an early `return Err` never leaves
+    /// the animated bar dangling on screen.
+    struct ProgressGuard(Option<ProgressBar>);
+
+    impl ProgressGuard {
+        fn finish(mut self) {
+            if let Some(pb) = self.0.take() {
+                // A genuine terminal completion state - never an animation
+                // frame that flashes a checkmark mid-run.
+                pb.finish_with_message("✔ complete");
+            }
+        }
+    }
+
+    impl Drop for ProgressGuard {
+        fn drop(&mut self) {
+            if let Some(pb) = self.0.take() {
+                pb.finish_and_clear();
+            }
+        }
+    }
+
+    let mut prepared: Vec<PreparedContract> = Vec::new();
+
+    // Union of every function exported by every contract in the workspace.
+    // Used at the end of the run (issue #399) to validate that every function
+    // configured in `budget.toml` actually exists.
+    let mut all_exported: HashSet<String> = HashSet::new();
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -1816,7 +1859,7 @@ fn run() -> Result<i32> {
             .any(|target| target.crate_types.contains(&CrateType::CDyLib));
         if !is_cdylib {
             // A crate that pulls in soroban-sdk as a normal dependency but
-            // is not a cdylib produces no WASM at all — the most common
+            // is not a cdylib produces no WASM at all - the most common
             // "why isn't my contract showing up" misconfiguration. Say so
             // instead of skipping in silence.
             let looks_like_contract = package.dependencies.iter().any(|dep| {
@@ -1859,7 +1902,7 @@ fn run() -> Result<i32> {
             Some(target) => target.name.clone(),
             None => {
                 eprintln!(
-                    "Warning: no cdylib target found for package '{}' — skipping",
+                    "Warning: no cdylib target found for package '{}' - skipping",
                     package.name
                 );
                 continue;
@@ -1884,7 +1927,7 @@ fn run() -> Result<i32> {
 
         // Parse WASM exports and classify what came back. A cdylib that
         // produces nothing simulatable has three distinct causes, each with
-        // its own message — see `contract_exports`.
+        // its own message - see `contract_exports`.
         let wasm_bytes = std::fs::read(&wasm_path)?;
         let wasm_size: u32 = wasm_bytes.len().try_into().unwrap_or(u32::MAX);
 
@@ -1904,23 +1947,51 @@ fn run() -> Result<i32> {
         };
         all_exported.extend(exported_fns.iter().cloned());
 
-        let spinner = if args.quiet {
+        // Sort so progress, transcripts, and report ordering are stable
+        // across runs (HashSet iteration order is not).
+        let mut exported_fns: Vec<String> = exported_fns.into_iter().collect();
+        exported_fns.sort();
+
+        prepared.push(PreparedContract {
+            package_name: package.name.to_string(),
+            wasm_path: wasm_path.into_std_path_buf(),
+            wasm_size,
+            exported_fns,
+        });
+    }
+
+    // Issue #459: the exported-function list is fully known now, so the total
+    // workload (packages x their exported functions) drives a determinate bar
+    // that spans the deploy phase and the whole per-function simulate loop.
+    let total_functions: usize = prepared.iter().map(|c| c.exported_fns.len()).sum();
+
+    let progress_guard = {
+        let pb = if args.quiet || total_functions == 0 {
             None
         } else {
-            let pb = ProgressBar::new_spinner();
+            let pb = ProgressBar::new(total_functions as u64);
             pb.set_style(
-                ProgressStyle::default_spinner()
-                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✔"])
-                    .template("{spinner:.green} Deploying contract {msg}...")
-                    .unwrap(),
+                ProgressStyle::with_template(
+                    "{bar:40.cyan/blue} {percent:>3}% ({pos}/{len}) {msg} [{elapsed_precise}]",
+                )
+                .expect("hard-coded progress template is valid"),
             );
-            pb.set_message(package.name.to_string());
-            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            pb.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+            pb.set_message("Preparing run...");
+            pb.enable_steady_tick(Duration::from_millis(100));
             Some(pb)
         };
+        ProgressGuard(pb)
+    };
 
-        let wasm_std_path = wasm_path.as_std_path();
-        let wasm_sha = deploy_cache::wasm_hash(wasm_std_path)?;
+    let mut deploy_cache = deploy_cache::DeployCache::load(std::path::Path::new("."));
+
+    for contract in &prepared {
+        if let Some(pb) = progress_guard.0.as_ref() {
+            pb.set_message(format!("Deploying contract {}...", contract.package_name));
+        }
+
+        let wasm_sha = deploy_cache::wasm_hash(&contract.wasm_path)?;
         let cached_id = if args.no_deploy_cache {
             None
         } else {
@@ -1934,57 +2005,131 @@ fn run() -> Result<i32> {
             None => {
                 let id = deploy_contract_with_retry(
                     &mut transport,
-                    wasm_std_path,
+                    &contract.wasm_path,
                     &source,
                     &network,
-                    &package.name,
+                    &contract.package_name,
                     &retry_config,
                 )?;
-                deploy_cache.put(package.name.as_str(), &wasm_sha, &network, &source, &id);
+                deploy_cache.put(&contract.package_name, &wasm_sha, &network, &source, &id);
                 (id, false)
             }
         };
 
-        if let Some(spinner) = spinner {
-            spinner.finish_and_clear();
-        }
-
         if from_cache {
             eprintln!(
                 "Reusing cached deployment for '{}': {}",
-                package.name, contract_id
+                contract.package_name, contract_id
             );
         } else {
             eprintln!("Contract deployed at: {}", contract_id);
         }
 
-        for function in exported_fns {
-            if !args.quiet {
-                eprintln!("Simulating function '{}'...", function);
+        for function in &contract.exported_fns {
+            if let Some(pb) = progress_guard.0.as_ref() {
+                pb.set_message(format!(
+                    "Simulating {}::{}",
+                    contract.package_name, function
+                ));
             }
 
-            let func_config = toml_config.functions.get(&function);
+            let func_config = toml_config.functions.get(function);
             let func_args = match func_config {
-                Some(cfg) => arg_spec::render_args(&cfg.args, &function)
+                Some(cfg) => arg_spec::render_args(&cfg.args, function)
                     .map_err(|e| Error::Message(format!("{e:#}")))?,
                 None => Vec::new(),
             };
+            tasks.push((function.clone(), func_args));
+        }
 
-            match simulate_function(
+        let workers = concurrency.min(tasks.len()).max(1);
+        if !args.quiet && !tasks.is_empty() && workers > 1 {
+            eprintln!(
+                "Simulating {} functions concurrently (max {})...",
+                tasks.len(),
+                concurrency
+            );
+        }
+
+        // Replay and recording transports are single-use fixtures that
+        // cannot be shared across threads, so a replay/record run stays
+        // serialized through the shared transport. Live runs give each
+        // worker its own transport so retries and backoff sleeps happen
+        // inside the worker: a rate-limited request backs off without
+        // stalling unrelated concurrent requests.
+        let serialized_transport = args.replay.is_some() || args.record.is_some();
+        let transport_guard = Arc::new(std::sync::Mutex::new(&mut transport));
+        let collected = Arc::new(std::sync::Mutex::new(Vec::with_capacity(tasks.len())));
+        let next_task = std::sync::atomic::AtomicUsize::new(0);
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                let collected = Arc::clone(&collected);
+                let transport_guard = Arc::clone(&transport_guard);
+                let next_task = &next_task;
+                let contract_id = contract_id.clone();
+                let source = source.clone();
+                let network = network.clone();
+                let package_name = package.name.clone();
+                let net_override = net_override.clone();
+                let tasks = &tasks;
+                scope.spawn(move || loop {
+                    let index = next_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if index >= tasks.len() {
+                        break;
+                    }
+                    if workers == 1 && !args.quiet {
+                        eprintln!("Simulating function '{}'...", tasks[index].0);
+                    }
+                    let (function, func_args) = &tasks[index];
+                    let outcome = if serialized_transport {
+                        let mut guard = transport_guard.lock().unwrap();
+                        simulate_function(
+                            &mut **guard,
+                            &contract_id,
+                            &source,
+                            &network,
+                            function,
+                            func_args,
+                            &package_name,
+                        )
+                    } else {
+                        let mut worker_transport = live::LiveTransport::new(
+                            retry_config,
+                            args.quiet,
+                            net_override.clone(),
+                        );
+                        simulate_function(
+                            &mut worker_transport,
+                            &contract_id,
+                            &source,
+                            &network,
+                            function,
+                            func_args,
+                            &package_name,
+                        )
+                    };
+                    collected.lock().unwrap().push((index, outcome));
+                });
+            }
+        });
+
+            let outcome = simulate_function(
                 &mut transport,
                 &contract_id,
                 &source,
                 &network,
-                &function,
+                function,
                 &func_args,
-                &package.name,
-            )? {
+                &contract.package_name,
+            )?;
+
+            match outcome {
                 SimulationOutcome::Metrics {
                     instructions,
                     read_bytes,
                     write_bytes,
                     transaction_data_xdr,
-                } => {
+                }) => {
                     // Record the measurement for baseline/snapshot mode. This
                     // was previously only wired up in stale pre-refactor
                     // code; it belongs here in the success arm.
@@ -1994,7 +2139,7 @@ fn run() -> Result<i32> {
                         write_bytes: write_bytes as u64,
                     };
                     measurements
-                        .entry(package.name.as_str().to_string())
+                        .entry(contract.package_name.as_str().to_string())
                         .or_default()
                         .insert(function.clone(), measured);
 
@@ -2005,7 +2150,7 @@ fn run() -> Result<i32> {
                         ("CPU Instructions", instructions),
                         ("Read Bytes", read_bytes),
                         ("Write Bytes", write_bytes),
-                        ("WASM Bytes", wasm_size),
+                        ("WASM Bytes", contract.wasm_size),
                     ] {
                         let limit = func_config.and_then(|cfg| limit_for_metric(cfg, metric));
                         let (entry_limit, pass) = evaluate_check(value, limit);
@@ -2013,7 +2158,7 @@ fn run() -> Result<i32> {
                             checks_failed = true;
                         }
                         reports.push(CostReport {
-                            package: package.name.to_string(),
+                            package: contract.package_name.clone(),
                             function: function.clone(),
                             metric,
                             value: Some(value),
@@ -2022,7 +2167,7 @@ fn run() -> Result<i32> {
                         });
                     }
 
-                    // ── Optional Stellar CLI validation ──────────────
+                    // -- Optional Stellar CLI validation --
                     // `--validate` shells out to `stellar xdr decode`, which
                     // replay mode cannot assume exists; skip it there.
                     if args.validate && args.replay.is_none() {
@@ -2042,7 +2187,7 @@ fn run() -> Result<i32> {
                                 validation_failed = true;
                                 eprintln!(
                                     "  ✗ VALIDATION FAILED for '{}' in package '{}':",
-                                    function, package.name
+                                    function, contract.package_name
                                 );
                                 for d in &diagnostics {
                                     eprintln!("    {}", d);
@@ -2059,7 +2204,7 @@ fn run() -> Result<i32> {
                         }
                     }
                 }
-                SimulationOutcome::Failed(failure) => {
+                Ok(SimulationOutcome::Failed(failure)) => {
                     has_errors = true;
                     if !args.quiet {
                         match &failure {
@@ -2088,6 +2233,24 @@ fn run() -> Result<i32> {
                         checks_failed = true;
                         emit_check_failure_entries(
                             &mut reports,
+                            &contract.package_name,
+                            function,
+                            function_config,
+                        );
+                    }
+                }
+                Err(err) => {
+                    // A persistent transport failure for one function (retries
+                    // exhausted) must not abandon the rest of the run: record
+                    // it as an infrastructure failure and keep going.
+                    has_errors = true;
+                    if !args.quiet {
+                        eprintln!("Warning: Simulation failed for {}: {:#}", function, err);
+                    }
+                    if let (true, Some(function_config)) = (args.check, func_config) {
+                        checks_failed = true;
+                        emit_check_failure_entries(
+                            &mut reports,
                             &package.name,
                             &function,
                             function_config,
@@ -2095,8 +2258,18 @@ fn run() -> Result<i32> {
                     }
                 }
             }
+
+            // Advance one unit per completed simulation, not per loop index:
+            // this stays correct if the simulate loop later runs concurrently.
+            if let Some(pb) = progress_guard.0.as_ref() {
+                pb.inc(1);
+            }
         }
     }
+
+    // Finalize the progress bar before any report output is written; the
+    // guard clears it if we return early instead.
+    progress_guard.finish();
 
     // Persist the deploy cache (#79). A write failure loses the warm
     // entries for next run but must not fail a completed measurement run.
@@ -3110,6 +3283,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         assert_eq!(Mode::from_args(&args), Mode::Report);
     }
@@ -3152,6 +3326,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         assert_eq!(
             Mode::from_args(&record),
@@ -3194,6 +3369,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         assert_eq!(
             Mode::from_args(&check),
@@ -3239,6 +3415,7 @@ mod tests {
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
             watch: false,
+            concurrency: crate::cli::DEFAULT_CONCURRENCY,
         };
         match Mode::from_args(&args) {
             Mode::Derive(out, _) => assert_eq!(out, PathBuf::from("tier-a-limits.env")),

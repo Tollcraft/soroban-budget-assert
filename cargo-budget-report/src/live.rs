@@ -5,6 +5,22 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Default Soroban RPC endpoint used for `simulateTransaction` when no
+/// `--rpc-url` override is supplied.
+pub const DEFAULT_RPC_URL: &str = "https://soroban-testnet.stellar.org:443";
+
+/// A custom network target for local / standalone RPC nodes (#49).
+///
+/// When present, `simulateTransaction` is POSTed to `rpc_url` instead of the
+/// public testnet endpoint, and the `stellar` deploy / invoke-build calls are
+/// pointed at it with `--rpc-url` + `--network-passphrase` in place of
+/// `--network <alias>`.
+#[derive(Debug, Clone)]
+pub struct NetworkOverride {
+    pub rpc_url: String,
+    pub network_passphrase: String,
+}
+
 /// The production transport: runs `stellar` and `curl` against the real
 /// network.
 ///
@@ -48,11 +64,25 @@ impl LiveTransport {
         }
     }
 
-    pub fn rpc_url(&self) -> &str {
+    /// `["--rpc-url", url, "--network-passphrase", phrase]` for a custom
+    /// network, or `["--network", alias]` for a built-in one.
+    fn network_cli_args<'a>(&'a self, network: &'a str) -> Vec<&'a str> {
         match &self.net_override {
-            Some(o) => &o.rpc_url,
-            None => "https://soroban-testnet.stellar.org:443",
+            Some(o) => vec![
+                "--rpc-url",
+                &o.rpc_url,
+                "--network-passphrase",
+                &o.network_passphrase,
+            ],
+            None => vec!["--network", network],
         }
+    }
+
+    fn rpc_url(&self) -> &str {
+        self.net_override
+            .as_ref()
+            .map(|o| o.rpc_url.as_str())
+            .unwrap_or(DEFAULT_RPC_URL)
     }
 }
 
@@ -68,32 +98,35 @@ impl Transport for LiveTransport {
             .to_str()
             .context("wasm path is not valid UTF-8")?
             .to_string();
+        let net_args: Vec<String> = self
+            .network_cli_args(network)
+            .into_iter()
+            .map(String::from)
+            .collect();
 
         crate::run_with_retry(
             &self.retry_config,
             self.quiet,
             "Deploy",
             || {
-                let output = Command::new("stellar")
-                    .args([
-                        "contract",
-                        "deploy",
-                        "--wasm",
-                        &wasm_path_str,
-                        "--source",
-                        source,
-                        "--network",
-                        network,
-                    ])
-                    .output()
-                    .map_err(|e| {
-                        // A missing/unspawnable `stellar` binary is an
-                        // environment problem, not something retry fixes.
-                        crate::RetryFailure::Permanent(format!(
-                            "failed to execute stellar-cli deploy: {}",
-                            e
-                        ))
-                    })?;
+                let mut cmd = Command::new("stellar");
+                cmd.args([
+                    "contract",
+                    "deploy",
+                    "--wasm",
+                    &wasm_path_str,
+                    "--source",
+                    source,
+                ]);
+                cmd.args(&net_args);
+                let output = cmd.output().map_err(|e| {
+                    // A missing/unspawnable `stellar` binary is an
+                    // environment problem, not something retry fixes.
+                    crate::RetryFailure::Permanent(format!(
+                        "failed to execute stellar-cli deploy: {}",
+                        e
+                    ))
+                })?;
 
                 if output.status.success() {
                     return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
@@ -189,7 +222,7 @@ impl Transport for LiveTransport {
                         "Content-Type: application/json",
                         "-d",
                         "@-",
-                        "https://soroban-testnet.stellar.org:443",
+                        endpoint.as_str(),
                     ])
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
