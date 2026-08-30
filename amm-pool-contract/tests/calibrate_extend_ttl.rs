@@ -8,21 +8,24 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo build --target wasm32v1-none --release -p amm-pool-contract
 //! cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture
 //! ```
+//!
+//! The WASM artifact is built automatically by the shared test helper when
+//! it is missing or stale (issue #499), so no manual `cargo build` is needed.
 //!
 //! The network figure requires a separate `cargo-budget-report` run on Soroban
 //! testnet against the same WASM.
 
 #![cfg(not(feature = "sdk20"))]
 
+mod common;
+
 use amm_pool_contract::ConstantProductPoolClient;
 use soroban_sdk::Env;
 
 fn measure_extend_ttl(env: &Env) {
-    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    let wasm = common::load_contract_wasm("wasm32v1-none");
     // AUDIT (Issue #92): `register_contract_wasm` is deprecated but remains the
     // only API for registering raw WASM bytes in soroban-sdk 22.x.
     #[allow(deprecated)]

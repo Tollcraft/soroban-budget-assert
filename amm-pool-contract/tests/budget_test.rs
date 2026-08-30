@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod common;
+
 use std::sync::{Mutex, PoisonError};
 
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient};
@@ -41,8 +43,7 @@ impl Drop for BudgetJsonGuard {
 const TIER_A_LIMITS_FILE: &str = "../tier-a-limits.env";
 
 fn setup_wasm(env: &Env) -> (ConstantProductPoolClient<'_>, Address) {
-    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    let wasm = common::load_contract_wasm("wasm32v1-none");
     // AUDIT (Issue #92): `soroban_sdk::Env::register_contract_wasm` is deprecated in soroban-sdk 22.x
     // in favor of `Env::register`. However, `Env::register` only registers Rust contract types for
     // in-memory host execution, whereas `register_contract_wasm` remains the sole API in soroban-sdk 22.x
@@ -130,8 +131,7 @@ fn test_budget_wasm() {
 /// sizes in WASM mode, for gap-vs-input-size analysis.
 #[test]
 fn test_measure_gap_vs_input_size() {
-    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-    let wasm = std::fs::read(wasm_path).expect("WASM file not found");
+    let wasm = common::load_contract_wasm("wasm32v1-none");
     let sizes = [1000, 10000, 50000, 100000];
 
     for &n in &sizes {
@@ -570,13 +570,14 @@ fn test_read_bytes_budget_exceeds_limit() {
 /// # Running
 ///
 /// ```bash
-/// cargo build --target wasm32v1-none --release -p amm-pool-contract
 /// cargo test -p amm-pool-contract test_storage_read_wasm_local -- --nocapture
 /// ```
+///
+/// The WASM artifact is built automatically by the shared test helper when
+/// it is missing or stale (issue #499), so no manual `cargo build` is needed.
 #[test]
 fn test_storage_read_wasm_local() {
-    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    let wasm = common::load_contract_wasm("wasm32v1-none");
 
     let env = Env::default();
     #[allow(deprecated)]

@@ -37,11 +37,15 @@ jobs:
       # to the reinstated CLI/identity steps and un-comment the budget-report
       # invocations below, so fork PRs still run Tier A only.
 
+      # Warm-up build only: the WASM-dependent tests build the artifact
+      # themselves on demand (amm-pool-contract/tests/common, issue #499), so
+      # this step is redundant but makes contract compile errors surface
+      # earlier and warms the build cache for the test step.
       - name: Build Contracts
         run: cargo build -p amm-pool-contract --release --target wasm32v1-none
 
-      - name: Run Budget Macros Test (Tier A)
-        run: cargo test
+      - name: Run Workspace Tests (Tier A)
+        run: cargo test --workspace
 
       - name: Run Budget Report (Tier B)
         run: |

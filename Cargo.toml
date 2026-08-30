@@ -4,6 +4,7 @@ members = [
     "budget-macros",
     "cargo-budget-report",
     "amm-pool-contract",
+    "host-function-contract",
 ]
 resolver = "2"
 

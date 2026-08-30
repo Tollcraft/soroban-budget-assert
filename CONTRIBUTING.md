@@ -24,7 +24,7 @@ First off, thank you for considering contributing to `soroban-budget-assert`!
 
 ### All platforms
 - Install Rust and the Soroban CLI. The repository includes a `rust-toolchain.toml` file, so `rustup` will automatically install and use the correct toolchain and target when you run cargo commands.
-- Run `cargo test` in the workspace root to run macro tests.
+- Run `cargo test --workspace` to run the full test suite, including the WASM-registered budget assertion tests. Those tests build the `amm-pool-contract` WASM themselves on first run — and rebuild it whenever the contract source is newer than the artifact — so no manual `cargo build` step is required before testing. The artifact path honours `CARGO_TARGET_DIR` when you have it set, and falls back to the workspace `target/` directory otherwise.
 - Run `cargo run -p cargo-budget-report -- budget-report` (or `cargo build`) to test the CLI locally.
 
 ## Documentation
@@ -108,9 +108,8 @@ Create and fund a testnet identity:
 stellar keys generate alice --network testnet --fund
 ```
 
-Build the WASM contract and run tests:
+Run the tests. The contract WASM is built automatically when missing or stale, so no manual `cargo build` step is needed:
 ```powershell
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
 cargo test --workspace
 ```
 
@@ -139,6 +138,11 @@ Before submitting a pull request, please ensure our quality standards by running
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
+
+`cargo test --workspace` works on a clean checkout: the WASM-dependent tests
+build the contract artifact on demand via the shared helper in
+`amm-pool-contract/tests/common/` (issue #499), so a separate manual
+`cargo build` is never required before testing.
 
 Please follow the styling and architectural patterns already used in the codebase.
 

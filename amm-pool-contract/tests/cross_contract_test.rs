@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+mod common;
+
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient, HelperContract};
 use budget_macros::budget_cpu_lt;
 use soroban_sdk::{Address, Env};
@@ -25,8 +27,7 @@ fn test_cross_contract_raw_rust() {
 fn test_cross_contract_wasm() {
     let env = Env::default();
 
-    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    let wasm = common::load_contract_wasm("wasm32v1-none");
     #[allow(deprecated)]
     let helper_address: Address = env.register_contract_wasm(None, wasm.as_slice());
     #[allow(deprecated)]
@@ -63,8 +64,7 @@ fn test_cross_contract_wasm() {
 fn test_cross_contract_macro_gated() {
     let env = Env::default();
 
-    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    let wasm = common::load_contract_wasm("wasm32v1-none");
     #[allow(deprecated)]
     let helper_address: Address = env.register_contract_wasm(None, wasm.as_slice());
     #[allow(deprecated)]

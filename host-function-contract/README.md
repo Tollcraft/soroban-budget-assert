@@ -37,3 +37,19 @@ The resulting delta is:
 
 The network figure is therefore 20.0% higher than the local WASM estimate for
 this host-function-call-heavy operation.
+
+## Testing
+
+The fixture's integration tests live in `tests/` and assert that every
+exported function does what its name says — both against the contract
+registered as native Rust and against the contract registered from its built
+`wasm32v1-none` artifact, so the fixture is exercised at the same WASM level
+the rest of the workspace uses for budget measurement.
+
+```bash
+cargo test --workspace
+```
+
+The WASM artifact is built automatically by the test helper when it is
+missing or stale, so the tests run with no extra setup and no network access
+(issue #480).

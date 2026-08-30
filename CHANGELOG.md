@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Removed
+
+- **Placeholder page `docs/src/site/index.html` (issue #509).** The nineteen-line placeholder announcing that the landing page (issue #30) and the cost-over-time dashboard (issue #31) "will replace" it is removed; both shipped long ago as `site/index.html` and `site/dashboard.html`. Nothing referenced the file — `.gitbook.yaml`, `docs/src/SUMMARY.md`, the Pages workflows (`docs.yml` / `deploy-site.yml`), and `site/README.md` were all checked — so `docs/src/` now contains only files that are part of the published documentation.
+
+### Added
+
+- **Tests for the `host-function-contract` measurement fixture (issue #480).** The fixture is now a workspace member with integration tests asserting that its exported function `repeated_sequence` does what its name says — it returns the current ledger sequence for any positive iteration count, returns `0` for zero iterations, and is deterministic across iteration counts. Each assertion runs both against the contract registered as native Rust and against the contract registered from its built `wasm32v1-none` WASM, so the fixture is exercised at the same WASM level the rest of the workspace uses for budget measurement. The tests build the WASM artifact on demand and run as part of `cargo test --workspace` with no extra setup and no network access.
+
 ### Fixed
+
+- **`cargo test --workspace` now passes on a clean checkout (issue #499).** The six WASM-dependent test files in `amm-pool-contract/tests/` previously read a pre-built `amm_pool_contract.wasm` from a hardcoded relative path and failed with "WASM file not found" on a fresh clone. All nine call sites now go through one shared helper (`amm-pool-contract/tests/common/mod.rs`) that resolves the artifact path from `CARGO_TARGET_DIR` when it is set (workspace `target/` otherwise) and builds the artifact on demand when it is missing or stale, so no manual `cargo build` precedes testing. `CONTRIBUTING.md` documents `cargo test --workspace` as a self-sufficient gate, and the budget CI job runs the same command.
 
 - **Pre-commit hook installer parity between `scripts/install-hooks.sh` and `scripts/install-hooks.ps1` (issue #476).** Both installers now validate that `scripts/pre-commit` exists before copying it (a clear error instead of a raw `cp` / `Copy-Item` failure), create the `.git/hooks` directory when it is missing instead of failing, and print the same success message describing what the hook checks and how to recover from a blocked commit. `install-hooks.ps1` also prints an explicit note that the hook is a bash script executed via the bash bundled with Git for Windows, so it runs correctly from PowerShell without a separate Git Bash terminal. `cargo-budget-report/tests/pre_commit_hook.rs` gains coverage for the missing-hooks-directory, double-run, subdirectory, and missing-source states on the shell path, plus a PowerShell-path test that runs when `pwsh` / `powershell` is available on `PATH` and otherwise reports that it was skipped.
 
