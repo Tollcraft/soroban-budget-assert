@@ -668,7 +668,12 @@ fn is_budget_attr(attr: &Attribute) -> bool {
 /// byte-identical to before. On a method reached through a budget-annotated
 /// `impl` block it is the method name, inserted as `` [fn `name`] `` so a
 /// failing block names the specific offender.
-fn assert_messages(metric_phrase: &str, tail: &str, limit: &BudgetLimit, fn_label: &str) -> (String, String) {
+fn assert_messages(
+    metric_phrase: &str,
+    tail: &str,
+    limit: &BudgetLimit,
+    fn_label: &str,
+) -> (String, String) {
     let ctx = if fn_label.is_empty() {
         String::new()
     } else {
@@ -1286,6 +1291,7 @@ fn generate_bytes_proxy_assert(
     let (plain, marginal) = assert_messages(
         metric_phrase,
         "local estimate, underestimates real network cost",
+        &spec.limit,
         fn_label,
     );
     let assert_tokens = generate_metric_assert(
