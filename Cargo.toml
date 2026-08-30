@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "budget-core",
     "budget-macros",
     "cargo-budget-report",
     "amm-pool-contract",
@@ -38,11 +37,12 @@ codegen-units = 1
 lto = true
 
 # The workspace release profile above targets small WASM contracts. The CLI
-# binary needs different trade-offs: faster startup, better diagnostics, and
-# a stack rather than abort-on-panic so backtraces work. (#500)
+# binary needs different trade-offs: faster startup and better diagnostics.
+# NOTE: `panic` and `lto` cannot be set in package-specific profile overrides
+# (Cargo rejects them); they apply to the entire linked binary. To override
+# them for the CLI, build with CARGO_PROFILE_RELEASE_PANIC=unwind or use a
+# dedicated profile. (#500)
 [profile.release.package.cargo-budget-report]
 opt-level = 3
-panic = "unwind"
-lto = "thin"
 codegen-units = 16
 
