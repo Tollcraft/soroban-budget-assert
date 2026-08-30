@@ -1,6 +1,11 @@
 #![no_std]
+// soroban-sdk 27 deprecates `Events::publish` in favour of the `#[contractevent]`
+// macro. This is a fixture/benchmark contract and the event payloads are not
+// asserted on anywhere; migrating the event model is out of scope for the SDK
+// bump (issue #382). Suppress the deprecation rather than half-migrate it.
+#![allow(deprecated)]
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, vec, Address, Bytes, Env, Symbol, Val, Vec,
+    contract, contractimpl, symbol_short, token, vec, Address, Bytes, BytesN, Env, Symbol, Val, Vec,
 };
 
 const RESERVE_A: Symbol = symbol_short!("resA");
@@ -9,6 +14,12 @@ const TOTAL_SHARES: Symbol = symbol_short!("shares");
 const BAL_A: Symbol = symbol_short!("balA");
 const BAL_B: Symbol = symbol_short!("balB");
 const LP_BAL: Symbol = symbol_short!("lpBl");
+
+/// Upper bound on `n` for the `bytes_*_bench` fixtures below. Backs a
+/// fixed-size stack array so the buffer can be built with a single bulk
+/// `Bytes::from_slice` call in this `#![no_std]` crate (no heap allocator
+/// available for a runtime-sized `Vec<u8>`).
+const BYTES_BENCH_MAX: usize = 65_536;
 
 #[contract]
 pub struct HelperContract;
@@ -25,6 +36,36 @@ impl HelperContract {
     /// budget measurement.
     pub fn multiply(_env: Env, a: u32, b: u32) -> u32 {
         a.wrapping_mul(b)
+    }
+}
+
+#[contract]
+pub struct RelayContract;
+
+/// Cross-contract call-depth fixture (issue #416).
+///
+/// `do_cross_contract_work` above measures the single-hop case. `RelayContract`
+/// measures what happens deeper: register N instances of it, pass instances
+/// 2..=N as `chain` to instance 1, and each `relay` call invokes the next —
+/// so a call to instance 1 reaches call depth N. Each hop carries its own
+/// dispatch and Val-conversion overhead and its own auth context; whether that
+/// accumulates linearly is the finding.
+///
+/// A new fixture contract rather than a change to `cross_contract_test.rs`,
+/// which other work depends on.
+#[contractimpl]
+impl RelayContract {
+    /// Returns `acc` when `chain` is empty; otherwise pops the head, invokes
+    /// `head.relay(tail, acc + 1)`, and returns its result. The returned depth
+    /// equals the number of hops, a deterministic cross-check for the test.
+    pub fn relay(env: Env, chain: Vec<Address>, acc: u32) -> u32 {
+        match chain.first() {
+            None => acc,
+            Some(next) => {
+                let tail = chain.slice(1..chain.len());
+                RelayContractClient::new(&env, &next).relay(&tail, &(acc + 1))
+            }
+        }
     }
 }
 
@@ -237,6 +278,20 @@ impl ConstantProductPool {
         env.storage().instance().extend_ttl(threshold, extend_to);
     }
 
+    /// Extends the TTL of a single persistent storage entry so it is not
+    /// evicted from the ledger before `extend_to` ledgers from now,
+    /// provided the current TTL is below `threshold` ledgers.
+    ///
+    /// Writes a dummy value on first call so the key exists, then extends.
+    /// Isolated for measurement — same pattern as `extend_instance_ttl`.
+    pub fn extend_persistent_ttl(env: Env, threshold: u32, extend_to: u32) {
+        let key = symbol_short!("pttl");
+        env.storage().persistent().set(&key, &0i128);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, threshold, extend_to);
+    }
+
     pub fn do_expensive_work(env: Env, n: u32) -> u32 {
         let mut result: u32 = 0;
 
@@ -384,6 +439,52 @@ impl ConstantProductPool {
         }
         sum
     }
+    /// Builds an `n`-byte buffer by appending one byte at a time via
+    /// `push_back`, isolating the append-in-a-loop cost pattern the
+    /// memory-category lints warn about as potentially quadratic. No
+    /// storage or authorization side-effects, so the measured cost is
+    /// dominated by the repeated append itself.
+    pub fn bytes_append_bench(env: Env, n: u32) -> u32 {
+        let mut b = Bytes::new(&env);
+        for i in 0..n {
+            b.push_back((i % 256) as u8);
+        }
+        let len = b.len();
+        drop(b);
+        len
+    }
+
+    /// Builds an `n`-byte buffer with a single bulk `Bytes::from_slice`
+    /// call (not a `push_back` loop, so the append-in-a-loop cost above
+    /// doesn't leak into this measurement), then slices out its first
+    /// half with `Bytes::slice`.
+    pub fn bytes_slice_bench(env: Env, n: u32) -> u32 {
+        let data = [0u8; BYTES_BENCH_MAX];
+        let n = n as usize;
+        let b = Bytes::from_slice(&env, &data[..n]);
+        let sliced = b.slice(0..(n / 2) as u32);
+        let len = sliced.len();
+        drop(sliced);
+        drop(b);
+        len
+    }
+
+    /// Builds two `n`-byte buffers with bulk `Bytes::from_slice` calls,
+    /// then joins them with `Bytes::append`, isolating the cost of a
+    /// single bulk concatenation from both the append-loop and slice
+    /// measurements above.
+    pub fn bytes_concat_bench(env: Env, n: u32) -> u32 {
+        let data = [0u8; BYTES_BENCH_MAX];
+        let n = n as usize;
+        let mut a = Bytes::from_slice(&env, &data[..n]);
+        let b = Bytes::from_slice(&env, &data[..n]);
+        a.append(&b);
+        let len = a.len();
+        drop(a);
+        drop(b);
+        len
+    }
+
     /// Publishes `n` events, exercising the event-emission cost path.
     /// Each event publishes a two-element topic tuple `("ev",)` and a
     /// single `u32` value as the body — the smallest plausible event
@@ -395,6 +496,110 @@ impl ConstantProductPool {
     pub fn do_event_heavy_work(env: Env, n: u32) {
         for i in 0..n {
             env.events().publish(("ev",), i);
+        }
+    }
+
+    // ── Cryptographic host functions (issue #414) ──────────────────────────
+    //
+    // The local estimate has particular reason to mislead here: locally these
+    // run as native Rust, on the network they run through the host's metered
+    // implementation. Each function below isolates one crypto host call so the
+    // measured budget is dominated by that call rather than surrounding work.
+    //
+    // `Crypto` (the non-hazmat surface) exposes exactly these:
+    //   • sha256          — measured, `hash_sha256`
+    //   • keccak256       — measured, `hash_keccak256`
+    //   • ed25519_verify  — measured, `verify_ed25519`
+    //   • bls12_381()     — NOT measured: a whole sub-module (G1/G2 add, mul,
+    //     msm, pairing, map-to-curve, hash-to-curve …); its own gap series.
+    // `CryptoHazmat` additionally exposes `secp256k1_recover` and
+    // `secp256r1_verify`, both gated behind the `hazmat` SDK feature and so
+    // unavailable to a plain contract build — also out of scope here.
+    // A new hashing or signature primitive added to `Crypto` is a visible gap:
+    // it will have no fixture and no MEASUREMENTS.md row.
+
+    /// SHA-256 of `data`. Fixture for the cryptographic-operations cost-gap
+    /// series (#414). Call it with three or more input sizes to see whether
+    /// the gap scales with message length.
+    pub fn hash_sha256(env: Env, data: Bytes) -> BytesN<32> {
+        env.crypto().sha256(&data).to_bytes()
+    }
+
+    /// Keccak-256 of `data`. Companion to [`Self::hash_sha256`] (#414).
+    pub fn hash_keccak256(env: Env, data: Bytes) -> BytesN<32> {
+        env.crypto().keccak256(&data).to_bytes()
+    }
+
+    /// One `ed25519_verify` host call over a fixed-size input.
+    ///
+    /// The host performs the full scalar multiplication before it can accept
+    /// or reject, so the metered cost is representative whether or not the
+    /// signature validates — the measurement test invokes this through `try_`
+    /// so an arbitrary 64-byte value does not abort the run. Fixture for #414.
+    pub fn verify_ed25519(env: Env, public_key: BytesN<32>, message: Bytes, signature: BytesN<64>) {
+        env.crypto()
+            .ed25519_verify(&public_key, &message, &signature);
+    }
+
+    // ── Token transfers (issue #415) ──────────────────────────────────────
+
+    /// Transfers `amount` of `token` from this contract to `to`, `count` times
+    /// in a loop.
+    ///
+    /// A transfer is a compound operation — a cross-contract call into the
+    /// token contract plus storage writes on both sides — so its cost cannot
+    /// be inferred by adding up parts and is measured directly. Fixture for
+    /// the token-transfer cost-gap series (#415); the measurement test uses
+    /// the SDK's built-in Stellar Asset Contract as `token` and mints this
+    /// contract a balance first. `count` in {1, N, M} shows whether per-
+    /// transfer cost is constant or varies with batch size.
+    pub fn do_token_transfers(env: Env, token: Address, to: Address, amount: i128, count: u32) {
+        let client = token::Client::new(&env, &token);
+        let from = env.current_contract_address();
+        for _ in 0..count {
+            client.transfer(&from, &to, &amount);
+        }
+    }
+
+    /// Writes `n` entries to persistent storage, isolating the storage-write
+    /// cost for persistent-durability entries. Each key is a unique composite
+    /// `(symbol, u32)` and each value is a small fixed-size `i128`.
+    ///
+    /// No compute, event, or authorization work is mixed in, so the measured
+    /// cost is dominated by the storage write operations.
+    pub fn do_write_persistent(env: Env, n: u32) {
+        for i in 0..n {
+            env.storage()
+                .persistent()
+                .set(&(symbol_short!("wp"), i), &(i as i128));
+        }
+    }
+
+    /// Writes `n` entries to temporary storage, isolating the storage-write
+    /// cost for temporary-durability entries. Each key is a unique composite
+    /// `(symbol, u32)` and each value is a small fixed-size `i128`.
+    ///
+    /// No compute, event, or authorization work is mixed in, so the measured
+    /// cost is dominated by the storage write operations.
+    pub fn do_write_temporary(env: Env, n: u32) {
+        for i in 0..n {
+            env.storage()
+                .temporary()
+                .set(&(symbol_short!("wt"), i), &(i as i128));
+        }
+    }
+
+    /// Writes `n` entries to instance storage, isolating the storage-write
+    /// cost for instance-durability entries. Each key is a unique composite
+    /// `(symbol, u32)` and each value is a small fixed-size `i128`.
+    ///
+    /// No compute, event, or authorization work is mixed in, so the measured
+    /// cost is dominated by the storage write operations.
+    pub fn do_write_instance(env: Env, n: u32) {
+        for i in 0..n {
+            env.storage()
+                .instance()
+                .set(&(symbol_short!("wi"), i), &(i as i128));
         }
     }
 }

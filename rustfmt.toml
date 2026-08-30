@@ -2,30 +2,64 @@
 #
 # `CONTRIBUTING.md` makes `cargo fmt --all -- --check` a merge gate, so the
 # formatting rules have to be a property of the repository rather than of
-# whichever toolchain a contributor happens to have installed. Every option
-# below is stable on the release channel and records the formatting the
-# codebase already uses -- adding this file reformats nothing.
+# whichever toolchain a contributor happens to have installed.
 #
-# `style_edition` is the important one: it freezes the formatting rules
-# themselves, so a newer rustfmt cannot change the expected output from under
-# an unchanged source tree.
+# Note on Toolchain Compatibility:
+# This repository pins stable 1.91.0 in `rust-toolchain.toml`. Standard options
+# below enforce the workspace style on stable. Options marked as [Nightly-only]
+# require a nightly rustfmt toolchain and are silently ignored by `cargo fmt`
+# on stable Rust 1.91.0.
 
+# Why: Freezes formatting style edition to 2021 rules so future rustfmt releases do not alter output on unchanged source.
+# Note: [Nightly-only / Inert on stable 1.91.0] Requires nightly rustfmt; ignored on stable 1.91.0.
 style_edition = "2021"
+
+# Why: Specifies Rust 2021 edition syntax parsing rules.
 edition = "2021"
 
+# Why: Limits line width to 100 characters for side-by-side diff scannability.
 max_width = 100
+
+# Why: Uses spaces instead of tab characters to ensure consistent rendering across all text editors.
 hard_tabs = false
+
+# Why: Sets standard Rust 4-space indentation level.
 tab_spaces = 4
+
+# Why: Enforces Unix-style line feeds (`\n`) to prevent Windows CRLF git line-ending churn.
 newline_style = "Unix"
+
+# Why: Uses standard rustfmt width heuristics for item formatting decisions.
 use_small_heuristics = "Default"
 
+# Why: Alphabetizes import statements to eliminate merge conflict noise.
 reorder_imports = true
+
+# Why: Sorts module declarations alphabetically in crate roots.
 reorder_modules = true
+
+# Why: Consolidates multiple `#[derive(...)]` attributes into a single derive list.
 merge_derives = true
+
+# Why: Removes unnecessary extra nested parentheses in expressions.
 remove_nested_parens = true
 
+# Why: Requires explicit ABI strings (e.g. `extern "C"`) in extern declarations.
+# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
 force_explicit_abi = true
+
+# Why: Formats function parameters vertically when a signature spans multiple lines.
+# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
 fn_params_layout = "Tall"
+
+# Why: Omits leading pipe characters in match arm pattern choices (`A | B =>` rather than `| A | B =>`).
+# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
 match_arm_leading_pipes = "Never"
+
+# Why: Prefers explicit field initialization (`Point { x: x, y: y }`) rather than shorthand syntax.
+# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
 use_field_init_shorthand = false
+
+# Why: Controls try expression shorthand formatting.
+# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
 use_try_shorthand = false

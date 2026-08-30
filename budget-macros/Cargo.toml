@@ -2,6 +2,10 @@
 name = "budget-macros"
 version.workspace = true
 edition.workspace = true
+# NOTE: This crate is test-only. It is a dev-dependency of amm-pool-contract
+# and is used exclusively in #[cfg(test)] code. Generated code references
+# std (env::var, fs::read_to_string), which is fine in test binaries but
+# means this crate must NOT be used as a dependency in production contract code.
 description = "Proc-macro crate providing budget assertion attributes for Soroban contract tests."
 license.workspace = true
 repository.workspace = true
@@ -13,9 +17,14 @@ categories = ["development-tools::testing", "development-tools::procedural-macro
 proc-macro = true
 
 [dependencies]
-syn = { version = "3.0", features = ["full", "extra-traits"] }
+syn = { version = "3.0", features = ["full", "extra-traits", "visit-mut"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 
 [dev-dependencies]
 trybuild = "1.0"
+# Property tests for the four hand-rolled attribute `Parse` impls (#71).
+# `proptest` (over `quickcheck`) for its shrinking and persisted-regression
+# file, which the issue asks for: a shrunk counterexample stays tested after
+# the run that found it.
+proptest = "1.5"

@@ -1,6 +1,28 @@
+// @measure local:sdk20  # discovered by scripts/regenerate-measurements.sh
 #![cfg(feature = "sdk20")]
 
-mod common;
+//! Calibration test for cost estimation gap measurement (Soroban SDK 20.x).
+//!
+//! This harness measures the local CPU and memory cost estimates for the
+//! synthetic `do_expensive_work` operation at a 10k loop depth under SDK 20.x,
+//! establishing a local-vs-network baseline gap. The figures are used to
+//! calibrate real contract costs against the empirical local estimates.
+//!
+//! # Usage
+//!
+//! This test is marked `#[ignore]` and excluded from the default test suite.
+//! To run it deliberately:
+//!
+//! ```bash
+//! cargo build --target wasm32v1-none --release -p amm-pool-contract --features sdk20
+//! cargo test -p amm-pool-contract --test calibrate_gap_sdk20 --features sdk20 -- --ignored --nocapture
+//! ```
+//!
+//! # Output
+//!
+//! The test prints `CALIBRATE_CPU=<value>` and `CALIBRATE_MEM=<value>` to stdout.
+//! These values are manually transcribed into `MEASUREMENTS.md` under the
+//! "Local Cost Estimates (SDK 20.x)" section.
 
 #[cfg(test)]
 mod calibrate_gap_sdk20 {
@@ -8,9 +30,9 @@ mod calibrate_gap_sdk20 {
     use soroban_sdk::Env;
 
     fn measure_do_expensive_work(env: &Env) {
-        let wasm = crate::common::load_contract_wasm("wasm32-unknown-unknown");
-        #[allow(deprecated)]
-        let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+        let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
+        let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+        let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(env, &contract_id);
 
         env.mock_all_auths();
@@ -28,6 +50,7 @@ mod calibrate_gap_sdk20 {
     }
 
     #[test]
+    #[ignore]
     fn calibrate_gap() {
         let env = Env::default();
         measure_do_expensive_work(&env);

@@ -12,6 +12,10 @@ set -euo pipefail
 # survives across separate process invocations.
 FAIL_COUNT="${MOCK_STELLAR_FAIL_COUNT:-0}"
 FAIL_COUNT_FILE="${MOCK_STELLAR_FAIL_COUNT_FILE:-}"
+# Set MOCK_STELLAR_DEPLOY_ERROR to control the stderr text a failed `deploy`
+# emits, so tests can exercise the deploy-failure classification (rate
+# limiting vs. outage vs. unreachable network vs. unfunded account).
+DEPLOY_ERROR="${MOCK_STELLAR_DEPLOY_ERROR:-Error: friendbot rate-limited (try again later)}"
 
 case "${1:-}" in
   --version)
@@ -27,7 +31,7 @@ case "${1:-}" in
             call_num=$(cat "$FAIL_COUNT_FILE")
             if [ "$call_num" -lt "$FAIL_COUNT" ]; then
                 echo "$((call_num + 1))" > "$FAIL_COUNT_FILE"
-                echo "Error: friendbot rate-limited (try again later)" >&2
+                echo "$DEPLOY_ERROR" >&2
                 exit 1
             fi
         fi
@@ -63,6 +67,27 @@ case "${1:-}" in
         esac
         ;;
       invoke)
+        # Optional invoke-failure simulation for retry tests.
+        # MOCK_STELLAR_INVOKE_FAIL_COUNT=N makes `contract invoke` fail the
+        # first N times; MOCK_STELLAR_INVOKE_FAIL_MODE selects the stderr
+        # text: "transient" (retryable) or "permanent" (not retryable).
+        INVOKE_FAIL_COUNT="${MOCK_STELLAR_INVOKE_FAIL_COUNT:-0}"
+        INVOKE_FAIL_MODE="${MOCK_STELLAR_INVOKE_FAIL_MODE:-transient}"
+        if [ "$INVOKE_FAIL_COUNT" -gt 0 ] && [ -n "$FAIL_COUNT_FILE" ]; then
+            if [ ! -f "$FAIL_COUNT_FILE" ]; then
+                echo "0" > "$FAIL_COUNT_FILE"
+            fi
+            call_num=$(cat "$FAIL_COUNT_FILE")
+            if [ "$call_num" -lt "$INVOKE_FAIL_COUNT" ]; then
+                echo "$((call_num + 1))" > "$FAIL_COUNT_FILE"
+                if [ "$INVOKE_FAIL_MODE" = "permanent" ]; then
+                    echo "Error: contract CAMOCKCONTRACTIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA does not exist" >&2
+                else
+                    echo "Error: connection reset by peer" >&2
+                fi
+                exit 1
+            fi
+        fi
         # Real output is a base64 XDR transaction envelope. Its content is
         # opaque to cargo-budget-report (it's forwarded verbatim to the RPC
         # `simulateTransaction` call), so any placeholder string is fine here

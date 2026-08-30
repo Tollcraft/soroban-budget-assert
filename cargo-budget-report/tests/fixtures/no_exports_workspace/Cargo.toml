@@ -1,0 +1,5 @@
+# Fixture workspace for the "exports nothing simulatable" diagnostics
+# (issue #402). Built by tests/integration.rs, never checked-in as a binary.
+[workspace]
+resolver = "2"
+members = ["soroban_sdk_stub", "helper_only", "no_exports", "runtime_only"]

@@ -1,0 +1,5 @@
+error: #[budget_*] on this impl block instrumented no methods: it has no functions, or every function already carries its own budget attribute
+ --> tests/ui/on_empty_impl.rs:8:1
+  |
+8 | impl Contract {}
+  | ^^^^^^^^^^^^^^^^

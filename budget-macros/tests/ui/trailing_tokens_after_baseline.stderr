@@ -1,0 +1,5 @@
+error: unexpected token(s) after `baseline = …` — expected end of attribute, got `, extra = "bad"`
+ --> tests/ui/trailing_tokens_after_baseline.rs:5:37
+  |
+5 | #[budget_cpu_lt(1000, baseline = 100, extra = "bad")]
+  |                                     ^

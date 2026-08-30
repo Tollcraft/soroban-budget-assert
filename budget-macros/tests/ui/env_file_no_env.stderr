@@ -1,0 +1,5 @@
+error: `env_file` must be paired with `env = "VAR_NAME"`
+ --> tests/ui/env_file_no_env.rs:6:17
+  |
+6 | #[budget_cpu_lt(env_file = "tier-a-limits.env")]
+  |                 ^^^^^^^^

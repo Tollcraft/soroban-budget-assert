@@ -7,51 +7,13 @@ This guide is for developers modifying or extending `soroban-budget-assert` itse
 ### Linux / macOS
 
 1. Clone the repository.
-2. Install Rust with the WASM target: `rustup target add wasm32-unknown-unknown`.
+2. Install Rust with the WASM target: `rustup target add wasm32v1-none`.
 3. Install the Stellar CLI: `cargo install --locked stellar-cli` (on Debian/Ubuntu, first `sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev`).
 4. Create and fund a testnet identity: `stellar keys generate alice --network testnet --fund`.
 
 ### Windows
 
-1. Clone the repository.
-2. Install [Rust](https://rustup.rs) — the `.exe` installer adds `rustup` and `cargo` to your `PATH`.
-3. Install [Git for Windows](https://git-scm.com/download/win) — includes Git Bash for the pre-commit hook.
-4. Install the [Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — required to compile `stellar-cli`.
-5. Open **PowerShell** and run:
-
-```powershell
-# Add the WASM target
-rustup target add wasm32-unknown-unknown
-
-# Install the Stellar CLI
-cargo install --locked stellar-cli
-
-# Create and fund a testnet identity
-stellar keys generate alice --network testnet --fund
-```
-
-6. Build the contract WASM and run tests:
-
-```powershell
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
-cargo test --workspace
-```
-
-#### PATH troubleshooting
-
-If `stellar` or `cargo` is not found after installation:
-
-```powershell
-# Check if ~/.cargo/bin is on PATH
-$env:PATH -split ';' | Select-String '.cargo'
-
-# Add it permanently (restart terminal afterward)
-[Environment]::SetEnvironmentVariable(
-    "PATH",
-    "$env:PATH;$env:USERPROFILE\.cargo\bin",
-    [EnvironmentVariableTarget]::User
-)
-```
+For setup on Windows (PowerShell or Git Bash), including prerequisite links, WASM target installation, and PATH troubleshooting, see the authoritative guide in [CONTRIBUTING.md#windows](../../CONTRIBUTING.md#windows).
 
 ## Workspace structure
 
@@ -68,7 +30,7 @@ $env:PATH -split ';' | Select-String '.cargo'
 The macro tests execute the compiled WASM, so build it first:
 
 ```bash
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
+cargo build -p amm-pool-contract --release --target wasm32v1-none
 cargo test
 ```
 
@@ -84,15 +46,6 @@ cargo test
 - `test_budget_extend_ttl_*` (4 tests) — CPU and memory budget assertions for `extend_instance_ttl` calls with passing and deliberate-regression variants.
 - `test_read_bytes_budget_*` / `test_write_bytes_*` (5 tests) — ledger read-bytes budget enforcement, write-bytes budget via `#[budget_write_bytes_lt]`, and deliberate-regression fixtures.
 - `test_budget_macro_result_returning` / `test_budget_macro_result_returning_regression` / `test_budget_macro_early_return_still_asserts` — the `Result`-returning and early-`return` body shapes.
-`amm-pool-contract/tests/budget_test.rs` covers the macros against the real SDK `Env`:
-
-- `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics).
-- `test_budget_macro_gated` — a passing assertion at the 950,000 CPU limit.
-- `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (600,000) and expects the macro's panic, proving the gate fires.
-- `test_budget_macro_dynamic_env` — asserts a CPU limit read from the `TEST_MAX_CPU` environment variable.
-- `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` and the assertion passes unconditionally.
-- `test_budget_macro_json_config_*` — the `config = "key"` limit form read from `budget.json`.
-- `test_budget_macro_result_returning` / `..._regression` / `test_budget_macro_early_return_still_asserts` — the `Result`-returning and early-`return` body shapes.
 
 `budget-macros/tests/ui.rs` is a `trybuild` suite that needs no WASM and no SDK. `tests/ui/*.rs` must fail to compile, with the diagnostic pinned in the matching `.stderr` — regenerate those with `TRYBUILD=overwrite cargo test -p budget-macros`. `tests/ui/pass/*.rs` must compile *and run*: each one exercises a test-body shape against the mock `env` in `tests/ui/support/mock_env.rs` (fixed costs) and asserts which cost and limit the injected check reports, so a body shape that silently stops being checked fails there.
 
@@ -233,7 +186,7 @@ Before opening an issue or asking for help, run through this checklist:
 4. **Is `budget.toml` present with correct values?** → Check that `network = "testnet"` and `source = "alice"` (or your chosen values) are set at the workspace root.
 5. **Is the RPC endpoint reachable?** → `curl -s -o /dev/null -w "%{http_code}" https://soroban-testnet.stellar.org:443`. Should return `200`.
 6. **Has the account been idle for more than a few days?** → Friendbot-funded testnet accounts are periodically reset. Re-fund with `stellar keys fund alice --network testnet` before investigating further.
-7. **Does the test build succeed?** → `cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown`. A build failure produces the same red CI check as a budget regression but has nothing to do with Friendbot — the error message will clearly name the build issue.
+7. **Does the test build succeed?** → `cargo build -p amm-pool-contract --release --target wasm32v1-none`. A build failure produces the same red CI check as a budget regression but has nothing to do with Friendbot — the error message will clearly name the build issue.
 
 ### Recovery steps
 
@@ -260,16 +213,26 @@ network = "testnet"
 source = "bob"  # changed from "alice"
 ```
 
-**Reset the local environment** (use when cache or configuration is stale):
+**Reset the local environment** (use when a stale WASM build produces confusing numbers):
+
+`cargo budget-report` caches deployed contract ids on disk in `.budget-cache.toml`
+(git-ignored) so an unchanged build is not redeployed on every run. An entry is
+keyed on the compiled wasm's SHA-256, the network, and the source account, so
+**any change to the wasm, network, or source redeploys automatically** — a
+cache hit can only ever reuse an id for a byte-identical build on the same
+network and account.
 
 ```bash
-# Remove the cached deploy artifacts
-rm -f .budget-cache.toml
+# Force a from-scratch WASM build (removes all build output)
+cargo clean
 
-# Rebuild and re-deploy
-cargo build -p amm-pool-contract --release --target wasm32-unknown-unknown
-cargo budget-report
+# Redeploy every contract even on an unchanged build
+cargo budget-report --no-deploy-cache
+# ...or just drop the cache file
+rm -f .budget-cache.toml
 ```
+
+A full `cargo clean` also wipes host-side debug builds, so prefer `rm -rf target/wasm32v1-none` if you only want to invalidate the WASM artifacts. The deploy cache *trusts a hit* — it does not check that a cached id still resolves on-chain before reusing it. If a cached contract has been reclaimed by ledger state, use `--no-deploy-cache` (or delete `.budget-cache.toml`) to force a redeploy.
 
 ### Best practices
 
@@ -291,14 +254,15 @@ cargo budget-report
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"22.0.11"` (specifically tested/resolved to `22.0.11` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"22.1.0"` (used for decoding transaction simulation responses)
-* **Corresponding Stellar Protocol**: **Protocol 22**
+* **Supported SDK Version**: `soroban-sdk` = `"27.0.3"` (specifically tested/resolved to `27.0.6` in `Cargo.lock`)
+* **Supported XDR Version**: `stellar-xdr` = `"27.0.0"` (used for decoding transaction simulation responses)
+* **Corresponding Stellar Protocol**: **Protocol 27**
 
 ### Compatibility Matrix
 
 | SDK Version | Protocol Version | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `22.0.11`, `stellar-xdr` `22.1.0`). |
-| **`>= 23.0.0`** | `>= 23` | **Untested** | Future protocol upgrades or XDR schema changes (e.g. key/field renames) may break parsing. |
+| **`22.0.x`** | `22` | **Untested** | Previously supported; superseded by SDK 27 workspace baseline. |
+| **`23.0.x` – `26.0.x`** | `23` – `26` | **Untested** | Not pinned in the workspace; may work but are untested. |
+| **`27.0.x`** | `27` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `27.0.3`, `stellar-xdr` `27.0.0`). |

@@ -1,0 +1,7 @@
+error[E0423]: expected value, found macro `env`
+ --> tests/ui/missing_env_read.rs:5:1
+  |
+5 | #[budget_read_bytes_lt(4096)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a value
+  |
+  = note: this error originates in the attribute macro `budget_read_bytes_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

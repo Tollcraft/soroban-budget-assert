@@ -31,6 +31,12 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check module reachability
+        # Fail if any `.rs` file under a crate's `src/` is not declared in
+        # the module tree. Such files are never read by the compiler, so
+        # clippy/tests report success on them by never looking at them
+        # (issue #451).
+        run: scripts/check-module-reachability.sh
       - name: Check for unused dependencies
         run: |
           cargo install cargo-machete --version 0.6.2 --locked

@@ -1,0 +1,5 @@
+error: unknown growth model `exponential`, expected `linear` or `quadratic`
+ --> tests/ui/scaling_unknown_model.rs:6:45
+  |
+6 | #[budget_scaling(sizes = [10, 100], model = exponential, tolerance = 0.3)]
+  |                                             ^^^^^^^^^^^

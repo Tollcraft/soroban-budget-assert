@@ -1,4 +1,12 @@
 (function () {
+  // Data-source policy: the `?history=` query parameter is deliberately left
+  // open — anyone can hand this page a URL. That is why every value read
+  // from the fetched document is treated as untrusted text and inserted with
+  // `textContent` (never `innerHTML`), and why the failure states below say
+  // exactly what was tried and what went wrong. Constraining the parameter
+  // to same-origin was rejected because the documented use case — pointing
+  // the dashboard at a `history.json` published by CI on a different host —
+  // would break; instead the page renders arbitrary supplied data as text.
   const params = new URLSearchParams(location.search);
 
   const HISTORY_URL = params.get('history') || './history.json';
@@ -40,6 +48,61 @@
 
   function isValidEntry(entry) {
     return entry && typeof entry === 'object' && Array.isArray(entry.data);
+  }
+
+  // ── Status / error / empty-state rendering ────────────────────────────
+  // All messages are built with `textContent`/`createTextNode`: the URL and
+  // any detail string are user-supplied and must never be parsed as markup.
+
+  function textNode(value) {
+    return document.createTextNode(value);
+  }
+
+  function codeNode(value) {
+    const code = document.createElement('code');
+    code.textContent = value;
+    return code;
+  }
+
+  // Replace the `#status` section with a paragraph built from text nodes.
+  function setStatus(className, nodes) {
+    statusEl.textContent = '';
+    const p = document.createElement('p');
+    p.className = className;
+    nodes.forEach((node) => p.appendChild(node));
+    statusEl.appendChild(p);
+    statusEl.hidden = false;
+  }
+
+  // A failed load. `kind` distinguishes the failure classes so the visitor
+  // can tell "no data here" from "the deploy is broken" apart:
+  //   network — the request itself failed (missing file, blocked request)
+  //   http    — the server answered with a non-2xx status
+  //   json    — the body was not valid JSON (e.g. an HTML error page)
+  //   shape   — valid JSON, but not the expected array of history entries
+  function showLoadError(kind, detail) {
+    controlsEl.hidden = true;
+    const nodes = [textNode('Could not load '), codeNode(HISTORY_URL)];
+    if (kind === 'network') {
+      nodes.push(textNode('. The request failed — the file may be missing, the server unreachable, or your browser blocked it.'));
+    } else if (kind === 'http') {
+      nodes.push(textNode(`. The server responded with ${detail}. The file may be missing or the deploy may be broken.`));
+    } else if (kind === 'json') {
+      nodes.push(textNode('. The response is not valid JSON (it may be an HTML error page). Expected a JSON array of { commit, timestamp, data: [...] } entries.'));
+    } else if (kind === 'shape') {
+      nodes.push(textNode('. The JSON parsed, but it is not the expected shape: an array of entries like { "commit": "...", "timestamp": "...", "data": [ ...rows ] }.'));
+    }
+    nodes.push(textNode(" If you're viewing a copy of this dashboard, pass ?history=URL_TO_history.json."));
+    setStatus('error', nodes);
+  }
+
+  // Valid data, but no measurements: an explicit empty state, not a blank page.
+  function showEmptyState() {
+    chartsEl.textContent = '';
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'No recorded measurements yet. history.json contains an empty dataset; it will populate as CI records budget reports.';
+    chartsEl.appendChild(p);
   }
 
   function pivot(history) {
@@ -113,7 +176,10 @@
     sortedMetrics.forEach((metric) => {
       const wrapper = document.createElement('div');
       wrapper.className = 'chart-card';
-      wrapper.innerHTML = `<h3>${metric}</h3>`;
+      const heading = document.createElement('h3');
+      // `metric` comes from the fetched document — text, never markup.
+      heading.textContent = metric;
+      wrapper.appendChild(heading);
       const summary = document.createElement('ul');
       summary.className = 'summary';
       wrapper.appendChild(summary);
@@ -128,9 +194,20 @@
         const values = windowed.map((e) => valueFor(e, selectedPkg, fn, metric));
         const change = pctChange(values);
         const li = document.createElement('li');
-        li.innerHTML = `<span class="swatch" style="background:${colorFor(i)}"></span>` +
-          `${fn}` +
-          (change === null ? '' : ` — <strong class="${change > 0 ? 'up' : change < 0 ? 'down' : ''}">${change > 0 ? '+' : ''}${change.toFixed(1)}%</strong> over shown range`);
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = colorFor(i);
+        li.appendChild(swatch);
+        // `fn` comes from the fetched document — text, never markup.
+        li.appendChild(textNode(fn));
+        if (change !== null) {
+          li.appendChild(textNode(' — '));
+          const strong = document.createElement('strong');
+          strong.className = change > 0 ? 'up' : change < 0 ? 'down' : '';
+          strong.textContent = `${change > 0 ? '+' : ''}${change.toFixed(1)}%`;
+          li.appendChild(strong);
+          li.appendChild(textNode(' over shown range'));
+        }
         summary.appendChild(li);
         return {
           label: fn,
@@ -198,7 +275,14 @@
         const id = `fn-${pkg}-${fn}`.replace(/[^a-zA-Z0-9_-]/g, '_');
         const label = document.createElement('label');
         label.className = 'checkbox';
-        label.innerHTML = `<input type="checkbox" id="${id}" value="${fn}" ${i < 4 ? 'checked' : ''}/> ${fn}`;
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = id;
+        input.value = fn;
+        if (i < 4) input.checked = true;
+        label.appendChild(input);
+        // `fn` comes from the fetched document — text, never markup.
+        label.appendChild(textNode(` ${fn}`));
         functionList.appendChild(label);
       });
       functionList.querySelectorAll('input').forEach((input) => input.addEventListener('change', triggerRender));
@@ -221,22 +305,44 @@
     }
   }
 
-  fetch(HISTORY_URL)
-    .then((res) => {
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return res.json();
-    })
-    .then((history) => {
-      if (!Array.isArray(history)) throw new Error('history.json is not an array');
-      windowed = history.slice(-WINDOW_SIZE);
-      windowInfo.textContent = `${windowed.length} of ${history.length} recorded commits` +
-        (history.length > windowed.length ? ' (pass ?limit=N to change)' : '');
-      statusEl.hidden = true;
-      controlsEl.hidden = false;
-      populateControls();
-    })
-    .catch((err) => {
-      statusEl.innerHTML = `<p class="error">Could not load <code>${HISTORY_URL}</code>: ${err.message}. ` +
-        `If you're viewing this on a fork or different repo, pass <code>?history=URL_TO_history.json</code>.</p>`;
-    });
+  (async () => {
+    let res;
+    try {
+      res = await fetch(HISTORY_URL);
+    } catch (err) {
+      showLoadError('network');
+      return;
+    }
+
+    if (!res.ok) {
+      showLoadError('http', `${res.status}${res.statusText ? ' ' + res.statusText : ''}`);
+      return;
+    }
+
+    let history;
+    try {
+      history = await res.json();
+    } catch (err) {
+      showLoadError('json');
+      return;
+    }
+
+    if (!Array.isArray(history)) {
+      showLoadError('shape');
+      return;
+    }
+
+    windowed = history.slice(-WINDOW_SIZE);
+    windowInfo.textContent = `${windowed.length} of ${history.length} recorded commits` +
+      (history.length > windowed.length ? ' (pass ?limit=N to change)' : '');
+    statusEl.hidden = true;
+    controlsEl.hidden = false;
+
+    if (windowed.length === 0) {
+      showEmptyState();
+      return;
+    }
+
+    populateControls();
+  })();
 })();

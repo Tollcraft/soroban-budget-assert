@@ -1,0 +1,24 @@
+
+=== BASELINE CHECK REPORT ===
+
+Comparisons:
+  function                   metric                 baseline        current        change   change%  dir  status
+  amm::swap                  cpu_instructions      1,000,000      1,500,000      +500,000   +50.00%    ^  BREACH (max 1,100,000)
+  amm::swap                  read_bytes                4,096          2,048        -2,048   -50.00%    v  improved
+  amm::swap                  write_bytes                 512            540           +28    +5.47%    ^  within tolerance
+
+New functions (no baseline entry):
+  + amm::brand_new
+  Suggestion: re-run with `--record-baseline` to capture them.
+
+Stale baseline entries (function not in current WASM):
+  - amm::removed
+  Suggestion: re-run with `--record-baseline` to clean them up.
+
+Summary:
+  regressions: 1
+  improvements: 1
+  within tolerance: 1
+  unchanged: 0
+  new functions: 1
+  stale entries: 1

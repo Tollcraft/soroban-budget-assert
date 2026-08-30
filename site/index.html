@@ -9,7 +9,13 @@
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <!-- Google Fonts with Subresource Integrity (SRI) check. To regenerate:
+       curl -s 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap' | \
+       openssl dgst -sha384 -binary | openssl base64 -A -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" 
+        rel="stylesheet"
+        integrity="sha384-LyDqddAEk5NT0OHlSk/P/Sn0xvGtKlk4zpb0yPwQPQcw6M4uxCccSo7KZrKLtLou"
+        crossorigin="anonymous">
   
   <!-- Styles -->
   <link rel="stylesheet" href="styles.css">
@@ -194,7 +200,7 @@
 <span class="token-macro">#[budget_cpu_lt(950000)]</span> <span class="token-comment">// Fails test if CPU instruction budget exceeds limit</span>
 <span class="token-keyword">fn</span> <span class="token-function">test_cpu_budget</span>() {
     <span class="token-keyword">let</span> env = Env::default();
-    <span class="token-keyword">let</span> wasm = std::fs::read(<span class="token-string">"../target/wasm32-unknown-unknown/release/my_contract.wasm"</span>)
+    <span class="token-keyword">let</span> wasm = std::fs::read(<span class="token-string">"../target/wasm32v1-none/release/my_contract.wasm"</span>)
         .expect(<span class="token-string">"build the WASM first"</span>);
     <span class="token-keyword">let</span> contract_id = env.register_contract_wasm(<span class="token-keyword">None</span>, wasm.as_slice());
     <span class="token-keyword">let</span> client = MyContractClient::new(&env, &contract_id);

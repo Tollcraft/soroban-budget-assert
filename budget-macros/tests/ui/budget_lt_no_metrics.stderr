@@ -1,0 +1,7 @@
+error: must provide at least one of `cpu` or `mem` limits
+ --> tests/ui/budget_lt_no_metrics.rs:5:1
+  |
+5 | #[budget_lt]
+  | ^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -39,7 +39,7 @@
 //! - non-Rust tooling (CI scripts, dashboards, the cost-over-time
 //!   consumer) can read the same file.
 
-use crate::module_10::{Error, Result};
+use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -258,14 +258,16 @@ impl Derivation {
         let mut raw_measurements: BTreeMap<(String, String, String), u64> = BTreeMap::new();
 
         for m in measurements {
-            let margin = config.margin.for_metric(&m.metric).ok_or_else(|| {
-                Error::Message(format!(
-                    "Tier B metric {:?} has no configured margin; \
-                     supply --margin-cpu / --margin-memory / --margin-read / \
-                     --margin-write or the [margin.*] section in budget.toml",
-                    m.metric
-                ))
-            })?;
+            let margin = match config.margin.for_metric(&m.metric) {
+                Some(m) => m,
+                None => {
+                    // Metrics without a configured margin (e.g. WASM Bytes)
+                    // are build artifacts, not runtime resources. Skip them
+                    // rather than erroring so --derive-limits works on
+                    // real Tier B reports that include such rows.
+                    continue;
+                }
+            };
             let limit_key = format!("{}::{}", m.package, m.function);
             let scaled = ceil_apply(m.value, margin);
             // When two metrics in the same function both contribute to a
@@ -354,6 +356,9 @@ impl Derivation {
                         Some(v) => total_tier_b = total_tier_b.saturating_add(*v),
                         None => missing.push(component.clone()),
                     }
+                }
+                if missing.len() == components.len() {
+                    continue;
                 }
                 if !missing.is_empty() {
                     return Err(Error::Message(format!(
@@ -681,33 +686,38 @@ mod tests {
     }
 
     #[test]
-    fn derive_unknown_metric_errors_with_actionable_message() {
+    fn derive_unknown_metric_is_skipped_silently() {
         let measurements = vec![TierBMeasurement {
             package: "p".to_string(),
             function: "f".to_string(),
             metric: "WASM Bytes".to_string(),
             value: 12_345,
         }];
-        // Margin::new validates the four required multipliers, not the
-        // metric labels. The Tier B report row's metric is what we
-        // dispatch on. WASM Bytes has no margin (it's a build artifact,
-        // not a runtime resource), so the derive step must error.
+        // WASM Bytes has no configured margin (it's a build artifact,
+        // not a runtime resource). The derive step skips it rather than
+        // erroring so --derive-limits works on real Tier B reports.
         let config = DerivationConfig::margin_only(margin());
-        let err = Derivation::from_report(&measurements, &config).unwrap_err();
-        let msg = format!("{err}");
+        let result = Derivation::from_report(&measurements, &config)
+            .expect("should not error on WASM Bytes");
         assert!(
-            msg.contains("WASM Bytes") && msg.contains("no configured margin"),
-            "got: {msg}"
+            result.limits.is_empty(),
+            "WASM Bytes should produce no Tier A limits"
         );
     }
 
     #[test]
     fn scenario_limit_sums_components_with_margin() {
-        let measurements = vec![
-            tier_b("amm-pool-contract", "deposit", "CPU Instructions", 30_000),
-            tier_b("amm-pool-contract", "swap", "CPU Instructions", 50_000),
-            tier_b("amm-pool-contract", "withdraw", "CPU Instructions", 40_000),
-        ];
+        let mut measurements = Vec::new();
+        for metric in [
+            "CPU Instructions",
+            "Memory Bytes",
+            "Read Bytes",
+            "Write Bytes",
+        ] {
+            measurements.push(tier_b("amm-pool-contract", "deposit", metric, 30_000));
+            measurements.push(tier_b("amm-pool-contract", "swap", metric, 50_000));
+            measurements.push(tier_b("amm-pool-contract", "withdraw", metric, 40_000));
+        }
         let mut scenarios = BTreeMap::new();
         scenarios.insert(
             "amm-pool-contract::full_workflow".to_string(),
@@ -725,7 +735,7 @@ mod tests {
         let scenario = derivation
             .limits
             .iter()
-            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW"))
+            .find(|l| l.key.contains("SCENARIO__FULL_WORKFLOW__CPU"))
             .expect("scenario row present");
         // (30k + 50k + 40k) × 1.25 = 150_000.
         assert_eq!(scenario.tier_a_limit, 150_000);

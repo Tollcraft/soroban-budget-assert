@@ -54,7 +54,6 @@ args = ["--addr", "alice"]
 # network baseline is recorded with `cargo budget-report`.
 [functions.allocate_vec]
 args = ["--n", "10000"]
-mem_limit = 5000000
 # The `do_event_heavy_work` function isolates event-emission cost by publishing
 # events in a loop with no storage or compute work mixed in. It can be invoked
 # via `cargo budget-report` on testnet without additional setup.
@@ -65,3 +64,21 @@ args = ["--n", "5"]
 # local test-harness measurement and exercise multiple storage keys, authorization,
 # events, and simulated token flows. They require pre-deployed token contracts and
 # are not intended for `cargo budget-report` invocation without additional setup.
+
+# ── Local-vs-network gap fixtures (issues #414-#417) ──────────────────────
+# All four require network-side setup (large inputs, a deployed SAC, N deployed
+# relay instances, or upload/create simulation) and are measured locally via
+# their `measure_*_gap.rs` tests. Listed here so `cargo budget-report` can pick
+# up the network figures once that setup exists.
+
+[functions.hash_sha256]
+args = ["--data", "0x00"]
+
+[functions.hash_keccak256]
+args = ["--data", "0x00"]
+
+[functions.do_token_transfers]
+args = ["--count", "5"]
+
+[functions.relay]
+args = ["--acc", "0"]

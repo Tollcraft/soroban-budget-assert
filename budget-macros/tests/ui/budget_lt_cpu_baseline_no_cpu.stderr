@@ -1,0 +1,7 @@
+error: `cpu_baseline` requires a `cpu` limit
+ --> tests/ui/budget_lt_cpu_baseline_no_cpu.rs:6:1
+  |
+6 | #[budget_lt(cpu_baseline = 100, mem = 500)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

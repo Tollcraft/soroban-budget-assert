@@ -1,8 +1,9 @@
 target/
+# cargo-budget-report on-disk deploy cache (#79)
+.budget-cache.toml
 venv/
 .venv/
 contract_id.txt
-.budget-cache.toml
 req.json
 node_modules/
 /dist
@@ -10,3 +11,4 @@ site/dist
 *.pdf
 current_report.json
 .soroban/
+test_snapshots/

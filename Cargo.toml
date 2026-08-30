@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "budget-core",
     "budget-macros",
     "cargo-budget-report",
     "amm-pool-contract",
     "host-function-contract",
+    "bloat-contract",
 ]
 resolver = "2"
 
@@ -36,3 +36,10 @@ panic = "abort"
 codegen-units = 1
 lto = true
 
+# The workspace release profile above targets small WASM contracts. The CLI
+# binary needs different trade-offs: faster startup and better diagnostics.
+# Only the settings Cargo allows in a per-package override are set here
+# (`panic` and `lto` cannot be overridden per-package). (#500)
+[profile.release.package.cargo-budget-report]
+opt-level = 3
+codegen-units = 16

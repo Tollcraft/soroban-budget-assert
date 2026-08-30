@@ -5,11 +5,19 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Serves recorded responses back from a [`FixtureFile`], letting tests run
+/// the full report pipeline without a network.
+///
+/// Not reachable from a CLI flag yet; the tests in `record.rs` are the
+/// current consumers, and a record/replay flag is the follow-up that
+/// promotes it to a user-facing path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct ReplayTransport {
     entries: HashMap<String, serde_json::Value>,
 }
 
 impl ReplayTransport {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(fixture: FixtureFile) -> Self {
         ReplayTransport {
             entries: fixture.entries,

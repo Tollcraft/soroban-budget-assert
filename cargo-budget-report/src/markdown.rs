@@ -1,96 +1,75 @@
-//! Markdown output formatting for budget reports.
+use crate::CostReport;
 
-/// A single contract or test budget result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarkdownReportRow {
-    /// Contract or test name displayed in the first column.
-    pub name: String,
-    /// CPU budget cost displayed in the second column.
-    pub cpu_cost: u64,
-    /// Memory budget cost displayed in the third column.
-    pub memory_cost: u64,
-    /// Whether the budget assertion passed.
-    pub passed: bool,
+/// Renders a slice of [`CostReport`] entries into a GitHub-Flavored Markdown table
+/// suitable for appending to `$GITHUB_STEP_SUMMARY`.
+pub(crate) fn render_markdown(reports: &[CostReport]) -> String {
+    let mut out = String::new();
+    out.push_str("# Workspace Budget Report (Tier A Local Measurements)\n\n");
+    out.push_str("| Package | Function | Metric | Value |\n");
+    out.push_str("|---|---|---|---:|\n");
+
+    for r in reports {
+        let val_str = match r.value {
+            Some(v) => format_number(v),
+            None => "N/A (testnet required)".to_string(),
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            r.package, r.function, r.metric, val_str
+        ));
+    }
+
+    out.push_str("\n---\n");
+    out.push_str("_Simulated resource amounts from local WASM test harness. Network-dependent billing metrics (Read/Write Bytes) require testnet simulation._\n");
+    out
 }
 
-impl MarkdownReportRow {
-    /// Creates a report row.
-    pub fn new(name: impl Into<String>, cpu_cost: u64, memory_cost: u64, passed: bool) -> Self {
-        Self {
-            name: name.into(),
-            cpu_cost,
-            memory_cost,
-            passed,
+#[allow(clippy::manual_is_multiple_of)]
+fn format_number(n: u32) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let len = s.len();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            result.push(',');
         }
+        result.push(c);
     }
-}
-
-/// Formats budget report rows as a Markdown table.
-///
-/// The returned string does not include a trailing newline, allowing callers
-/// to decide how the table should be separated from other CLI output.
-pub fn format_markdown_table(rows: &[MarkdownReportRow]) -> String {
-    let mut table = String::from("| Contract/Test Name | CPU Cost | Memory Cost | Status |\n| --- | ---: | ---: | --- |");
-
-    for row in rows {
-        let status = if row.passed { "Pass" } else { "Fail" };
-        table.push('\n');
-        table.push_str("| ");
-        table.push_str(&escape_markdown_cell(&row.name));
-        table.push_str(" | ");
-        table.push_str(&row.cpu_cost.to_string());
-        table.push_str(" | ");
-        table.push_str(&row.memory_cost.to_string());
-        table.push_str(" | ");
-        table.push_str(status);
-        table.push_str(" |");
-    }
-
-    table
-}
-
-fn escape_markdown_cell(value: &str) -> String {
-    value.replace('|', "\\|").replace('\n', " ").replace('\r', " ")
+    result
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_markdown_table, MarkdownReportRow};
+    use super::*;
 
     #[test]
-    fn formats_passing_and_failing_rows() {
-        let rows = vec![
-            MarkdownReportRow::new("token_contract", 1_234, 567, true),
-            MarkdownReportRow::new("swap_test", 9_876, 1_024, false),
+    fn test_render_markdown_table() {
+        let reports = vec![
+            CostReport {
+                package: "amm-pool-contract".to_string(),
+                function: "do_expensive_work".to_string(),
+                metric: "CPU Instructions",
+                value: Some(2654615),
+                limit: None,
+                pass: None,
+            },
+            CostReport {
+                package: "amm-pool-contract".to_string(),
+                function: "do_expensive_work".to_string(),
+                metric: "Read Bytes",
+                value: None,
+                limit: None,
+                pass: None,
+            },
         ];
 
-        assert_eq!(
-            format_markdown_table(&rows),
-            "| Contract/Test Name | CPU Cost | Memory Cost | Status |\n\
-             | --- | ---: | ---: | --- |\n\
-             | token_contract | 1234 | 567 | Pass |\n\
-             | swap_test | 9876 | 1024 | Fail |"
+        let md = render_markdown(&reports);
+        assert!(md.contains("# Workspace Budget Report"));
+        assert!(
+            md.contains("| amm-pool-contract | do_expensive_work | CPU Instructions | 2,654,615 |")
         );
-    }
-
-    #[test]
-    fn formats_empty_reports_with_headers_only() {
-        assert_eq!(
-            format_markdown_table(&[]),
-            "| Contract/Test Name | CPU Cost | Memory Cost | Status |\n\
-             | --- | ---: | ---: | --- |"
-        );
-    }
-
-    #[test]
-    fn escapes_markdown_cells() {
-        let rows = [MarkdownReportRow::new("contract|with\nseparator", 10, 20, true)];
-
-        assert_eq!(
-            format_markdown_table(&rows),
-            "| Contract/Test Name | CPU Cost | Memory Cost | Status |\n\
-             | --- | ---: | ---: | --- |\n\
-             | contract\\|with separator | 10 | 20 | Pass |"
-        );
+        assert!(md.contains(
+            "| amm-pool-contract | do_expensive_work | Read Bytes | N/A (testnet required) |"
+        ));
     }
 }

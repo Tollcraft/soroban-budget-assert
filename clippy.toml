@@ -10,15 +10,27 @@
 # moving under an unchanged source tree. Same reasoning as `rustfmt.toml`.
 #
 # Not set here:
-#   * `msrv` -- the project declares no `rust-version`, and the toolchain is
-#     unpinned. Pinning an MSRV belongs with the toolchain work (issue #113);
-#     setting one here would only silence version-gated suggestions based on a
-#     number nothing else in the repo enforces.
+#   * `msrv` -- the toolchain is pinned to 1.91.0, but the project declares no
+#     `rust-version` or supported minimum Rust version. The pin makes the lint
+#     environment reproducible; it does not establish an MSRV, so setting one
+#     here would still silence version-gated suggestions based on an
+#     uncommunicated support commitment.
 #   * `avoid-breaking-exported-api` -- left at its default (`true`). The crates
 #     here are a proc-macro library and a CLI binary, neither of which has an
 #     API surface stable enough to be worth linting against.
 
+# Why: Pins maximum function arguments (default: 7) before triggering `clippy::too_many_arguments`.
+# Freezing this threshold prevents Clippy upstream changes from breaking builds on functions with 7 arguments.
 too-many-arguments-threshold = 7
+
+# Why: Pins complex type nesting score (default: 250) before triggering `clippy::type_complexity`.
+# Ensures type definitions in proc-macro expansion remain within historical complexity limits.
 type-complexity-threshold = 250
+
+# Why: Pins minimum matching prefix/suffix count (default: 3) before triggering `clippy::enum_variant_names`.
+# Prevents enums with 2 matching prefixes from being flagged if upstream defaults tighten.
 enum-variant-name-threshold = 3
+
+# Why: Pins single-character binding name threshold (default: 4) before triggering `clippy::many_single_char_names`.
+# Allows short variable names in math/macro expressions without triggering lint failures.
 single-char-binding-names-threshold = 4

@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 #![cfg(test)]
 
 mod common;
@@ -5,7 +6,9 @@ mod common;
 use std::sync::{Mutex, PoisonError};
 
 use amm_pool_contract::{ConstantProductPool, ConstantProductPoolClient};
-use budget_macros::{budget_cpu_lt, budget_lt, budget_mem_lt, budget_write_bytes_lt};
+use budget_macros::{
+    budget_cpu_lt, budget_lt, budget_mem_lt, budget_read_bytes_lt, budget_write_bytes_lt,
+};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Serialises all JSON-config tests so they never read stale `budget.json`
@@ -43,16 +46,16 @@ impl Drop for BudgetJsonGuard {
 const TIER_A_LIMITS_FILE: &str = "../tier-a-limits.env";
 
 fn setup_wasm(env: &Env) -> (ConstantProductPoolClient<'_>, Address) {
-    let wasm = common::load_contract_wasm("wasm32v1-none");
-    // AUDIT (Issue #92): `soroban_sdk::Env::register_contract_wasm` is deprecated in soroban-sdk 22.x
-    // in favor of `Env::register`. However, `Env::register` only registers Rust contract types for
-    // in-memory host execution, whereas `register_contract_wasm` remains the sole API in soroban-sdk 22.x
-    // for registering raw precompiled `.wasm` byte slices into the test environment VM. Because WASM-level
-    // execution is required for accurate CPU/memory budget measurements (raw Rust estimates undercount costs),
-    // `register_contract_wasm` with `#[allow(deprecated)]` remains necessary until soroban-sdk provides
-    // a non-deprecated replacement for raw WASM byte registration.
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
+    let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+    // Register the precompiled WASM so measurements exercise the contract in
+    // the host's Wasm VM rather than as linked-in Rust (raw Rust estimates
+    // undercount costs — see MEASUREMENTS.md). `Env::register` accepts raw
+    // WASM bytes: `Register` is implemented for `&[u8]`, and it drives the
+    // exact same host path the deprecated `register_contract_wasm` used
+    // (`upload_contract_wasm` + `CreateContractV2`, no constructor args),
+    // verified against soroban-sdk 22.0.11 (Issue #472).
+    let contract_id = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(env, &contract_id);
 
     let user = Address::generate(env);
@@ -137,8 +140,7 @@ fn test_measure_gap_vs_input_size() {
     for &n in &sizes {
         // --- Wasm measurement ---
         let env = Env::default();
-        #[allow(deprecated)]
-        let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+        let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(&env, &contract_id);
         env.cost_estimate().budget().reset_unlimited();
         client.do_expensive_work(&n);
@@ -281,7 +283,10 @@ fn test_budget_macro_gated() {
 #[should_panic(
     expected = "local estimate, real network cost may differ significantly in either direction"
 )]
-#[budget_cpu_lt(1000000)]
+// 1 instruction: any real workflow blows through it. The prior 1_000_000
+// ceiling stopped firing under soroban-sdk 27, whose full deposit+swap+withdraw
+// marginal CPU is now below that (issue #382 — see MEASUREMENTS.md).
+#[budget_cpu_lt(1)]
 fn test_budget_macro_deliberate_regression() {
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -419,6 +424,118 @@ fn test_budget_macro_json_config_invalid_json() {
 }
 
 // ---------------------------------------------------------------------------
+// Negative-control budget tests (Issue #427)
+//
+// These tests verify that the budget assertion macros *actually fire* when
+// they should by deliberately setting limits far below what the workload
+// requires. They serve as regression guards for the macro machinery itself.
+//
+// CRITICAL: These tests MUST panic. Do NOT "fix" them by raising the limits.
+// If these tests start passing, the macro assertions are broken.
+//
+// Margin rationale: Limits are set 10x below measured costs to provide a
+// clear, non-flaky signal while still being meaningful. A 10x gap ensures
+// the test won't false-pass due to measurement variance while avoiding
+// margins so extreme (e.g., limit=1) that they obscure the real assertion.
+// ---------------------------------------------------------------------------
+
+/// Negative control: CPU budget macro fires when limit is exceeded.
+///
+/// Sets the CPU limit to 16K instructions (10x below the ~160K marginal cost
+/// of deposit+swap+withdraw) to verify the `#[budget_cpu_lt]` macro correctly
+/// detects and panics on budget violations.
+///
+/// This test MUST panic. If it passes, the CPU budget assertion is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_cpu_lt(16_000, baseline = baseline_cpu())]
+fn test_negative_control_cpu_budget_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Full workflow costs ~160K CPU instructions (after baseline
+    // subtraction). Limit of 16K is 10x below that, guaranteeing failure.
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Negative control: Memory budget macro fires when limit is exceeded.
+///
+/// Sets the memory limit to ~1.8K bytes (10x below the ~18K marginal cost
+/// of deposit+swap+withdraw) to verify the `#[budget_mem_lt]` macro correctly
+/// detects and panics on budget violations.
+///
+/// This test MUST panic. If it passes, the memory budget assertion is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_mem_lt(1_800, baseline = baseline_mem())]
+fn test_negative_control_mem_budget_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Full workflow costs ~18K memory bytes (after baseline
+    // subtraction). Limit of 1.8K is 10x below that, guaranteeing failure.
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Negative control: Combined CPU/memory macro fires when CPU limit is exceeded.
+///
+/// Uses `#[budget_lt]` with a CPU limit 10x below measured cost and a
+/// generous memory limit to isolate CPU assertion behavior.
+///
+/// This test MUST panic. If it passes, the CPU half of `budget_lt` is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(
+    cpu = 16_000,
+    mem = 5_000_000,
+    cpu_baseline = baseline_cpu(),
+    mem_baseline = baseline_mem()
+)]
+fn test_negative_control_combined_cpu_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+/// Negative control: Combined CPU/memory macro fires when memory limit is exceeded.
+///
+/// Uses `#[budget_lt]` with a memory limit 10x below measured cost and a
+/// generous CPU limit to isolate memory assertion behavior.
+///
+/// This test MUST panic. If it passes, the memory half of `budget_lt` is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(
+    cpu = 5_000_000,
+    mem = 1_800,
+    cpu_baseline = baseline_cpu(),
+    mem_baseline = baseline_mem()
+)]
+fn test_negative_control_combined_mem_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
+// ---------------------------------------------------------------------------
 // Macro hygiene regression test
 //
 // Verify that #[budget_cpu_lt] and #[budget_mem_lt] do not leak their
@@ -490,11 +607,47 @@ fn test_macro_hygiene_write_bytes_shadows_budget_and_limit() {
     assert_eq!(limit_u64, 777);
 }
 
+#[test]
+#[budget_read_bytes_lt(5_000_000)]
+fn test_macro_hygiene_read_bytes_shadows_budget_and_limit() {
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+
+    env.cost_estimate().budget().reset_unlimited();
+
+    // Deliberately shadow the macro's injected identifiers.
+    let budget = "i_am_a_string_not_a_budget";
+    let read_bytes_cost = "also_string_not_cost";
+    let limit_u64 = 777;
+
+    client.do_read_heavy_work(&50);
+
+    assert_eq!(budget, "i_am_a_string_not_a_budget");
+    assert_eq!(read_bytes_cost, "also_string_not_cost");
+    assert_eq!(limit_u64, 777);
+}
+
+#[test]
+#[budget_read_bytes_lt(
+    env_file = TIER_A_LIMITS_FILE,
+    env = "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__READ",
+    baseline = baseline_mem()
+)]
+fn test_budget_read_bytes_full_workflow() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+    client.swap(&user, &true, &100_i128, &90_i128);
+    client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
+}
+
 /// Fixture: contract invocation stays within the read bytes budget.
 ///
 /// Runs a deposit + swap + withdraw cycle against the WASM contract and
 /// asserts that the ledger read bytes reported by
-/// `env.cost_estimate().resources().read_bytes` do not exceed a generous
+/// `env.cost_estimate().resources().disk_read_bytes` do not exceed a generous
 /// upper bound.  This test is expected to pass under normal conditions and
 /// acts as a regression guard that will fail if storage reads grow
 /// unexpectedly.
@@ -507,37 +660,44 @@ fn test_read_bytes_budget_within_limit() {
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
 
-    let read_bytes = env.cost_estimate().resources().read_bytes;
+    let read_bytes = env.cost_estimate().resources().disk_read_bytes;
     println!("Read bytes (WASM deposit+swap+withdraw): {read_bytes}");
 
-    // Generous upper bound (measured 25,784 locally) — tighten once a clean
+    // Generous upper bound (measured 30,312 locally) — tighten once a clean
     // baseline is recorded.
     //
     // `read_bytes` counts the contract's Wasm module, which the host reads from
     // the ledger on every invocation, so this figure tracks module *size* far
     // more than it tracks storage access. Adding the `noop` baseline export
     // grew the module 24,505 -> 25,380 bytes, taking read_bytes 24,912 ->
-    // 25,784 and past the old 25,000 bound. The ceiling moves rather than the
-    // export being dropped, because `noop` is what makes every CPU/memory
-    // assertion in this file measure marginal cost instead of the
-    // instantiation floor.
+    // 25,784 and past the old 25,000 bound. The crypto / token-transfer /
+    // call-depth measurement fixtures (issues #414-#416) then grew it further,
+    // 25,380 -> 29,906 bytes and read_bytes 25,784 -> 30,312, past the 30,000
+    // bound. The ceiling moves rather than the fixtures being dropped: those
+    // fixtures are what let their gap series be measured at all, the same
+    // rationale under which `noop` was kept.
     assert!(
-        read_bytes < 30_000,
-        "Read bytes {read_bytes} exceeded the expected limit of 30,000 \
+        read_bytes < 36_000,
+        "Read bytes {read_bytes} exceeded the expected limit of 36,000 \
          - local estimate, real network cost may differ significantly in either direction"
     );
 }
 
 /// Fixture: deliberate regression — contract exceeds the read bytes budget.
 ///
-/// Sets an impossibly tight read bytes limit (1 byte) to demonstrate what a
-/// read-bytes budget breach looks like.  The `#[should_panic]` attribute
-/// documents the expected failure message so that the test suite treats this
-/// as a passing regression fixture rather than a real failure.
+/// Sets an impossibly tight limit (1 byte) via `#[budget_read_bytes_lt]` to
+/// demonstrate what a read-bytes budget breach looks like. `#[should_panic]`
+/// documents the expected failure message so the suite treats this as a
+/// passing regression fixture.
+///
+/// Uses the macro (memory-bytes proxy) rather than
+/// `env.cost_estimate().resources().disk_read_bytes` directly: since Protocol
+/// 23 that XDR field counts only disk-backed reads, and the AMM's state is all
+/// live in-memory Soroban entries, so it reads 0 here and could not exceed any
+/// limit. See MEASUREMENTS.md.
 #[test]
-#[should_panic(
-    expected = "local estimate, real network cost may differ significantly in either direction"
-)]
+#[should_panic(expected = "Read bytes cost (memory proxy)")]
+#[budget_read_bytes_lt(1)]
 fn test_read_bytes_budget_exceeds_limit() {
     let env = Env::default();
     let (client, user) = setup_wasm(&env);
@@ -545,18 +705,6 @@ fn test_read_bytes_budget_exceeds_limit() {
     client.deposit(&user, &10_000_i128, &10_000_i128);
     client.swap(&user, &true, &100_i128, &90_i128);
     client.withdraw(&user, &1_000_i128, &900_i128, &900_i128);
-
-    let read_bytes = env.cost_estimate().resources().read_bytes;
-    println!("Read bytes (deliberate regression): {read_bytes}");
-
-    // Deliberately impossible limit: any real WASM invocation will read more
-    // than 1 byte from ledger storage, so this assertion always fires.
-    let limit: u32 = 1;
-    assert!(
-        read_bytes < limit,
-        "Read bytes {read_bytes} exceeded the expected limit of {limit} \
-         - local estimate, real network cost may differ significantly in either direction"
-    );
 }
 
 /// Measures the local WASM read-bytes cost of `do_read_heavy_work` for the
@@ -580,8 +728,7 @@ fn test_storage_read_wasm_local() {
     let wasm = common::load_contract_wasm("wasm32v1-none");
 
     let env = Env::default();
-    #[allow(deprecated)]
-    let contract_id = env.register_contract_wasm(None, wasm.as_slice());
+    let contract_id = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(&env, &contract_id);
 
     env.cost_estimate().budget().reset_unlimited();
@@ -590,7 +737,7 @@ fn test_storage_read_wasm_local() {
     client.do_read_heavy_work(&100);
 
     let budget = env.cost_estimate().budget();
-    let read_bytes = env.cost_estimate().resources().read_bytes;
+    let read_bytes = env.cost_estimate().resources().disk_read_bytes;
     let cpu = budget.cpu_instruction_cost();
     let mem = budget.memory_bytes_cost();
 
@@ -598,4 +745,314 @@ fn test_storage_read_wasm_local() {
     println!("READ_BYTES={}", read_bytes);
     println!("CPU_INSTRUCTIONS={}", cpu);
     println!("MEMORY_BYTES={}", mem);
+}
+
+/// Measures actual local Tier A WASM budget metrics for `amm-pool-contract`
+/// functions and exports `current_report.json` to the workspace root.
+#[test]
+fn test_export_tier_a_budget_report() {
+    let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
+    let wasm_bytes = match std::fs::read(wasm_path) {
+        Ok(b) => b,
+        Err(_) => return, // Skip if WASM has not been pre-compiled
+    };
+    let wasm_size = wasm_bytes.len() as u32;
+
+    // 1) do_expensive_work
+    let (exp_cpu, exp_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_expensive_work(&10_000);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    // 2) require_auth_only
+    let (auth_cpu, auth_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        let user = Address::generate(&env);
+        client.initialize();
+        env.mock_all_auths();
+        env.cost_estimate().budget().reset_unlimited();
+        client.require_auth_only(&user);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    // 3) allocate_vec — use a small n to stay within the 40 MB host
+    //    invocation memory ceiling (10_000 blows through it at ~400 MB).
+    let (alloc_cpu, alloc_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.allocate_vec(&100);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    // 4) do_event_heavy_work
+    let (ev_cpu, ev_mem) = {
+        let env = Env::default();
+        let contract_id = env.register(wasm_bytes.as_slice(), ());
+        let client = ConstantProductPoolClient::new(&env, &contract_id);
+        env.cost_estimate().budget().reset_unlimited();
+        client.do_event_heavy_work(&5);
+        (
+            env.cost_estimate().budget().cpu_instruction_cost() as u32,
+            env.cost_estimate().budget().memory_bytes_cost() as u32,
+        )
+    };
+
+    struct Row {
+        package: &'static str,
+        function: &'static str,
+        metric: &'static str,
+        value: Option<u32>,
+    }
+
+    let rows = vec![
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "CPU Instructions",
+            value: Some(exp_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Memory Bytes",
+            value: Some(exp_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_expensive_work",
+            metric: "WASM Bytes",
+            value: Some(wasm_size),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "CPU Instructions",
+            value: Some(auth_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Memory Bytes",
+            value: Some(auth_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "require_auth_only",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "CPU Instructions",
+            value: Some(alloc_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Memory Bytes",
+            value: Some(alloc_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "allocate_vec",
+            metric: "Write Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "CPU Instructions",
+            value: Some(ev_cpu),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Memory Bytes",
+            value: Some(ev_mem),
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Read Bytes",
+            value: None,
+        },
+        Row {
+            package: "amm-pool-contract",
+            function: "do_event_heavy_work",
+            metric: "Write Bytes",
+            value: None,
+        },
+    ];
+
+    let mut json_str = String::from("{\n  \"schema_version\": 1,\n  \"snapshots\": [\n");
+    for (i, r) in rows.iter().enumerate() {
+        json_str.push_str("    {\n");
+        json_str.push_str(&format!("      \"package\": \"{}\",\n", r.package));
+        json_str.push_str(&format!("      \"function\": \"{}\",\n", r.function));
+        json_str.push_str(&format!("      \"metric\": \"{}\",\n", r.metric));
+        if let Some(val) = r.value {
+            json_str.push_str(&format!("      \"value\": {}\n", val));
+        } else {
+            json_str.push_str("      \"value\": null\n");
+        }
+        json_str.push_str("    }");
+        if i + 1 < rows.len() {
+            json_str.push(',');
+        }
+        json_str.push('\n');
+    }
+    json_str.push_str("  ]\n}\n");
+
+    let _ = std::fs::write("../current_report.json", &json_str);
+    let _ = std::fs::write("current_report.json", &json_str);
+}
+
+// ── Negative-control budget tests ──────────────────────────────────────
+//
+// These tests validate the budget assertion machinery itself by deliberately
+// exceeding budgets and confirming the macros fire as expected. Without
+// negative controls, a regression that silently disabled the assertions
+// would leave the entire suite green while the tool's core promise was broken.
+//
+// DO NOT "FIX" these tests by raising the limits — they are intentionally
+// set to fail, and the test harness treats that failure as success via
+// #[should_panic].
+
+/// Negative control: CPU budget macro fires when deliberately exceeded.
+///
+/// Sets a CPU limit of 500 instructions — far below the real cost of any
+/// WASM contract invocation, which is typically 3M+ instructions including
+/// module instantiation overhead. The margin is large enough (6000x too low)
+/// to be immune to measurement noise.
+///
+/// This test MUST panic with the expected message. If it passes, the
+/// #[budget_cpu_lt] macro is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_cpu_lt(500)]
+fn test_negative_control_cpu_budget_assertion_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Any real invocation exceeds 500 instructions by orders of magnitude.
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Memory budget macro fires when deliberately exceeded.
+///
+/// Sets a memory limit of 10 bytes — impossibly low for any WASM contract
+/// invocation, which requires at minimum several KB for the runtime, VM state,
+/// and contract memory. The margin is large enough (>1000x too low) to avoid
+/// any risk of flakiness from runtime variations.
+///
+/// This test MUST panic with the expected message. If it passes, the
+/// #[budget_mem_lt] macro is broken.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_mem_lt(10)]
+fn test_negative_control_mem_budget_assertion_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    // Any real invocation exceeds 10 bytes by orders of magnitude.
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Combined CPU+memory budget macro fires when CPU exceeded.
+///
+/// Sets a CPU limit of 1000 instructions (far too low) while leaving memory
+/// generous. Confirms that #[budget_lt] with multiple metrics correctly
+/// enforces each one independently and panics when any single metric fails.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(cpu = 1000, mem = 10_000_000)]
+fn test_negative_control_combined_budget_cpu_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Combined CPU+memory budget macro fires when memory exceeded.
+///
+/// Sets a memory limit of 50 bytes (impossibly low) while leaving CPU
+/// generous. Confirms that #[budget_lt] correctly enforces the memory metric
+/// even when CPU passes.
+#[test]
+#[should_panic(
+    expected = "local estimate, real network cost may differ significantly in either direction"
+)]
+#[budget_lt(cpu = 50_000_000, mem = 50)]
+fn test_negative_control_combined_budget_mem_fires() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.require_auth_only(&user);
+}
+
+/// Negative control: Validates that disabling a test confirms the assertion
+/// machinery was the cause of failure, not an unrelated panic.
+///
+/// This test is identical to test_negative_control_cpu_budget_assertion_fires
+/// but without #[should_panic]. It should FAIL when run, proving the budget
+/// assertion is what fires in the corresponding negative-control test.
+///
+/// Run this manually to confirm: `cargo test test_negative_control_disabled_cpu_fails -- --ignored`
+/// Expected: test FAILS with budget assertion panic (not passes).
+#[test]
+#[ignore]
+#[budget_cpu_lt(500)]
+fn test_negative_control_disabled_cpu_fails() {
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.require_auth_only(&user);
 }

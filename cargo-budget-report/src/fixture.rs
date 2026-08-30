@@ -4,7 +4,7 @@ use std::path::Path;
 
 pub const FIXTURE_VERSION: u32 = 1;
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct FixtureFile {
     pub fixture_version: u32,
     pub entries: HashMap<String, serde_json::Value>,
@@ -19,6 +19,9 @@ impl FixtureFile {
         }
     }
 
+    /// Loaded by `ReplayTransport`; only reachable from tests until a
+    /// record/replay CLI flag lands.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read fixture file: {}", path.as_ref().display()))?;
@@ -35,6 +38,9 @@ impl FixtureFile {
         Ok(fixture)
     }
 
+    /// Called by `RecordingTransport::into_fixture` consumers; only
+    /// reachable from tests until a record/replay CLI flag lands.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let content =
             serde_json::to_string_pretty(self).context("Failed to serialize fixture file")?;
