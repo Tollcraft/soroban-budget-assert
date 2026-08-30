@@ -24,6 +24,7 @@ use compare::{
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -32,9 +33,8 @@ use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::settings::object::Rows;
 use tabled::settings::Color as TabledColor;
 use tabled::settings::Modify;
-use tabled::{Table, Tabled};
-
 mod contract_exports;
+mod deploy_cache;
 mod deploy_diagnostics;
 mod derive;
 mod error;
@@ -1787,7 +1787,27 @@ fn run() -> Result<i32> {
     // use `LiveTransport` (which owns the retry policy); `ReplayTransport`
     // (fed by `RecordingTransport`) is available to tests and a follow-up
     // CLI flag.
-    let mut transport = live::LiveTransport::new(retry_config, args.quiet);
+    let mut transport: TransportKind = if let Some(replay_path) = &args.replay {
+        TransportKind::Replay(
+            replay::ReplayTransport::load(Path::new(replay_path))
+                .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
+        )
+    } else if args.record.is_some() {
+        TransportKind::Recording(record::RecordingTransport::new(live::LiveTransport::new(
+            retry_config,
+            args.quiet,
+            net_override.clone(),
+        )))
+    } else {
+        TransportKind::Live(live::LiveTransport::new(
+            retry_config,
+            args.quiet,
+            net_override.clone(),
+        ))
+    };
+
+    let mut deploy_cache = deploy_cache::DeployCache::load(std::path::Path::new("."));
+    let mut all_exported = HashSet::new();
 
     for package in metadata.packages {
         let is_cdylib = package
@@ -1899,14 +1919,31 @@ fn run() -> Result<i32> {
             Some(pb)
         };
 
-        let contract_id = deploy_contract_with_retry(
-            &mut transport,
-            wasm_path.as_std_path(),
-            &source,
-            &network,
-            &package.name,
-            &retry_config,
-        )?;
+        let wasm_std_path = wasm_path.as_std_path();
+        let wasm_sha = deploy_cache::wasm_hash(wasm_std_path)?;
+        let cached_id = if args.no_deploy_cache {
+            None
+        } else {
+            deploy_cache
+                .get(&wasm_sha, &network, &source)
+                .map(str::to_string)
+        };
+
+        let (contract_id, from_cache) = match cached_id {
+            Some(id) => (id, true),
+            None => {
+                let id = deploy_contract_with_retry(
+                    &mut transport,
+                    wasm_std_path,
+                    &source,
+                    &network,
+                    &package.name,
+                    &retry_config,
+                )?;
+                deploy_cache.put(package.name.as_str(), &wasm_sha, &network, &source, &id);
+                (id, false)
+            }
+        };
 
         if let Some(spinner) = spinner {
             spinner.finish_and_clear();

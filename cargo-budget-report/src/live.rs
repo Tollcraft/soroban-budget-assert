@@ -14,16 +14,44 @@ use std::process::{Command, Stdio};
 /// [`crate::run_with_retry`] machinery, while deterministic failures abort
 /// immediately. [`crate::RetryConfig`] comes from `--max-retry-attempts` /
 /// `--retry-backoff-secs` and the `[retry]` section of `budget.toml`.
+#[derive(Clone, Debug)]
+pub struct NetworkOverride {
+    pub rpc_url: String,
+    pub network_passphrase: String,
+}
+
+/// The production transport: runs `stellar` and `curl` against the real
+/// network.
+///
+/// Retry policy lives here rather than in the callers because this is the
+/// only implementation that talks to the network — transient failures
+/// (rate limits, connection errors) are retried with the crate-wide
+/// [`crate::run_with_retry`] machinery, while deterministic failures abort
+/// immediately. [`crate::RetryConfig`] comes from `--max-retry-attempts` /
+/// `--retry-backoff-secs` and the `[retry]` section of `budget.toml`.
 pub struct LiveTransport {
     retry_config: crate::RetryConfig,
     quiet: bool,
+    net_override: Option<NetworkOverride>,
 }
 
 impl LiveTransport {
-    pub fn new(retry_config: crate::RetryConfig, quiet: bool) -> Self {
+    pub fn new(
+        retry_config: crate::RetryConfig,
+        quiet: bool,
+        net_override: Option<NetworkOverride>,
+    ) -> Self {
         LiveTransport {
             retry_config,
             quiet,
+            net_override,
+        }
+    }
+
+    pub fn rpc_url(&self) -> &str {
+        match &self.net_override {
+            Some(o) => &o.rpc_url,
+            None => "https://soroban-testnet.stellar.org:443",
         }
     }
 }
@@ -94,8 +122,18 @@ impl Transport for LiveTransport {
         func_args: &[String],
         _package: &str,
     ) -> Result<String> {
-        let invoke_args =
-            crate::build_invoke_args(contract_id, source, network, function, func_args);
+        let rpc_override = self
+            .net_override
+            .as_ref()
+            .map(|o| (o.rpc_url.as_str(), o.network_passphrase.as_str()));
+        let invoke_args = crate::build_invoke_args(
+            contract_id,
+            source,
+            network,
+            function,
+            func_args,
+            rpc_override,
+        );
 
         crate::run_with_retry(
             &self.retry_config,

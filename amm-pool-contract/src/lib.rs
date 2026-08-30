@@ -560,4 +560,46 @@ impl ConstantProductPool {
             client.transfer(&from, &to, &amount);
         }
     }
+
+    /// Writes `n` entries to persistent storage, isolating the storage-write
+    /// cost for persistent-durability entries. Each key is a unique composite
+    /// `(symbol, u32)` and each value is a small fixed-size `i128`.
+    ///
+    /// No compute, event, or authorization work is mixed in, so the measured
+    /// cost is dominated by the storage write operations.
+    pub fn do_write_persistent(env: Env, n: u32) {
+        for i in 0..n {
+            env.storage()
+                .persistent()
+                .set(&(symbol_short!("wp"), i), &(i as i128));
+        }
+    }
+
+    /// Writes `n` entries to temporary storage, isolating the storage-write
+    /// cost for temporary-durability entries. Each key is a unique composite
+    /// `(symbol, u32)` and each value is a small fixed-size `i128`.
+    ///
+    /// No compute, event, or authorization work is mixed in, so the measured
+    /// cost is dominated by the storage write operations.
+    pub fn do_write_temporary(env: Env, n: u32) {
+        for i in 0..n {
+            env.storage()
+                .temporary()
+                .set(&(symbol_short!("wt"), i), &(i as i128));
+        }
+    }
+
+    /// Writes `n` entries to instance storage, isolating the storage-write
+    /// cost for instance-durability entries. Each key is a unique composite
+    /// `(symbol, u32)` and each value is a small fixed-size `i128`.
+    ///
+    /// No compute, event, or authorization work is mixed in, so the measured
+    /// cost is dominated by the storage write operations.
+    pub fn do_write_instance(env: Env, n: u32) {
+        for i in 0..n {
+            env.storage()
+                .instance()
+                .set(&(symbol_short!("wi"), i), &(i as i128));
+        }
+    }
 }
