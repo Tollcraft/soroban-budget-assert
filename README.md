@@ -308,3 +308,4 @@ cargo run -p cargo-budget-report --bin generate-manpage -- cargo-budget-report.1
 ```
 
 This writes the rendered `cargo-budget-report` man page to the chosen output path.
+// Stellar Wave #494
