@@ -5,7 +5,13 @@
   <title>Soroban Budget Assert — Cost-over-time Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="./assets/dashboard.css" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <!-- Chart.js with Subresource Integrity (SRI) check. To regenerate:
+       curl -s https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js | \
+       openssl dgst -sha384 -binary | openssl base64 -A
+       (or: powershell -Command "..." with equivalent hash computation) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js" 
+          integrity="sha384-DhxhYObIMeMNGyAG7iK11OHzBIKyEIeRL0ad1iFPAOwZB8iirUlTT0O/WJJUk8+o" 
+          crossorigin="anonymous"></script>
 </head>
 <body>
   <header>
