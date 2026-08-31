@@ -24,7 +24,7 @@
 The tool is split into two primary components:
 
 1. **`budget-macros` (Tier A - Local, Fast, CI-Blocking)**
-   - Rust macros (`#[budget_cpu_lt(N)]`, `#[budget_mem_lt(N)]`, `#[budget_read_bytes_lt(N)]`, `#[budget_write_bytes_lt(N)]`) applied directly to your test functions.
+   - Rust macros (`#[budget_cpu_lt(N)]`, `#[budget_mem_lt(N)]`, `#[budget_read_bytes_lt(N)]`, `#[budget_write_bytes_lt(N)]`, `#[budget_lt(cpu = …, mem = …)]`, `#[budget_events_lt(N)]`, `#[budget_ledger_entries_lt(N)]`, `#[budget_scaling(…)]`) applied directly to your test functions.
    - Fails the test the moment measured cost crosses your pinned limit, so cost regressions are caught in CI instead of on the network.
 
 2. **`cargo-budget-report` (Tier B - Network-Verified, Reporting)**
@@ -247,10 +247,10 @@ deploy/invoke that consume this key are a work in progress (issue #123).
 
 **Use Macros in Tests:**
 
-The macros (`budget_cpu_lt`, `budget_mem_lt`, `budget_read_bytes_lt`, `budget_write_bytes_lt`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
+The macros (`budget_cpu_lt`, `budget_mem_lt`, `budget_read_bytes_lt`, `budget_write_bytes_lt`, `budget_lt`, `budget_events_lt`, `budget_ledger_entries_lt`, `budget_scaling`) are attribute macros for test functions. They require a local variable named **`env`** — the generated code reads `env.cost_estimate().budget()` by name.
 
 ```rust
-use budget_macros::{budget_cpu_lt, budget_mem_lt, budget_read_bytes_lt, budget_write_bytes_lt};
+use budget_macros::{budget_cpu_lt, budget_mem_lt, budget_read_bytes_lt, budget_write_bytes_lt, budget_lt, budget_events_lt, budget_ledger_entries_lt};
 use soroban_sdk::Env;
 
 // CPU instruction assertion. The limit is read at test runtime from a

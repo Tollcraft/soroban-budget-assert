@@ -177,6 +177,8 @@ Asserts that the ledger write bytes used by `env` are strictly less than `N`.
 
 Write bytes represent the total bytes written to ledger storage during contract execution. This macro measures the local `memory_bytes_cost` as a proxy, which correlates with storage serialization overhead even though the exact on-network write-bytes figure is only available via RPC simulation.
 
+**Static limit:**
+
 ```rust
 use budget_macros::budget_write_bytes_lt;
 
@@ -186,6 +188,61 @@ fn test_write_bytes_budget() {
     let env = Env::default();
     // ...
 }
+```
+
+**Dynamic limit:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(env = "MAX_WRITE_BYTES")]
+fn test_write_bytes_with_env_limit() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from a `.env` file:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(env_file = "../tier-a-limits.env", env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__WRITE")]
+fn test_write_bytes_with_env_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limit** — read from `budget.json` in the process working directory:
+
+```rust
+#[test]
+#[budget_write_bytes_lt(config = "write_bytes")]
+fn test_write_bytes_with_json_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+measurement before it is compared, so the *marginal* write-bytes cost is what is
+asserted. The subtraction saturates at 0.
+
+```rust
+#[test]
+#[budget_write_bytes_lt(4096, baseline = instantiation_floor_write_bytes())]
+fn test_marginal_write_bytes() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Failure message format:
+```
+Write bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, underestimates real network cost
+```
+and with a baseline:
+```
+Write bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
 ```
 
 ### `#[budget_read_bytes_lt(N)]`
@@ -263,6 +320,240 @@ and with a baseline:
 Read bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
 ```
 
+### `#[budget_events_lt(N)]`
+
+Asserts that the number of events emitted by `env` stays under `N`.
+
+Events are metered by Soroban and are the resource most likely to grow
+accidentally: a contract that emits one event per loop iteration passes
+every CPU and memory assertion while producing an unbounded number of events.
+
+The count is read from `env.events().all().events().len()` — a real event count,
+not a proxy for another metric.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_events_lt;
+
+#[test]
+#[budget_events_lt(10)]
+fn test_event_budget() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Dynamic limit:**
+
+```rust
+#[test]
+#[budget_events_lt(env = "MAX_EVENTS")]
+fn test_events_with_env_limit() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from a `.env` file:**
+
+```rust
+#[test]
+#[budget_events_lt(env_file = "../tier-a-limits.env", env = "TIER_A__DEPOSIT__EVENTS")]
+fn test_events_with_env_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limit:**
+
+```rust
+#[test]
+#[budget_events_lt(config = "event_count")]
+fn test_events_with_json_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+count before comparison, so the *marginal* event count is asserted.
+
+```rust
+#[test]
+#[budget_events_lt(10, baseline = setup_events())]
+fn test_marginal_events() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Failure message format:
+```
+Event count {actual} exceeded limit {N} - local estimate, real network event counts may differ
+```
+and with a baseline:
+```
+Event count {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, real network event counts may differ
+```
+
+### `#[budget_ledger_entries_lt(N)]`
+
+Asserts that the total number of ledger entries accessed (reads + writes) by `env`
+stays under `N`. The network enforces a single combined entry limit, so this macro
+sums both; the failure message reports the breakdown so a breach is never ambiguous.
+
+Counts come from `env.cost_estimate().budget().tracker(ContractCostType::DiskReadEntries)`
+and `…DiskWriteEntries`, summed. `ContractCostType` must be in scope at the call site
+(e.g. `use soroban_sdk::ContractCostType;`).
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_ledger_entries_lt;
+
+#[test]
+#[budget_ledger_entries_lt(50)]
+fn test_entry_budget() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Dynamic limit:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(env = "MAX_ENTRIES")]
+fn test_entries_with_env_limit() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from a `.env` file:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(env_file = "../tier-a-limits.env", env = "TIER_A__DEPOSIT__ENTRIES")]
+fn test_entries_with_env_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limit:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(config = "ledger_entries")]
+fn test_entries_with_json_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+count before comparison.
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(50, baseline = setup_entries())]
+fn test_marginal_entries() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Failure message format:
+```
+Ledger entry count (read: {reads}, write: {writes}, total: {total}) exceeded limit {N} - local estimate, real network entry counts may differ
+```
+and with a baseline:
+```
+Ledger entry count (read: {reads}, write: {writes}, total: {total}) exceeded limit {N} (marginal: {marginal} measured - {baseline} baseline) - local estimate, real network entry counts may differ
+```
+
+### `#[budget_lt(…)]` — combined CPU and memory assertion
+
+Asserts that the CPU instructions and/or memory bytes used by `env` are less than
+specified limits. This is the two-metric sibling of `budget_cpu_lt` / `budget_mem_lt`:
+use it when a single test must stay within both ceilings at once.
+
+```rust
+use budget_macros::budget_lt;
+
+#[test]
+#[budget_lt(cpu = 850_000, mem = 500_000)]
+fn test_combined_budget() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Either `cpu` or `mem` may be omitted — the missing metric is simply not asserted.
+Each accepts the same four limit forms as the standalone macros:
+
+```rust
+#[test]
+#[budget_lt(
+    cpu = 850_000,
+    mem = env = "MY_MEM_LIMIT",
+)]
+fn test_mixed_forms() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baselines** are specified separately per metric:
+
+```rust
+#[test]
+#[budget_lt(
+    cpu = 500,
+    mem = 500,
+    cpu_baseline = cpu_floor(),
+    mem_baseline = mem_floor(),
+)]
+fn test_marginal_combined() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limits:**
+
+```rust
+#[test]
+#[budget_lt(cpu = config = "cpu_instructions", mem = config = "memory_bytes")]
+fn test_with_json_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from a `.env` file:**
+
+```rust
+#[test]
+#[budget_lt(
+    cpu = env_file = "../tier-a-limits.env", env = "TIER_A__DEPOSIT__CPU",
+    mem = env_file = "../tier-a-limits.env", env = "TIER_A__DEPOSIT__MEM",
+)]
+fn test_with_env_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+`budget_lt` also works on `impl` blocks (see the
+[impl-block section](#applying-a-budget-attribute-to-an-impl-block) below).
+
+Failure message format follows `budget_cpu_lt` / `budget_mem_lt` for each metric
+that is asserted.
+
 ### `#[budget_scaling(…)]` — growth-model assertion
 
 Asserts that the CPU cost *grows* according to a declared model as input size
@@ -321,7 +612,8 @@ observed ratios, deviation, and all measurements.
 ### Applying a budget attribute to an `impl` block
 
 `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`,
-`#[budget_read_bytes_lt]` and `#[budget_lt]` may be placed on an `impl` block.
+`#[budget_read_bytes_lt]`, `#[budget_events_lt]`, `#[budget_ledger_entries_lt]`,
+and `#[budget_lt]` may be placed on an `impl` block.
 The limit then applies to **every** `fn` in the block:
 
 ```rust
