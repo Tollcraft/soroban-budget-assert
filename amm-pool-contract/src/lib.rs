@@ -5,8 +5,18 @@
 // bump (issue #382). Suppress the deprecation rather than half-migrate it.
 #![allow(deprecated)]
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, token, vec, Address, Bytes, BytesN, Env, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, symbol_short, token, vec, Address, Bytes, BytesN, Env,
+    Symbol, Val, Vec,
 };
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    /// Attempted to initialize an already-initialized pool.
+    AlreadyInitialized = 1,
+    /// Swap or withdraw would result in output below the caller's minimum.
+    SlippageExceeded = 2,
+}
 
 const RESERVE_A: Symbol = symbol_short!("resA");
 const RESERVE_B: Symbol = symbol_short!("resB");
@@ -74,18 +84,20 @@ pub struct ConstantProductPool;
 
 #[contractimpl]
 impl ConstantProductPool {
-    pub fn initialize(env: Env) {
+    pub fn initialize(env: Env) -> Result<(), Error> {
         if env.storage().instance().has(&RESERVE_A) {
-            panic!("already initialized");
+            return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&RESERVE_A, &0i128);
         env.storage().instance().set(&RESERVE_B, &0i128);
         env.storage().instance().set(&TOTAL_SHARES, &0i128);
+        Ok(())
     }
 
     pub fn deposit(env: Env, to: Address, amount_a: i128, amount_b: i128) -> i128 {
         to.require_auth();
 
+        // Invariant: initialize() sets these keys before any deposit/swap/withdraw.
         let reserve_a: i128 = env.storage().instance().get(&RESERVE_A).unwrap();
         let reserve_b: i128 = env.storage().instance().get(&RESERVE_B).unwrap();
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES).unwrap();
@@ -138,9 +150,10 @@ impl ConstantProductPool {
         is_a_in: bool,
         amount_in: i128,
         min_amount_out: i128,
-    ) -> i128 {
+    ) -> Result<i128, Error> {
         to.require_auth();
 
+        // Invariant: initialize() sets these keys before any deposit/swap/withdraw.
         let reserve_a: i128 = env.storage().instance().get(&RESERVE_A).unwrap();
         let reserve_b: i128 = env.storage().instance().get(&RESERVE_B).unwrap();
 
@@ -168,7 +181,7 @@ impl ConstantProductPool {
         let amount_out = out_reserve * amount_in / (in_reserve + amount_in);
 
         if amount_out < min_amount_out {
-            panic!("slippage exceeded");
+            return Err(Error::SlippageExceeded);
         }
 
         let bal_a: i128 = env.storage().instance().get(&BAL_A).unwrap_or(0);
@@ -206,12 +219,19 @@ impl ConstantProductPool {
         env.events()
             .publish(("swap",), (to, is_a_in, amount_in, amount_out));
 
-        amount_out
+        Ok(amount_out)
     }
 
-    pub fn withdraw(env: Env, to: Address, shares: i128, min_a: i128, min_b: i128) -> (i128, i128) {
+    pub fn withdraw(
+        env: Env,
+        to: Address,
+        shares: i128,
+        min_a: i128,
+        min_b: i128,
+    ) -> Result<(i128, i128), Error> {
         to.require_auth();
 
+        // Invariant: initialize() sets these keys before any deposit/swap/withdraw.
         let reserve_a: i128 = env.storage().instance().get(&RESERVE_A).unwrap();
         let reserve_b: i128 = env.storage().instance().get(&RESERVE_B).unwrap();
         let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES).unwrap();
@@ -220,7 +240,7 @@ impl ConstantProductPool {
         let amount_b = reserve_b * shares / total_shares;
 
         if amount_a < min_a || amount_b < min_b {
-            panic!("slippage exceeded");
+            return Err(Error::SlippageExceeded);
         }
 
         let bal_a: i128 = env.storage().instance().get(&BAL_A).unwrap_or(0);
@@ -243,7 +263,7 @@ impl ConstantProductPool {
         env.events()
             .publish(("withdraw",), (to, shares, amount_a, amount_b));
 
-        (amount_a, amount_b)
+        Ok((amount_a, amount_b))
     }
 
     /// Does nothing, deliberately.
