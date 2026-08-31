@@ -1032,3 +1032,79 @@ Effects of this file:
 - `withdraw` has an entry but no `*_limit` fields, so its metrics are reported and it participates in `--check`'s fail-on-simulation-error rule, but no metric is enforced.
 - If `amm-pool-contract` were renamed tomorrow, every section above would keep working unchanged except `[scenarios.full_workflow]`, whose `package` value must match the annotation used by Tier A tests.
 - If `initialize` had been misspelled (e.g. `[functions.initialise]`), nothing would error and nothing would fail: the orphaned entry would be ignored, `initialize` would run unconfigured with no arguments, and none of its metrics would be enforced — the only symptom is missing rows in a later report.
+
+### `#[budget_lt(N)]`
+
+Generic budget assertion — asserts that **both** CPU instruction cost **and**
+memory bytes cost are strictly less than `N`. This macro is a convenience
+shorthand when you want a single ceiling covering both metrics.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_lt;
+
+#[test]
+#[budget_lt(1_000_000)]
+fn test_generic_budget() {
+    let env = Env::default();
+    // ... contract invocation ...
+}
+```
+
+**Dynamic limit from environment variable:**
+
+```rust
+#[test]
+#[budget_lt(env = "GENERIC_BUDGET_LIMIT")]
+fn test_generic_with_env() {
+    std::env::set_var("GENERIC_BUDGET_LIMIT", "1000000");
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from `.env` file:**
+
+```rust
+#[test]
+#[budget_lt(env_file = "../tier-a-limits.env", env = "TIER_A__GENERIC__LIMIT")]
+fn test_generic_from_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limit:**
+
+```rust
+#[test]
+#[budget_lt(config = "generic_budget")]
+fn test_generic_from_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baseline subtraction:**
+
+```rust
+#[test]
+#[budget_lt(1_000_000, baseline = instantiation_floor())]
+fn test_generic_marginal() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Failure message format:
+```
+CPU instruction cost {cpu} exceeded limit {N}
+Memory bytes cost {mem} exceeded limit {N}
+```
+
+The first check that fails triggers the panic — if both are over, only the
+CPU failure is reported. The macro supports the same attribute forms as
+`budget_cpu_lt` and `budget_mem_lt`: integer literal, `env = "VAR"`,
+`env_file = "PATH"`, `config = "key"`, and `baseline = <expr>`.
+
