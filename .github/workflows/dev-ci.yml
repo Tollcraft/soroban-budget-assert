@@ -1,0 +1,32 @@
+# Integration CI for the `dev` branch.
+#
+# `dev` is where contributors land work, so it deliberately runs exactly one
+# check: does the workspace still compile? The full suite (quality, coverage,
+# budget, security, release) stays scoped to `main` and runs on the
+# `dev` -> `main` pull request, which is what keeps `main` green.
+name: Dev CI
+
+on:
+  push:
+    branches: ["dev"]
+  pull_request:
+    branches: ["dev"]
+
+concurrency:
+  group: dev-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No explicit toolchain: rust-toolchain.toml pins the channel, targets
+      # and components, and rustup on the runner honours it.
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --workspace --all-targets --locked
