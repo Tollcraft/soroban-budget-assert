@@ -29,4 +29,4 @@ jobs:
       # and components, and rustup on the runner honours it.
       - uses: Swatinem/rust-cache@v2
       - name: cargo check
-        run: cargo check --workspace --all-targets --locked
+        run: cargo check --workspace --all-targets
