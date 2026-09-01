@@ -1652,8 +1652,24 @@ fn main() {
 /// success, configuration error, budget exceeded, regression beyond
 /// tolerance, and network/infrastructure failure. Any unexpected error
 /// bubbles up as `Err` and is mapped to its variant's code by the caller.
+/// Accept both `cargo budget-report [OPTIONS]` and a direct
+/// `cargo-budget-report [OPTIONS]` invocation.
+///
+/// `CargoCli` is declared as a cargo subcommand, so clap expects the
+/// `budget-report` word as the first argument. Cargo supplies it; a direct
+/// call does not -- and the released binaries and
+/// `cargo run --bin cargo-budget-report -- ...` are direct calls. Inserting
+/// the word when it is absent makes both spellings work.
+fn normalized_argv() -> Vec<std::ffi::OsString> {
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if argv.get(1).is_none_or(|a| a != "budget-report") {
+        argv.insert(1, std::ffi::OsString::from("budget-report"));
+    }
+    argv
+}
+
 fn run() -> Result<i32> {
-    let CargoCli::BudgetReport(args) = CargoCli::parse();
+    let CargoCli::BudgetReport(args) = CargoCli::parse_from(normalized_argv());
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {

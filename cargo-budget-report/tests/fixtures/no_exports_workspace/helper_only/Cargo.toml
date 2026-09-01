@@ -9,3 +9,9 @@ crate-type = ["rlib"]
 
 [dependencies]
 soroban-sdk = { path = "../soroban_sdk_stub" }
+
+# The point of this fixture is a crate that *declares* soroban-sdk but is an
+# rlib rather than a cdylib, so the dependency is deliberately never used in
+# code. cargo-machete would otherwise report it on every run.
+[package.metadata.cargo-machete]
+ignored = ["soroban-sdk"]
