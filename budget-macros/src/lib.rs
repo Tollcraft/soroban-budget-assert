@@ -205,6 +205,9 @@ impl Parse for BudgetLimit {
         // Spans of the key tokens, for precise error pointers.
         let mut env_span: Option<Span> = None;
         let mut env_file_span: Option<Span> = None;
+        // Kept so the on-disk check can run *after* the combination validation
+        // below; see the `EnvFile` arm.
+        let mut env_file_lit: Option<LitStr> = None;
         let mut config_span: Option<Span> = None;
         // First identifier seen that is not a limit-source key. Only used to
         // improve the error when nothing valid was parsed at all.
@@ -278,22 +281,15 @@ impl Parse for BudgetLimit {
                 let path: proc_macro2::TokenStream = if input.peek(LitStr) {
                     let lit: LitStr = input.parse()?;
                     // A literal path is knowable now, so a typo or a file that
-                    // was never checked in should fail the build here — not at
-                    // test runtime, and never silently. A non-literal path
-                    // (`env_file = CONST` / an expression) may be produced by
-                    // the build, so it stays a runtime resolution.
-                    if resolve_env_file_at_expansion(&lit.value()).is_none() {
-                        return Err(syn::Error::new(
-                            lit.span(),
-                            format!(
-                                "env_file {:?} was not found at macro-expansion time \
-                                 (looked relative to CARGO_MANIFEST_DIR and the build's \
-                                 working directory). Create the file, fix the path, or \
-                                 pass it as a `const` if it is generated during the build.",
-                                lit.value()
-                            ),
-                        ));
-                    }
+                    // was never checked in should fail the build rather than at
+                    // test runtime. The check itself is deferred until the
+                    // attribute's shape has been validated, so a malformed
+                    // attribute reports what is actually wrong with it instead
+                    // of complaining about a file the caller may not have meant
+                    // to name. A non-literal path (`env_file = CONST` / an
+                    // expression) may be produced by the build, so it stays a
+                    // runtime resolution.
+                    env_file_lit = Some(lit.clone());
                     lit.into_token_stream()
                 } else {
                     let expr: Expr = input.parse()?;
@@ -402,10 +398,26 @@ impl Parse for BudgetLimit {
             return Ok(BudgetLimit::Percentage { pct, of });
         }
         match (env_file, env_var, config_key) {
-            (Some(path), Some(var), None) => Ok(BudgetLimit::EnvFile {
-                path,
-                var_name: var,
-            }),
+            (Some(path), Some(var), None) => {
+                if let Some(lit) = &env_file_lit {
+                    if resolve_env_file_at_expansion(&lit.value()).is_none() {
+                        return Err(syn::Error::new(
+                            lit.span(),
+                            format!(
+                                "env_file {:?} was not found at macro-expansion time \
+                                 (looked relative to CARGO_MANIFEST_DIR and the build's \
+                                 working directory). Create the file, fix the path, or \
+                                 pass it as a `const` if it is generated during the build.",
+                                lit.value()
+                            ),
+                        ));
+                    }
+                }
+                Ok(BudgetLimit::EnvFile {
+                    path,
+                    var_name: var,
+                })
+            }
             (None, Some(var), None) => Ok(BudgetLimit::EnvVar(var)),
             (None, None, Some(key)) => Ok(BudgetLimit::Config(key)),
             (Some(_), None, None) => Err(syn::Error::new(

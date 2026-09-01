@@ -272,6 +272,17 @@ pub struct BudgetReportArgs {
     /// which must be installed (checked at preflight).
     #[arg(long, value_name = "S...", env = "STELLAR_SECRET_KEY")]
     pub source_secret: Option<String>,
+
+    /// Maximum per-function simulations in flight per package (#455).
+    ///
+    /// Per-function simulations are independent, read-only and
+    /// latency-bound, so they run on a bounded pool of scoped threads.
+    /// Deploys stay strictly sequential; only the simulations fan out.
+    /// `1` reproduces the old sequential behaviour exactly. Results are
+    /// keyed by task index and sorted before rendering, so output order and
+    /// measured values never depend on completion order.
+    #[arg(long, value_name = "N", default_value_t = DEFAULT_CONCURRENCY)]
+    pub concurrency: usize,
 }
 
 /// Colour policy for the plain-text `--check` output.
