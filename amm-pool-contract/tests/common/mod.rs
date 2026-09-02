@@ -11,6 +11,11 @@
 //! falls back to the workspace-root `target/` directory, so it works for any
 //! test working directory and any custom target-dir setup.
 
+// Each of the three integration-test binaries in this directory declares
+// `mod common;` and uses only the part of it that it needs, so every binary
+// sees the rest as dead. Same idiom as `cargo-budget-report/src/limit_checks.rs`.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, PoisonError};

@@ -1,10 +1,11 @@
-use crate::cli::{BudgetReportArgs, ColorChoice};
+use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
 use crate::derive::{DerivationConfig, Margin};
 use crate::error::{
     Error, Result, SimulationFailure, SimulationOutcome, EXIT_BUDGET_EXCEEDED,
     EXIT_NETWORK_FAILURE, EXIT_REGRESSION, EXIT_SUCCESS,
 };
 use anyhow::Context;
+use clap::Parser;
 mod arg_spec;
 mod cli;
 mod compare;
@@ -34,6 +35,7 @@ use stellar_xdr::{Limits, ReadXdr, SorobanTransactionData};
 use tabled::settings::object::Rows;
 use tabled::settings::Color as TabledColor;
 use tabled::settings::Modify;
+use tabled::{Table, Tabled};
 mod contract_exports;
 mod deploy_cache;
 mod deploy_diagnostics;
@@ -1650,8 +1652,24 @@ fn main() {
 /// success, configuration error, budget exceeded, regression beyond
 /// tolerance, and network/infrastructure failure. Any unexpected error
 /// bubbles up as `Err` and is mapped to its variant's code by the caller.
+/// Accept both `cargo budget-report [OPTIONS]` and a direct
+/// `cargo-budget-report [OPTIONS]` invocation.
+///
+/// `CargoCli` is declared as a cargo subcommand, so clap expects the
+/// `budget-report` word as the first argument. Cargo supplies it; a direct
+/// call does not -- and the released binaries and
+/// `cargo run --bin cargo-budget-report -- ...` are direct calls. Inserting
+/// the word when it is absent makes both spellings work.
+fn normalized_argv() -> Vec<std::ffi::OsString> {
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if argv.get(1).is_none_or(|a| a != "budget-report") {
+        argv.insert(1, std::ffi::OsString::from("budget-report"));
+    }
+    argv
+}
+
 fn run() -> Result<i32> {
-    let args = crate::cli::parse_args();
+    let CargoCli::BudgetReport(args) = CargoCli::parse_from(normalized_argv());
 
     // ── --init: scaffold a template and exit ──────────────────────────
     if args.init {
@@ -2025,6 +2043,9 @@ fn run() -> Result<i32> {
             eprintln!("Contract deployed at: {}", contract_id);
         }
 
+        // Collected first, then fanned out: the deploy above is sequential,
+        // only the per-function simulations run concurrently.
+        let mut tasks: Vec<(String, Vec<String>)> = Vec::new();
         for function in &contract.exported_fns {
             if let Some(pb) = progress_guard.0.as_ref() {
                 pb.set_message(format!(
@@ -2042,6 +2063,7 @@ fn run() -> Result<i32> {
             tasks.push((function.clone(), func_args));
         }
 
+        let concurrency = args.concurrency.max(1);
         let workers = concurrency.min(tasks.len()).max(1);
         if !args.quiet && !tasks.is_empty() && workers > 1 {
             eprintln!(
@@ -2058,7 +2080,8 @@ fn run() -> Result<i32> {
         // inside the worker: a rate-limited request backs off without
         // stalling unrelated concurrent requests.
         let serialized_transport = args.replay.is_some() || args.record.is_some();
-        let transport_guard = Arc::new(std::sync::Mutex::new(&mut transport));
+        let transport_guard: Arc<std::sync::Mutex<&mut TransportKind>> =
+            Arc::new(std::sync::Mutex::new(&mut transport));
         let collected = Arc::new(std::sync::Mutex::new(Vec::with_capacity(tasks.len())));
         let next_task = std::sync::atomic::AtomicUsize::new(0);
         thread::scope(|scope| {
@@ -2069,7 +2092,7 @@ fn run() -> Result<i32> {
                 let contract_id = contract_id.clone();
                 let source = source.clone();
                 let network = network.clone();
-                let package_name = package.name.clone();
+                let package_name = contract.package_name.clone();
                 let net_override = net_override.clone();
                 let tasks = &tasks;
                 scope.spawn(move || loop {
@@ -2113,18 +2136,20 @@ fn run() -> Result<i32> {
             }
         });
 
-            let outcome = simulate_function(
-                &mut transport,
-                &contract_id,
-                &source,
-                &network,
-                function,
-                &func_args,
-                &contract.package_name,
-            )?;
+        // Drain in task order, not completion order, so output and measured
+        // values are identical to a sequential run.
+        let mut collected = Arc::into_inner(collected)
+            .expect("every worker has joined, so this is the only reference left")
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        collected.sort_by_key(|(index, _)| *index);
+
+        for (index, outcome) in collected {
+            let function = &tasks[index].0;
+            let func_config = toml_config.functions.get(function);
 
             match outcome {
-                SimulationOutcome::Metrics {
+                Ok(SimulationOutcome::Metrics {
                     instructions,
                     read_bytes,
                     write_bytes,
@@ -2251,8 +2276,8 @@ fn run() -> Result<i32> {
                         checks_failed = true;
                         emit_check_failure_entries(
                             &mut reports,
-                            &package.name,
-                            &function,
+                            &contract.package_name,
+                            function,
                             function_config,
                         );
                     }
@@ -3261,7 +3286,6 @@ mod tests {
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
-            markdown: false,
             hide_unchanged: false,
             quiet: false,
             validate: false,
@@ -3304,7 +3328,6 @@ mod tests {
             record_baseline: Some("budget-baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
-            markdown: false,
             hide_unchanged: false,
             quiet: false,
             validate: false,
@@ -3347,7 +3370,6 @@ mod tests {
             record_baseline: None,
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
-            markdown: false,
             hide_unchanged: false,
             quiet: false,
             validate: false,
@@ -3393,7 +3415,6 @@ mod tests {
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
-            markdown: false,
             hide_unchanged: false,
             quiet: false,
             validate: false,

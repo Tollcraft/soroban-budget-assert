@@ -1,4 +1,4 @@
-error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, or `config = "KEY"`
+error: expected an integer literal, `env = "VAR"`, `env_file = "PATH"` + `env = "VAR"`, `config = "KEY"`, or `pct = N, of = <source>`
  --> tests/ui/read_bytes_no_arg.rs:5:1
   |
 5 | #[budget_read_bytes_lt]

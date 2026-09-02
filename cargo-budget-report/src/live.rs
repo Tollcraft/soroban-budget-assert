@@ -30,21 +30,6 @@ pub struct NetworkOverride {
 /// [`crate::run_with_retry`] machinery, while deterministic failures abort
 /// immediately. [`crate::RetryConfig`] comes from `--max-retry-attempts` /
 /// `--retry-backoff-secs` and the `[retry]` section of `budget.toml`.
-#[derive(Clone, Debug)]
-pub struct NetworkOverride {
-    pub rpc_url: String,
-    pub network_passphrase: String,
-}
-
-/// The production transport: runs `stellar` and `curl` against the real
-/// network.
-///
-/// Retry policy lives here rather than in the callers because this is the
-/// only implementation that talks to the network — transient failures
-/// (rate limits, connection errors) are retried with the crate-wide
-/// [`crate::run_with_retry`] machinery, while deterministic failures abort
-/// immediately. [`crate::RetryConfig`] comes from `--max-retry-attempts` /
-/// `--retry-backoff-secs` and the `[retry]` section of `budget.toml`.
 pub struct LiveTransport {
     retry_config: crate::RetryConfig,
     quiet: bool,
