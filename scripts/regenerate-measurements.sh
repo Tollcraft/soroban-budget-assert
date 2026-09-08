@@ -100,10 +100,29 @@ for file in "${test_files[@]}"; do
     # Parse mode, optional feature, and optional test name.
     # Expected: "// @measure local" or "// @measure local:sdk22" or
     #           "// @measure local:sdk22:my_test"
-    mode_part="$(echo "$marker" | awk -F'@measure' '{print $2}' | xargs)"
-    mode="$(echo "$mode_part" | cut -d':' -f1 | xargs)"
-    feature="$(echo "$mode_part" | cut -d':' -f2 | xargs)"
-    test_name="$(echo "$mode_part" | cut -d':' -f3 | xargs)"
+    #
+    # A trailing "# ..." comment is stripped first. Every marker carries
+    # "# discovered by scripts/regenerate-measurements.sh"; left in place it
+    # lands in <mode>, no harness matches "local", and they are all reported
+    # as "SKIPPED (testnet required)".
+    mode_part="$(echo "$marker" | awk -F'@measure' '{print $2}' | sed 's/[[:space:]]*#.*$//' | xargs)"
+
+    # Split on ':' with parameter expansion rather than `cut -f`, which
+    # echoes the whole string for every field when the delimiter is absent:
+    # a bare "local" marker would otherwise yield feature="local" and
+    # test_name="local", invoking the harness as `--features local ... local`.
+    mode="$(echo "${mode_part%%:*}" | xargs)"
+    feature=""
+    test_name=""
+    case "$mode_part" in
+        *:*)
+            marker_rest="${mode_part#*:}"
+            feature="$(echo "${marker_rest%%:*}" | xargs)"
+            case "$marker_rest" in
+                *:*) test_name="$(echo "${marker_rest#*:}" | xargs)" ;;
+            esac
+            ;;
+    esac
     if [[ -z "$mode" ]]; then
         mode="local"
     fi

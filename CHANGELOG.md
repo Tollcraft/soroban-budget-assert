@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `scripts/regenerate-measurements.sh` now strips a trailing `# ...` comment from the `// @measure <mode>` marker before parsing it (issue #602). Every marker carries `# discovered by scripts/regenerate-measurements.sh`; the comment was being folded into `<mode>`, so `"$mode" == "local"` never matched and the five harnesses whose marker has no `:` were all reported as `SKIPPED (testnet required)`. `calibrate_gap_sdk20` and `calibrate_gap_sdk22` did run, but with the comment glued onto the feature name (`--features "sdk20 # discovered by ..."`). The `<feature>` and `<test_name>` fields are now read with parameter expansion rather than `cut -f`, which echoes the whole string for every field when the delimiter is absent — a bare `// @measure local` would otherwise have produced `--features local` once the comment was gone.
+
 - `run_preflight_checks` now checks that `curl` is on `PATH` before building or deploying anything, reporting its absence in the same style as the existing `stellar` CLI and wasm target checks. Previously, a machine with `stellar` and the wasm target but no `curl` would build every workspace package and deploy each contract to the network before failing on the first `simulateTransaction` call, with an error (`failed to execute curl: No such file or directory (os error 2)`) that read like a missing input file rather than a missing program. `--derive-limits` is unaffected, since it does not reach `run_preflight_checks`.
 
 ### Notes
