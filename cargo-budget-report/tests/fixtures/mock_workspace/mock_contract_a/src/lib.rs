@@ -5,11 +5,13 @@
 //! to be a real Soroban contract function.
 #![no_std]
 
+#[inline]
 #[no_mangle]
 pub extern "C" fn ping() -> i64 {
     1
 }
 
+#[cold]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}

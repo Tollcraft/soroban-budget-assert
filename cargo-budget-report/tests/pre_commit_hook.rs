@@ -18,8 +18,9 @@
 //! unconditionally.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 /// Absolute path to the real repository root (where `scripts/` lives),
 /// regardless of the cwd the test binary is invoked from.
@@ -260,6 +261,16 @@ fn install_hooks_sh_fails_clearly_when_source_is_missing() {
 
 /// Finds a PowerShell binary on `PATH`, preferring `pwsh` (PowerShell Core,
 /// cross-platform) over Windows PowerShell's `powershell`.
+/// Returns the combined stdout and stderr output as a single string
+/// for easier assertions on hook output.
+fn output_message(output: &Output) -> String {
+    format!(
+        "stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 fn find_powershell() -> Option<&'static str> {
     ["pwsh", "powershell"].into_iter().find(|&candidate| {
         Command::new(candidate)
@@ -375,5 +386,50 @@ fn pre_commit_hook_allows_well_formatted_code() {
         "commit should have succeeded; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn pre_commit_hook_blocks_code_with_trailing_whitespace() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dir = tmp.path();
+    setup_scratch_repo(dir);
+
+    // Lines with trailing whitespace should also fail formatting checks.
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b \n}\n",
+    )
+    .unwrap();
+
+    git_add_all(dir);
+    let output = git_commit(dir, "add code with trailing whitespace");
+
+    assert!(
+        !output.status.success(),
+        "commit with trailing whitespace should be blocked by the pre-commit hook"
+    );
+}
+
+#[test]
+fn pre_commit_hook_allows_multiple_functions() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dir = tmp.path();
+    setup_scratch_repo(dir);
+
+    // A file with multiple well-formatted functions should pass.
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\npub fn multiply(a: i32, b: i32) -> i32 {\n    a * b\n}\n",
+    )
+    .unwrap();
+
+    git_add_all(dir);
+    let output = git_commit(dir, "add multiple well formatted functions");
+
+    assert!(
+        output.status.success(),
+        "commit with multiple well-formatted functions should succeed; {}",
+        output_message(&output)
     );
 }
