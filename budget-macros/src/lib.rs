@@ -1939,7 +1939,8 @@ pub fn budget_scaling(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_env_file_at_expansion;
+    use super::{resolve_env_file_at_expansion, BudgetLimit, BudgetSpec, StandaloneSpec};
+    use syn::parse_str;
 
     #[test]
     fn resolves_a_path_relative_to_the_crate_manifest_dir() {
@@ -1965,5 +1966,87 @@ mod tests {
     fn a_directory_is_not_accepted_as_an_env_file() {
         // `is_file()` must gate every candidate, so `src` (a directory) is a miss.
         assert!(resolve_env_file_at_expansion("src").is_none());
+    }
+
+    // ── `tests/ui/no_arg.rs` (#643) ────────────────────────────────────────
+    //
+    // The compile-fail fixture pins the diagnostic emitted for an empty
+    // argument list. These tests pin the parser behaviour behind that
+    // diagnostic directly, so a wording change is caught here as well as in
+    // the `.stderr` snapshot.
+
+    #[test]
+    fn an_empty_limit_reports_every_accepted_form() {
+        let err = parse_str::<BudgetLimit>("")
+            .err()
+            .expect("an empty limit must be rejected")
+            .to_string();
+        for expected in [
+            "expected an integer literal",
+            "`env = \"VAR\"`",
+            "`env_file = \"PATH\"`",
+            "`config = \"KEY\"`",
+            "`pct = N, of = <source>`",
+        ] {
+            assert!(
+                err.contains(expected),
+                "diagnostic {err:?} should mention {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_standalone_spec_without_arguments_is_rejected() {
+        // `#[budget_cpu_lt]` parses its (empty) attribute input as a
+        // `StandaloneSpec`, whose first step is the `BudgetLimit` parse above.
+        assert!(parse_str::<StandaloneSpec>("").is_err());
+    }
+
+    #[test]
+    fn an_empty_budget_spec_demands_a_metric() {
+        // `#[budget_lt]` with no arguments reaches the `BudgetSpec` guard.
+        let err = parse_str::<BudgetSpec>("")
+            .err()
+            .expect("an empty spec must be rejected")
+            .to_string();
+        assert!(
+            err.contains("at least one of `cpu` or `mem`"),
+            "diagnostic {err:?} should ask for a metric"
+        );
+    }
+
+    // ── `tests/ui/missing_env.rs` (#639) ───────────────────────────────────
+    //
+    // That fixture depends on the macro referencing a bare `env` identifier
+    // when `env_ident` is not supplied, which is what makes it fail to compile
+    // with no `env` in scope. These tests pin the parser half of that
+    // contract.
+
+    #[test]
+    fn a_spec_without_env_ident_leaves_it_unset_for_the_default_env() {
+        let spec = parse_str::<BudgetSpec>("cpu = 1000").expect("a literal CPU limit parses");
+        assert!(
+            spec.env_ident.is_none(),
+            "no `env_ident` was supplied, so none may be stored — expansion must default to `env`"
+        );
+    }
+
+    #[test]
+    fn a_spec_honours_an_explicit_env_ident() {
+        let spec = parse_str::<BudgetSpec>("cpu = 1000, env_ident = my_env")
+            .expect("an explicit `env_ident` parses");
+        assert_eq!(
+            spec.env_ident.expect("env_ident was supplied").to_string(),
+            "my_env"
+        );
+    }
+
+    #[test]
+    fn a_bare_standalone_limit_parses_without_an_env() {
+        // The fixture's failure is a later type-check error about the missing
+        // `env` binding, not a parse error: `#[budget_cpu_lt(1000)]` parses
+        // cleanly on its own.
+        let spec = parse_str::<StandaloneSpec>("1000").expect("a bare limit parses");
+        assert!(spec.baseline.is_none());
     }
 }

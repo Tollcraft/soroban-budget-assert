@@ -1,5 +1,5 @@
 error: `env` and `config` cannot be combined — pick one
- --> tests/ui/env_with_config.rs:6:36
-  |
-6 | #[budget_cpu_lt(env = "CPU_LIMIT", config = "cpu_limit")]
-  |                                    ^^^^^^
+  --> tests/ui/env_with_config.rs:12:36
+   |
+12 | #[budget_cpu_lt(env = "CPU_LIMIT", config = "cpu_limit")]
+   |                                    ^^^^^^
