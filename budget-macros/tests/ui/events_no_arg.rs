@@ -12,6 +12,6 @@ use budget_macros::budget_events_lt;
 // something to annotate, and the previous `let env = ();` placeholder was
 // dead code that could never execute.
 #[budget_events_lt]
-fn test_no_arg() {}
+fn test_no_arg_macro_rejection() {}
 
 fn main() {}
