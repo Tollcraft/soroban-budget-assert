@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **UI-test harness and fixture coverage (issues #623, #627).** `budget-macros/tests/ui.rs` now asserts the harness's inputs instead of only invoking trybuild: every compile-fail fixture must ship a non-empty `.stderr` snapshot (trybuild treats a missing snapshot as new, silently losing the pin), every `tests/ui/pass/*.rs` fixture must define `main()`, and the `missing_env_read`, `pct_out_of_range` and `pct_no_of` fixtures are asserted directly so a rename or a dropped snapshot fails the suite rather than quietly reducing coverage.
 - **Local-vs-network cost-gap measurements for four operation types (issues #414–#417).** New `MEASUREMENTS.md` sections, fixtures and measurement tests, each with real local `Env::cost_estimate().budget()` figures and the network `simulateTransaction` column marked pending:
   - **Cryptographic operations (#414).** `amm-pool-contract` fixtures `hash_sha256`, `hash_keccak256`, `verify_ed25519`; test `measure_crypto_gap.rs` measures hashing across three input sizes plus ed25519 verification. Finding: local hashing cost scales ~55 CPU/byte (SHA-256) / ~47 CPU/byte (Keccak-256) over a ~3.6 M instantiation floor. The `Crypto` surface is enumerated so a future primitive shows as a gap; `bls12_381` and the hazmat `secp256*` functions are explicitly out of scope.
   - **Token transfers (#415).** `amm-pool-contract::do_token_transfers` against the SDK's built-in Stellar Asset Contract; test `measure_token_transfer_gap.rs` measures 1/5/20/50 transfers. Finding: per-transfer cost is constant (138,280 CPU, 18,682 mem bytes) — no super-linear batching term locally.
@@ -33,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The percentage compile-fail fixtures are modular (issues #626, #630).** `tests/ui/pct_out_of_range.rs` and `tests/ui/pct_no_of.rs` group their static inputs into a named `pct_zero_case` / `pct_without_of_case` module (range constants, an `is_in_range` helper, the expected failure text) with a `main()` that exercises them. The offending attribute stays on line 5 in both files, so the pinned `.stderr` snapshots are unchanged.
 - **Consolidate Windows setup instructions (issue #229).** Made `CONTRIBUTING.md#windows` the single authoritative reference for Windows environment setup (including prerequisites, PowerShell/Git Bash choices, `wasm32v1-none` target, and PATH troubleshooting) and replaced the duplicate instructions in `docs/src/developer_guide.md` with a direct link.
 - Tier A reconciliation comments in `amm-pool-contract/tests/budget_test.rs` are now auto-generated from `tier-a-limits.provenance.md`, not transcribed by hand. Re-derive the artifact instead of editing the test inline when a limit needs to change.
 - `src/lib.rs` re-exports `module_25` alongside the existing `module_1`.
