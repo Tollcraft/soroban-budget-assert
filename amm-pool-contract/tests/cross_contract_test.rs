@@ -1,3 +1,7 @@
+//! Integration tests verifying the cost and behaviour of cross-contract invocations.
+//! 
+//! Cross-contract calls can significantly inflate the CPU instruction and memory budget 
+//! limits in Soroban. This module explicitly compares the raw Rust measurement vs WASM limits.
 #![cfg(test)]
 
 mod common;
