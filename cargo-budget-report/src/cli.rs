@@ -184,15 +184,14 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "SECS")]
     pub retry_backoff_secs: Option<u64>,
 
-    /// Emit the report as a single self-contained HTML page instead of a
-    /// table, JSON, or CSV.
+    /// Write the report as a single self-contained HTML page to PATH.
     ///
     /// The page has no external CSS, scripts, or fonts, so it renders
     /// correctly from a `file://` URL and from a downloaded CI artifact.
     /// Each row shows the same values as `--json` for the same run; in
     /// `--check` mode rows also show their limit and pass/fail status.
-    #[arg(long, default_value_t = false)]
-    pub html: bool,
+    #[arg(long, value_name = "PATH")]
+    pub html: Option<String>,
 
     /// Record every transport response (deploy, invoke-build, and
     /// simulate RPC) into a replayable fixture file at this path.

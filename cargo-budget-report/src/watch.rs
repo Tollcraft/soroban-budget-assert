@@ -358,7 +358,7 @@ pub(crate) fn watch_loop(
         }
 
         // Print the full report (table output).
-        if !args.json && !args.csv && !args.html {
+        if !args.json && !args.csv && args.html.is_none() {
             eprintln!("\n=== WORKSPACE BUDGET REPORT ===");
             for report in &result.reports {
                 if let Some(value) = report.value {
@@ -411,9 +411,7 @@ fn run_measurement_pass(
     let mut has_errors = false;
     let mut checks_failed = false;
 
-    let mut transport = if args.replay.is_some() {
-        // Replaying a fixture -- build a replay transport.
-        let replay_path = args.replay.as_ref().unwrap();
+    let mut transport = if let Some(replay_path) = &args.replay {
         crate::TransportKind::Replay(crate::replay::ReplayTransport::new(
             crate::fixture::FixtureFile::load(replay_path)
                 .with_context(|| format!("failed to load replay fixture {}", replay_path))?,
