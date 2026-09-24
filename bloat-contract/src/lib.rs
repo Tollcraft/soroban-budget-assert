@@ -382,3 +382,558 @@ impl BloatContract {
         count
     }
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+    extern crate std;
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    fn fnv1a(data: &[u8]) -> u32 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &byte in data {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+        (hash ^ (hash >> 32)) as u32
+    }
+
+    fn djb2(data: &[u8]) -> u32 {
+        let mut hash: u32 = 5381;
+        for &byte in data {
+            hash = hash
+                .wrapping_shl(5)
+                .wrapping_add(hash)
+                .wrapping_add(byte as u32);
+        }
+        hash
+    }
+
+    fn adler32(data: &[u8]) -> u32 {
+        let mut a: u32 = 1;
+        let mut b: u32 = 0;
+        for &byte in data {
+            a = (a + byte as u32) % 65521;
+            b = (b + a) % 65521;
+        }
+        (b << 16) | a
+    }
+
+    fn xorshift(seed: u32, steps: u32) -> u32 {
+        let mut x = seed | 1;
+        let mut y = seed ^ 0x9E37_79B9;
+        let mut z = seed.rotate_left(13);
+        let mut w = seed.rotate_right(7);
+        for _ in 0..steps {
+            let t = x ^ (x << 11);
+            x = y;
+            y = z;
+            z = w;
+            w = (w ^ (w >> 19)) ^ (t ^ (t >> 8));
+        }
+        w
+    }
+
+    fn isqrt_newton(value: u64) -> u64 {
+        if value < 2 {
+            return value;
+        }
+        let mut x = value;
+        let mut y = value.div_ceil(2);
+        while y < x {
+            x = y;
+            y = (x + value / x) / 2;
+        }
+        x
+    }
+
+    fn modpow(base: u64, exp: u64, modulus: u64) -> u64 {
+        if modulus <= 1 {
+            return 0;
+        }
+        let mut result: u128 = 1;
+        let mut b = (base % modulus) as u128;
+        let m = modulus as u128;
+        let mut e = exp;
+        while e > 0 {
+            if e & 1 == 1 {
+                result = (result * b) % m;
+            }
+            e >>= 1;
+            b = (b * b) % m;
+        }
+        result as u64
+    }
+
+    fn binary_gcd(a: u64, b: u64) -> u64 {
+        let (mut a, mut b) = (a, b);
+        if a == 0 {
+            return b;
+        }
+        if b == 0 {
+            return a;
+        }
+        let shift = (a | b).trailing_zeros();
+        a >>= a.trailing_zeros();
+        loop {
+            b >>= b.trailing_zeros();
+            if a > b {
+                core::mem::swap(&mut a, &mut b);
+            }
+            b -= a;
+            if b == 0 {
+                break;
+            }
+        }
+        a << shift
+    }
+
+    fn insertion_sort_median(data: &[u8]) -> u32 {
+        let mut buf: alloc::vec::Vec<u32> = data.iter().map(|&b| b as u32).collect();
+        let len = buf.len();
+        for i in 1..len {
+            let key = buf[i];
+            let mut j = i;
+            while j > 0 && buf[j - 1] > key {
+                buf[j] = buf[j - 1];
+                j -= 1;
+            }
+            buf[j] = key;
+        }
+        if len == 0 {
+            0
+        } else {
+            buf[len / 2]
+        }
+    }
+
+    fn fib_sum(n: u32) -> u64 {
+        let mut a: u64 = 0;
+        let mut b: u64 = 1;
+        let mut total: u64 = 0;
+        for _ in 0..n {
+            total = total.wrapping_add(a);
+            let next = a.wrapping_add(b);
+            a = b;
+            b = next;
+        }
+        total
+    }
+
+    fn collatz_steps(start: u64) -> u32 {
+        let mut n = start.max(1);
+        let mut steps = 0u32;
+        while n != 1 {
+            n = if n & 1 == 0 {
+                n / 2
+            } else {
+                3u64.wrapping_mul(n).wrapping_add(1)
+            };
+            steps += 1;
+            if steps > 100_000 {
+                break;
+            }
+        }
+        steps
+    }
+
+    fn popcount(data: &[u8]) -> u32 {
+        let mut count = 0u32;
+        for &byte in data {
+            count += byte.count_ones();
+        }
+        count
+    }
+
+    fn rle_length(data: &[u8]) -> u32 {
+        let len = data.len();
+        if len == 0 {
+            return 0;
+        }
+        let mut out = 0u32;
+        let mut run = 1u32;
+        let mut prev = data[0];
+        for &cur in &data[1..] {
+            if cur == prev && run < 255 {
+                run += 1;
+            } else {
+                out += 2;
+                run = 1;
+                prev = cur;
+            }
+        }
+        out + 2
+    }
+
+    fn crc16_ccitt(data: &[u8]) -> u32 {
+        let mut crc: u16 = 0xFFFF;
+        for &byte in data {
+            crc ^= (byte as u16) << 8;
+            for _ in 0..8 {
+                crc = if crc & 0x8000 != 0 {
+                    (crc << 1) ^ 0x1021
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        crc as u32
+    }
+
+    fn prime_count(limit: u32) -> u32 {
+        let n = limit.min(4096) as usize;
+        if n < 2 {
+            return 0;
+        }
+        let mut sieve = [true; 4096];
+        let mut count = 0u32;
+        let mut p = 2usize;
+        while p < n {
+            if sieve[p] {
+                count += 1;
+                let mut m = p * p;
+                while m < n {
+                    sieve[m] = false;
+                    m += p;
+                }
+            }
+            p += 1;
+        }
+        count
+    }
+
+    // ── CRC-32 ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn crc32_empty() {
+        assert_eq!(crc32(b""), 0x0000_0000);
+    }
+
+    #[test]
+    fn crc32_known() {
+        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn crc32_single_byte() {
+        assert_ne!(crc32(&[0x00]), 0);
+    }
+
+    // ── FNV-1a ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn fnv1a_empty() {
+        let hash: u64 = 0xcbf2_9ce4_8422_2325;
+        assert_eq!(fnv1a(b""), (hash ^ (hash >> 32)) as u32);
+    }
+
+    #[test]
+    fn fnv1a_deterministic() {
+        assert_eq!(fnv1a(b"test"), fnv1a(b"test"));
+    }
+
+    #[test]
+    fn fnv1a_different_inputs() {
+        assert_ne!(fnv1a(b"a"), fnv1a(b"b"));
+    }
+
+    // ── djb2 ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn djb2_empty() {
+        assert_eq!(djb2(b""), 5381);
+    }
+
+    #[test]
+    fn djb2_single_char() {
+        let expected = 5381u32
+            .wrapping_shl(5)
+            .wrapping_add(5381)
+            .wrapping_add(b'a' as u32);
+        assert_eq!(djb2(b"a"), expected);
+    }
+
+    // ── Adler-32 ───────────────────────────────────────────────────────
+
+    #[test]
+    fn adler32_empty() {
+        assert_eq!(adler32(b""), 0x0000_0001);
+    }
+
+    #[test]
+    fn adler32_wikipedia() {
+        assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
+    }
+
+    // ── xorshift ───────────────────────────────────────────────────────
+
+    #[test]
+    fn xorshift_zero_steps() {
+        let seed = 42u32;
+        assert_eq!(xorshift(seed, 0), seed.rotate_right(7));
+    }
+
+    #[test]
+    fn xorshift_deterministic() {
+        assert_eq!(xorshift(1, 100), xorshift(1, 100));
+    }
+
+    #[test]
+    fn xorshift_different_seeds() {
+        assert_ne!(xorshift(1, 50), xorshift(2, 50));
+    }
+
+    // ── isqrt_newton ───────────────────────────────────────────────────
+
+    #[test]
+    fn isqrt_zero() {
+        assert_eq!(isqrt_newton(0), 0);
+    }
+
+    #[test]
+    fn isqrt_one() {
+        assert_eq!(isqrt_newton(1), 1);
+    }
+
+    #[test]
+    fn isqrt_perfect_squares() {
+        assert_eq!(isqrt_newton(4), 2);
+        assert_eq!(isqrt_newton(9), 3);
+        assert_eq!(isqrt_newton(144), 12);
+        assert_eq!(isqrt_newton(10000), 100);
+    }
+
+    #[test]
+    fn isqrt_non_perfect() {
+        assert_eq!(isqrt_newton(2), 1);
+        assert_eq!(isqrt_newton(8), 2);
+        assert_eq!(isqrt_newton(10), 3);
+    }
+
+    #[test]
+    fn isqrt_large() {
+        assert_eq!(isqrt_newton(u64::MAX), 4_294_967_295);
+    }
+
+    // ── modpow ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn modpow_basic() {
+        assert_eq!(modpow(2, 10, 1000), 24);
+    }
+
+    #[test]
+    fn modpow_modulus_one() {
+        assert_eq!(modpow(5, 3, 1), 0);
+    }
+
+    #[test]
+    fn modpow_modulus_zero() {
+        assert_eq!(modpow(5, 3, 0), 0);
+    }
+
+    #[test]
+    fn modpow_exp_zero() {
+        assert_eq!(modpow(5, 0, 7), 1);
+    }
+
+    #[test]
+    fn modpow_exp_one() {
+        assert_eq!(modpow(5, 1, 7), 5);
+    }
+
+    #[test]
+    fn modpow_large() {
+        assert_eq!(modpow(2, 32, 1_000_000_007), 4_294_967_296 % 1_000_000_007);
+    }
+
+    // ── binary_gcd ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gcd_basic() {
+        assert_eq!(binary_gcd(12, 8), 4);
+        assert_eq!(binary_gcd(54, 24), 6);
+    }
+
+    #[test]
+    fn gcd_with_zero() {
+        assert_eq!(binary_gcd(0, 5), 5);
+        assert_eq!(binary_gcd(7, 0), 7);
+    }
+
+    #[test]
+    fn gcd_equal() {
+        assert_eq!(binary_gcd(17, 17), 17);
+    }
+
+    #[test]
+    fn gcd_coprime() {
+        assert_eq!(binary_gcd(13, 7), 1);
+    }
+
+    #[test]
+    fn gcd_powers_of_two() {
+        assert_eq!(binary_gcd(16, 64), 16);
+    }
+
+    // ── insertion_sort_median ──────────────────────────────────────────
+
+    #[test]
+    fn median_empty() {
+        assert_eq!(insertion_sort_median(b""), 0);
+    }
+
+    #[test]
+    fn median_single() {
+        assert_eq!(insertion_sort_median(&[42]), 42);
+    }
+
+    #[test]
+    fn median_sorted() {
+        assert_eq!(insertion_sort_median(&[1, 2, 3, 4, 5]), 3);
+    }
+
+    #[test]
+    fn median_reverse() {
+        assert_eq!(insertion_sort_median(&[5, 4, 3, 2, 1]), 3);
+    }
+
+    #[test]
+    fn median_even_count() {
+        assert_eq!(insertion_sort_median(&[4, 1, 3, 2]), 3);
+    }
+
+    // ── fib_sum ────────────────────────────────────────────────────────
+
+    #[test]
+    fn fib_sum_zero() {
+        assert_eq!(fib_sum(0), 0);
+    }
+
+    #[test]
+    fn fib_sum_one() {
+        assert_eq!(fib_sum(1), 0);
+    }
+
+    #[test]
+    fn fib_sum_six() {
+        assert_eq!(fib_sum(6), 12);
+    }
+
+    #[test]
+    fn fib_sum_ten() {
+        assert_eq!(fib_sum(10), 88);
+    }
+
+    // ── collatz_steps ──────────────────────────────────────────────────
+
+    #[test]
+    fn collatz_one() {
+        assert_eq!(collatz_steps(1), 0);
+    }
+
+    #[test]
+    fn collatz_two() {
+        assert_eq!(collatz_steps(2), 1);
+    }
+
+    #[test]
+    fn collatz_27() {
+        assert_eq!(collatz_steps(27), 111);
+    }
+
+    #[test]
+    fn collatz_zero_clamped() {
+        assert_eq!(collatz_steps(0), 0);
+    }
+
+    // ── popcount ───────────────────────────────────────────────────────
+
+    #[test]
+    fn popcount_empty() {
+        assert_eq!(popcount(b""), 0);
+    }
+
+    #[test]
+    fn popcount_all_ones() {
+        assert_eq!(popcount(&[0xFF, 0xFF]), 16);
+    }
+
+    #[test]
+    fn popcount_alternating() {
+        assert_eq!(popcount(&[0b1010_1010, 0b0101_0101]), 8);
+    }
+
+    // ── rle_length ─────────────────────────────────────────────────────
+
+    #[test]
+    fn rle_empty() {
+        assert_eq!(rle_length(b""), 0);
+    }
+
+    #[test]
+    fn rle_single() {
+        assert_eq!(rle_length(&[42]), 2);
+    }
+
+    #[test]
+    fn rle_all_same() {
+        assert_eq!(rle_length(&[7, 7, 7, 7]), 2);
+    }
+
+    #[test]
+    fn rle_all_different() {
+        assert_eq!(rle_length(&[1, 2, 3]), 6);
+    }
+
+    #[test]
+    fn rle_run_cap_at_255() {
+        let data: alloc::vec::Vec<u8> = alloc::vec![42; 256];
+        assert_eq!(rle_length(&data), 4);
+    }
+
+    // ── crc16_ccitt ────────────────────────────────────────────────────
+
+    #[test]
+    fn crc16_empty() {
+        assert_eq!(crc16_ccitt(b""), 0xFFFF);
+    }
+
+    #[test]
+    fn crc16_known() {
+        assert_eq!(crc16_ccitt(b"123456789"), 0x29B1);
+    }
+
+    // ── prime_count ────────────────────────────────────────────────────
+
+    #[test]
+    fn primes_below_two() {
+        assert_eq!(prime_count(0), 0);
+        assert_eq!(prime_count(1), 0);
+    }
+
+    #[test]
+    fn primes_small() {
+        assert_eq!(prime_count(10), 4);
+        assert_eq!(prime_count(20), 8);
+        assert_eq!(prime_count(100), 25);
+    }
+
+    #[test]
+    fn primes_clamped() {
+        let at_cap = prime_count(4096);
+        let over_cap = prime_count(10000);
+        assert_eq!(at_cap, over_cap);
+    }
+}
