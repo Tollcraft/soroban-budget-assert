@@ -176,8 +176,12 @@ fn is_transient_error(message: &str) -> bool {
         "temporarily",
         "try again",
     ];
-    let lowered = message.to_ascii_lowercase();
-    TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
+    if message.bytes().any(|b| b.is_ascii_uppercase()) {
+        let lowered = message.to_ascii_lowercase();
+        TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
+    } else {
+        TRANSIENT_MARKERS.iter().any(|m| message.contains(m))
+    }
 }
 
 /// Runs `op` up to `config.max_attempts` times with exponential backoff.
@@ -759,24 +763,23 @@ pub(crate) fn emit_check_failure_entries(
 /// * `metric` - The metric name; if it contains `"Bytes"` the suffix is
 ///   `B`, otherwise `inst.`.
 pub(crate) fn format_with_commas_and_units(value: u64, metric: &str) -> String {
-    let value_str = value.to_string();
-    let mut result = String::new();
-    let mut digit_count = 0;
-    for ch in value_str.chars().rev() {
-        if digit_count == 3 {
+    let s = value.to_string();
+    let len = s.len();
+    let commas = len.saturating_sub(1) / 3;
+    let unit = if metric.contains("Bytes") {
+        " B"
+    } else {
+        " inst."
+    };
+    let mut result = String::with_capacity(len + commas + unit.len());
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
-            digit_count = 0;
         }
         result.push(ch);
-        digit_count += 1;
     }
-    let formatted = result.chars().rev().collect::<String>();
-
-    if metric.contains("Bytes") {
-        format!("{} B", formatted)
-    } else {
-        format!("{} inst.", formatted)
-    }
+    result.push_str(unit);
+    result
 }
 
 /// Extracts CPU instructions, read bytes, and write bytes from a
@@ -845,14 +848,14 @@ fn build_invoke_args(
     func_args: &[String],
     rpc_override: Option<(&str, &str)>,
 ) -> Vec<String> {
-    let mut invoke_args = vec![
-        "contract".to_string(),
-        "invoke".to_string(),
-        "--id".to_string(),
-        contract_id.to_string(),
-        "--source".to_string(),
-        source.to_string(),
-    ];
+    let extra_capacity = if rpc_override.is_some() { 4 } else { 2 };
+    let mut invoke_args = Vec::with_capacity(7 + extra_capacity + func_args.len());
+    invoke_args.push("contract".to_string());
+    invoke_args.push("invoke".to_string());
+    invoke_args.push("--id".to_string());
+    invoke_args.push(contract_id.to_string());
+    invoke_args.push("--source".to_string());
+    invoke_args.push(source.to_string());
     match rpc_override {
         Some((rpc_url, passphrase)) => {
             invoke_args.push("--rpc-url".to_string());
@@ -3962,5 +3965,60 @@ write_limit = 1000
     #[test]
     fn classify_outcome_network_only() {
         assert_eq!(classify_outcome(false, false, true), EXIT_NETWORK_FAILURE);
+    }
+
+    #[test]
+    fn test_format_with_commas_and_units() {
+        assert_eq!(
+            format_with_commas_and_units(0, "CPU Instructions"),
+            "0 inst."
+        );
+        assert_eq!(format_with_commas_and_units(999, "Read Bytes"), "999 B");
+        assert_eq!(
+            format_with_commas_and_units(1000, "CPU Instructions"),
+            "1,000 inst."
+        );
+        assert_eq!(
+            format_with_commas_and_units(1234567, "Write Bytes"),
+            "1,234,567 B"
+        );
+    }
+
+    #[test]
+    fn test_is_transient_error() {
+        assert!(is_transient_error("rate limit exceeded"));
+        assert!(is_transient_error("HTTP 429 Too Many Requests"));
+        assert!(is_transient_error("Connection reset by peer"));
+        assert!(!is_transient_error("Contract invalid argument"));
+    }
+
+    #[test]
+    fn test_build_invoke_args() {
+        let args = build_invoke_args(
+            "C123",
+            "alice",
+            "testnet",
+            "foo",
+            &["--bar".to_string(), "1".to_string()],
+            None,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "contract",
+                "invoke",
+                "--id",
+                "C123",
+                "--source",
+                "alice",
+                "--network",
+                "testnet",
+                "--build-only",
+                "--",
+                "foo",
+                "--bar",
+                "1"
+            ]
+        );
     }
 }
