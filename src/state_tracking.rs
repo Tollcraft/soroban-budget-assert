@@ -177,16 +177,20 @@ impl LinearStateTracker {
 
 impl StateTracker for LinearStateTracker {
     fn record(&mut self, operation: &str, snapshot: CostSnapshot) {
+        // Perform an O(N) linear scan to see if the operation is already tracked.
         for entry in self.entries.iter_mut() {
             if entry.0 == operation {
+                // Operation found; overwrite the existing snapshot and return early.
                 entry.1 = snapshot;
                 return;
             }
         }
+        // Operation not found; append a new entry to the end of the vector.
         self.entries.push((operation.to_string(), snapshot));
     }
 
     fn lookup(&self, operation: &str) -> Option<&CostSnapshot> {
+        // Perform an O(N) linear scan to find the operation's snapshot.
         for entry in self.entries.iter() {
             if entry.0 == operation {
                 return Some(&entry.1);
@@ -255,10 +259,12 @@ impl HashedStateTracker {
 
 impl StateTracker for HashedStateTracker {
     fn record(&mut self, operation: &str, snapshot: CostSnapshot) {
+        // Inserts a new entry or updates the existing one in O(1) expected time.
         self.entries.insert(operation.to_string(), snapshot);
     }
 
     fn lookup(&self, operation: &str) -> Option<&CostSnapshot> {
+        // Retrieves the snapshot in O(1) expected time using the hash map.
         self.entries.get(operation)
     }
 
@@ -401,6 +407,9 @@ impl BenchmarkReport {
     }
 }
 
+/// Helper function to compute the ratio of two `Duration`s as an `f64`.
+///
+/// Returns `f64::INFINITY` if the denominator `b` is zero.
 fn duration_ratio(a: Duration, b: Duration) -> f64 {
     let a_ns = a.as_nanos() as f64;
     let b_ns = b.as_nanos() as f64;
