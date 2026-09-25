@@ -23,8 +23,8 @@
 //! same WASM and a deployed SAC; see
 //! `cargo-budget-report/fixtures/token_transfer_benchmark.json`.
 //!
-//! Note: Token transactions inherently scale differently depending on whether 
-//! batch transfers execute sequentially via cross-contract invocations, or 
+//! Note: Token transactions inherently scale differently depending on whether
+//! batch transfers execute sequentially via cross-contract invocations, or
 //! if batch allocations optimize IO under a single host instance.
 
 #![cfg(not(feature = "sdk20"))]
