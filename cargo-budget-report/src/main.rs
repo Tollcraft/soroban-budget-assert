@@ -2345,10 +2345,11 @@ fn run() -> Result<i32> {
     }
 
     if measurements.is_empty() {
-        // `--html` still produces a valid page so a consumer pointed at the
-        // output sees an explicit empty state rather than an empty file.
-        if args.html {
-            println!("{}", html_output::render_html(&[], args.check));
+        if let Some(ref html_path) = args.html {
+            let content = html_output::render_html(&[], args.check);
+            std::fs::write(html_path, &content).map_err(|e| {
+                Error::Message(format!("failed to write HTML report to {html_path}: {e}"))
+            })?;
         }
         if !args.quiet {
             eprintln!("No successful simulations to report.");
@@ -2476,8 +2477,14 @@ fn run() -> Result<i32> {
         let json_output =
             serde_json::to_string_pretty(&reports).context("Failed to serialize report to JSON")?;
         println!("{}", json_output);
-    } else if args.html {
-        print!("{}", html_output::render_html(&reports, args.check));
+    } else if let Some(ref html_path) = args.html {
+        let content = html_output::render_html(&reports, args.check);
+        std::fs::write(html_path, &content).map_err(|e| {
+            Error::Message(format!("failed to write HTML report to {html_path}: {e}"))
+        })?;
+        if !args.quiet {
+            eprintln!("Wrote HTML report to {html_path}");
+        }
     } else {
         // The plain text report path is preserved byte-for-byte when
         // `--check` is not passed: only entries with a measured value are
@@ -3282,7 +3289,7 @@ mod tests {
             markdown: false,
             check: false,
             csv: false,
-            html: false,
+            html: None,
             record_baseline: None,
             check_baseline: None,
             tolerance: None,
@@ -3324,7 +3331,7 @@ mod tests {
             markdown: false,
             check: false,
             csv: false,
-            html: false,
+            html: None,
             record_baseline: Some("budget-baseline.toml".to_string()),
             check_baseline: None,
             tolerance: None,
@@ -3366,7 +3373,7 @@ mod tests {
             markdown: false,
             check: false,
             csv: false,
-            html: false,
+            html: None,
             record_baseline: None,
             check_baseline: Some("custom.toml".to_string()),
             tolerance: None,
@@ -3411,7 +3418,7 @@ mod tests {
             markdown: false,
             check: false,
             csv: false,
-            html: false,
+            html: None,
             record_baseline: None,
             check_baseline: None,
             tolerance: None,

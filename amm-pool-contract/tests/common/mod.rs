@@ -77,11 +77,10 @@ fn artifact_needs_rebuild(wasm: &Path) -> bool {
     let Ok(wasm_mtime) = wasm_meta.modified() else {
         return true;
     };
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     STALE_SOURCES.iter().any(|source| {
-        let source_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(source);
-        match std::fs::metadata(source_path).and_then(|meta| meta.modified()) {
+        match std::fs::metadata(manifest_dir.join(source)).and_then(|meta| meta.modified()) {
             Ok(source_mtime) => source_mtime > wasm_mtime,
-            // A missing source file cannot make the artifact stale; skip it.
             Err(_) => false,
         }
     })
