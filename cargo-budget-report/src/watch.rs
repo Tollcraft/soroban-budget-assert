@@ -620,3 +620,79 @@ fn run_measurement_pass(
         checks_failed,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    #[test]
+    fn test_is_excluded() {
+        assert!(is_excluded(Path::new("target/debug/build")));
+        assert!(is_excluded(Path::new(".git/HEAD")));
+        assert!(is_excluded(Path::new("node_modules/package")));
+        assert!(is_excluded(Path::new(".github/workflows/ci.yml")));
+        assert!(!is_excluded(Path::new("src/lib.rs")));
+        assert!(!is_excluded(Path::new("cargo-budget-report/src/main.rs")));
+    }
+
+    #[test]
+    fn test_get_metric() {
+        let m = Measurement {
+            cpu_instructions: 100,
+            read_bytes: 200,
+            write_bytes: 300,
+        };
+        assert_eq!(get_metric(&m, "cpu_instructions"), Some(100));
+        assert_eq!(get_metric(&m, "read_bytes"), Some(200));
+        assert_eq!(get_metric(&m, "write_bytes"), Some(300));
+        assert_eq!(get_metric(&m, "unknown"), None);
+    }
+
+    #[test]
+    fn test_print_delta_scenarios() {
+        let mut prev = BTreeMap::new();
+        let mut curr = BTreeMap::new();
+
+        // 1. First run with empty maps
+        print_delta(&prev, &curr);
+
+        // 2. First run with current measurements
+        let mut fn_map = BTreeMap::new();
+        fn_map.insert(
+            "deposit".to_string(),
+            Measurement {
+                cpu_instructions: 1000,
+                read_bytes: 100,
+                write_bytes: 50,
+            },
+        );
+        curr.insert("pool".to_string(), fn_map);
+        print_delta(&prev, &curr);
+
+        // 3. Comparison with changes (increase, decrease, new, removed)
+        prev = curr.clone();
+        let mut curr_fns = BTreeMap::new();
+        curr_fns.insert(
+            "deposit".to_string(),
+            Measurement {
+                cpu_instructions: 1200, // +200 (+20%)
+                read_bytes: 80,         // -20 (-20%)
+                write_bytes: 50,        // unchanged
+            },
+        );
+        curr_fns.insert(
+            "withdraw".to_string(),
+            Measurement {
+                cpu_instructions: 500,
+                read_bytes: 50,
+                write_bytes: 10,
+            },
+        );
+        let mut new_curr = BTreeMap::new();
+        new_curr.insert("pool".to_string(), curr_fns);
+
+        print_delta(&prev, &new_curr);
+    }
+}
