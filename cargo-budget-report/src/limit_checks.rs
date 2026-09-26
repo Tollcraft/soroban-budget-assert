@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+//! Modular limit check logic and boundary helpers for cargo-budget-report.
+
+/// Core bounds checking helper ensuring `value <= max`.
 fn check_bounds<T: PartialOrd + std::fmt::Display>(
     value: T,
     max: T,
@@ -82,5 +85,11 @@ mod tests {
     fn error_message_format() {
         let err = check_cpu_instructions(500, 100).unwrap_err();
         assert_eq!(err, "CPU Instructions 500 exceeds limit 100");
+    }
+
+    #[test]
+    fn modular_boundary_edge_cases() {
+        assert!(check_bounds(10u64, 10u64, "Test").is_ok());
+        assert!(check_bounds(11u64, 10u64, "Test").is_err());
     }
 }
