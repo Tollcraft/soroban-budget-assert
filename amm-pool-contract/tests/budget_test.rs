@@ -1056,3 +1056,123 @@ fn test_negative_control_disabled_cpu_fails() {
 
     client.require_auth_only(&user);
 }
+
+// ---------------------------------------------------------------------------
+// Edge-case tests: BudgetJsonGuard lifecycle (#619)
+// ---------------------------------------------------------------------------
+
+/// Verifies that `BudgetJsonGuard::drop` removes `budget.json` after the guard
+/// goes out of scope, even on the happy path (no panic).
+#[test]
+fn test_budget_json_guard_drop_removes_file() {
+    {
+        let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": 999999}"#);
+        assert!(
+            std::path::Path::new("budget.json").exists(),
+            "budget.json must exist while the guard is live"
+        );
+    }
+    assert!(
+        !std::path::Path::new("budget.json").exists(),
+        "budget.json must be removed after BudgetJsonGuard is dropped"
+    );
+}
+
+/// Verifies that a `budget.json` with a string value for the requested key
+/// is treated as missing/invalid — macros must not silently accept a
+/// non-numeric limit.
+#[test]
+#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[budget_cpu_lt(config = "cpu_instructions")]
+fn test_budget_macro_json_config_string_value_rejected() {
+    // The value is a JSON string, not a number — must be rejected.
+    let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": "not_a_number"}"#);
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+}
+
+/// Verifies that a `budget.json` with a null value for the requested key
+/// is treated as missing/invalid.
+#[test]
+#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[budget_cpu_lt(config = "cpu_instructions")]
+fn test_budget_macro_json_config_null_value_rejected() {
+    let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": null}"#);
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+}
+
+/// Verifies that `#[budget_write_bytes_lt]` fires a deliberate regression when
+/// the limit is impossibly low (1 byte).
+#[test]
+#[should_panic(expected = "Write bytes cost (memory proxy)")]
+#[budget_write_bytes_lt(1)]
+fn test_negative_control_write_bytes_deliberate_regression() {
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+    env.cost_estimate().budget().reset_unlimited();
+    // do_write_heavy_work writes storage entries — any real write exceeds 1 byte.
+    client.do_write_heavy_work(&10);
+}
+
+/// Verifies that `#[budget_read_bytes_lt]` fires a deliberate regression when
+/// the limit is impossibly low (1 byte).
+#[test]
+#[should_panic(expected = "Read bytes cost (memory proxy)")]
+#[budget_read_bytes_lt(1)]
+fn test_negative_control_read_bytes_deliberate_regression() {
+    let env = Env::default();
+    let contract_id = env.register(ConstantProductPool, ());
+    let client = ConstantProductPoolClient::new(&env, &contract_id);
+    env.cost_estimate().budget().reset_unlimited();
+    client.do_read_heavy_work(&10);
+}
+
+/// Verifies that `wasm_baseline()` is memoised: calling it twice in the same
+/// process returns the exact same pair.
+#[test]
+fn test_wasm_baseline_is_cached() {
+    let first = wasm_baseline();
+    let second = wasm_baseline();
+    assert_eq!(
+        first, second,
+        "wasm_baseline() must return identical values on repeated calls (OnceLock)"
+    );
+    assert!(first.0 > 0, "baseline CPU must be non-zero");
+    assert!(first.1 > 0, "baseline memory must be non-zero");
+}
+
+/// Verifies that `baseline_cpu()` and `baseline_mem()` agree with the tuple
+/// returned by `wasm_baseline()`.
+#[test]
+fn test_baseline_helpers_match_tuple() {
+    let (cpu, mem) = wasm_baseline();
+    assert_eq!(
+        baseline_cpu(),
+        cpu,
+        "baseline_cpu() must equal wasm_baseline().0"
+    );
+    assert_eq!(
+        baseline_mem(),
+        mem,
+        "baseline_mem() must equal wasm_baseline().1"
+    );
+}
+
+/// Verifies that a `budget.json` containing a JSON array at the requested key
+/// is rejected as invalid.
+#[test]
+#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[budget_cpu_lt(config = "cpu_instructions")]
+fn test_budget_macro_json_config_array_value_rejected() {
+    let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": [1, 2, 3]}"#);
+    let env = Env::default();
+    let (client, user) = setup_wasm(&env);
+
+    client.deposit(&user, &10_000_i128, &10_000_i128);
+}

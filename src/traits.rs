@@ -681,7 +681,42 @@ mod tests {
         assert_eq!(report.wasm_bytes, 102_400);
     }
 
-    // ── format_metric tests ─────────────────────────────────────────────
+    // ── ResourceReportable tests ────────────────────────────────────────
+
+    #[test]
+    fn resource_reportable_to_report() {
+        struct DummyMeasurer {
+            cpu: u64,
+            mem: u64,
+        }
+        impl CostMeasurer for DummyMeasurer {
+            fn cpu_instructions(&self) -> u64 {
+                self.cpu
+            }
+            fn memory_bytes(&self) -> u64 {
+                self.mem
+            }
+        }
+        impl ResourceReportable for DummyMeasurer {
+            fn to_report(&self, package: &str, function: &str) -> ResourceReport {
+                ResourceReport {
+                    package: package.to_string(),
+                    function: function.to_string(),
+                    cpu_instructions: self.cpu_instructions(),
+                    memory_bytes: self.memory_bytes(),
+                    wasm_bytes: 0,
+                }
+            }
+        }
+
+        let dummy = DummyMeasurer { cpu: 500, mem: 256 };
+        let report = dummy.to_report("pkg", "func");
+        assert_eq!(report.package, "pkg");
+        assert_eq!(report.function, "func");
+        assert_eq!(report.cpu_instructions, 500);
+        assert_eq!(report.memory_bytes, 256);
+        assert_eq!(report.wasm_bytes, 0);
+    }
 
     #[test]
     fn format_metric_zero_cpu() {
@@ -704,5 +739,13 @@ mod tests {
     #[test]
     fn format_metric_bytes_unit() {
         assert_eq!(format_metric(4_096, "Write Bytes"), "4,096 B");
+    }
+
+    #[test]
+    fn format_metric_max_u64() {
+        assert_eq!(
+            format_metric(u64::MAX, "CPU Instructions"),
+            "18,446,744,073,709,551,615 inst."
+        );
     }
 }

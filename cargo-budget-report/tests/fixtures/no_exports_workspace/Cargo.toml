@@ -3,3 +3,16 @@
 [workspace]
 resolver = "2"
 members = ["soroban_sdk_stub", "helper_only", "no_exports", "runtime_only"]
+
+# The `no_exports` and `runtime_only` members are `#![no_std]` cdylibs that
+# define their own `#[panic_handler]`, so they must be built with
+# `panic = "abort"`. Cargo only honours `panic` in the *root* manifest of a
+# workspace: declaring it in a member's `Cargo.toml` is ignored with a
+# "profiles for the non root package will be ignored" warning, which leaves
+# the members on the default `unwind` strategy and fails the build with
+# "unwinding panics are not supported without std".
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

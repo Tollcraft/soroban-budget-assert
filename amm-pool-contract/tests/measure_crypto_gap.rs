@@ -18,6 +18,10 @@
 //! `Env::cost_estimate().budget()`. The network figure for each row requires a
 //! `simulateTransaction` run against Soroban testnet with the same WASM; see
 //! `cargo-budget-report/fixtures/crypto_operations_benchmark.json`.
+//!
+//! Note: By accurately quantifying this gap across multiple scales (64B vs 8KB),
+//! developers can better configure realistic network margins in local test suites
+//! utilizing `#[budget_cpu_lt]`.
 
 #![cfg(not(feature = "sdk20"))]
 

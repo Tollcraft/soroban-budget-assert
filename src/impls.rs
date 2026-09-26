@@ -392,12 +392,18 @@ pub trait CostReportable {
     /// Implementors may override this method to include additional fields
     /// such as limit and pass/fail status.
     fn to_json(&self) -> String {
-        format!(
-            r#"{{"function":"{}","metric":"{}","value":{}}}"#,
-            self.function_name(),
-            self.metric_name(),
-            self.metric_value()
-        )
+        let func = self.function_name();
+        let metric = self.metric_name();
+        let val = self.metric_value().to_string();
+        let mut s = String::with_capacity(35 + func.len() + metric.len() + val.len());
+        s.push_str(r#"{"function":""#);
+        s.push_str(func);
+        s.push_str(r#"","metric":""#);
+        s.push_str(metric);
+        s.push_str(r#"","value":"#);
+        s.push_str(&val);
+        s.push('}');
+        s
     }
 }
 
