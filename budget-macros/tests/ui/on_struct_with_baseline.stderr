@@ -1,0 +1,5 @@
+error: expected `fn`
+ --> tests/ui/on_struct_with_baseline.rs:6:1
+  |
+6 | struct NotAFunction;
+  | ^^^^^^

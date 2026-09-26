@@ -180,31 +180,35 @@ impl Error {
 /// `SorobanTransactionData` from the RPC response so that optional validation
 /// (via `--validate`) can re-decode it through the Stellar CLI's own XDR
 /// decoder without a second RPC call.
+#[derive(Debug)]
 pub enum SimulationOutcome {
     /// Successfully extracted resource metrics.
     Metrics {
+        /// CPU instruction count consumed by simulation.
         instructions: u32,
+        /// Disk read bytes consumed by simulation.
         read_bytes: u32,
+        /// Write bytes consumed by simulation.
         write_bytes: u32,
         /// Base64-encoded `SorobanTransactionData` from the RPC response.
         transaction_data_xdr: String,
     },
-    /// Simulation did not produce metrics (recoverable).
+    /// Simulation did not produce metrics (recoverable per-function failure).
     Failed(SimulationFailure),
 }
 
 /// Single reason why a function simulation failed to produce metrics.
 ///
 /// This is *not* an error variant of [`Error`] because these failures are
-/// recoverable — the caller can move on to the next function instead of
-/// aborting the whole report.
+/// recoverable — the caller can log or record a stub failure and move on
+/// to the next function instead of aborting the whole report run.
 #[derive(Debug)]
 pub enum SimulationFailure {
-    /// `stellar contract invoke --build-only` exited non-zero.
+    /// `stellar contract invoke --build-only` exited non-zero or failed to build.
     Invoke(String),
     /// The RPC `simulateTransaction` response contained an `"error"` field.
     Rpc(String),
-    /// The RPC response didn't contain a decodable `SorobanTransactionData`.
+    /// The RPC response didn't contain a decodable `SorobanTransactionData` payload.
     MetricsExtraction(String),
 }
 

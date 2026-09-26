@@ -1,5 +1,5 @@
 use crate::fixture::FixtureFile;
-use crate::transport::Transport;
+use crate::transport::{deploy_key, invoke_key, simulate_key, Transport};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -33,11 +33,11 @@ impl Transport for ReplayTransport {
         _network: &str,
         package_name: &str,
     ) -> Result<String> {
-        let key = format!("deploy:{}", package_name);
+        let key = deploy_key(package_name);
         self.entries
             .get(&key)
             .and_then(|v| v.as_str().map(String::from))
-            .with_context(|| format!("Fixture not found for deploy:{}", package_name))
+            .with_context(|| format!("Fixture not found for {key}"))
     }
 
     fn build_invoke_xdr(
@@ -49,11 +49,11 @@ impl Transport for ReplayTransport {
         _func_args: &[String],
         package: &str,
     ) -> Result<String> {
-        let key = format!("invoke:{}:{}", package, function);
+        let key = invoke_key(package, function);
         self.entries
             .get(&key)
             .and_then(|v| v.as_str().map(String::from))
-            .with_context(|| format!("Fixture not found for invoke:{}:{}", package, function))
+            .with_context(|| format!("Fixture not found for {key}"))
     }
 
     fn simulate_transaction(
@@ -62,10 +62,10 @@ impl Transport for ReplayTransport {
         package: &str,
         function: &str,
     ) -> Result<Value> {
-        let key = format!("simulate:{}:{}", package, function);
+        let key = simulate_key(package, function);
         self.entries
             .get(&key)
             .cloned()
-            .with_context(|| format!("Fixture not found for simulate:{}:{}", package, function))
+            .with_context(|| format!("Fixture not found for {key}"))
     }
 }

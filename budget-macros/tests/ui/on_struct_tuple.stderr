@@ -1,0 +1,5 @@
+error: expected `fn`
+ --> tests/ui/on_struct_tuple.rs:6:1
+  |
+6 | struct TupleStruct(u32, String);
+  | ^^^^^^

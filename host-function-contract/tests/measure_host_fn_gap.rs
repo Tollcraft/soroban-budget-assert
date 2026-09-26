@@ -3,6 +3,16 @@ mod measure_host_fn_gap {
     use host_function_contract::HostFunctionBenchmarkClient;
     use soroban_sdk::Env;
 
+    fn read_wasm() -> Vec<u8> {
+        let wasm_path = "../target/wasm32v1-none/release/host_function_contract.wasm";
+        std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?")
+    }
+
+    fn setup_benchmark_client<'a>(env: &'a Env, wasm: &[u8]) -> HostFunctionBenchmarkClient<'a> {
+        let contract_id = env.register(wasm, ());
+        HostFunctionBenchmarkClient::new(env, &contract_id)
+    }
+
     /// Registers the WASM in a fresh `Env`, resets its budget to unlimited,
     /// runs `call_fn`, and returns the resulting cumulative CPU instruction
     /// cost. The WASM is re-registered per invocation so measurements reflect
@@ -10,10 +20,8 @@ mod measure_host_fn_gap {
     /// captured by `simulateTransaction`.
     fn measure_cpu(call_fn: impl FnOnce(&HostFunctionBenchmarkClient<'_>)) -> (u64, u64) {
         let env = Env::default();
-        let wasm_path = "../target/wasm32v1-none/release/host_function_contract.wasm";
-        let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
-        let contract_id = env.register(wasm.as_slice(), ());
-        let client = HostFunctionBenchmarkClient::new(&env, &contract_id);
+        let wasm = read_wasm();
+        let client = setup_benchmark_client(&env, &wasm);
 
         env.mock_all_auths();
         env.cost_estimate().budget().reset_unlimited();

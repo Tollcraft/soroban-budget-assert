@@ -1,9 +1,9 @@
-- closes #612
-- closes #616
-- closes #620
-- closes #636
+- closes #624
+- closes #625
+- closes #628
+- closes #633
 
-- Improved inline documentation in measure_token_transfer_gap.rs
-- Enhanced comments in measure_crypto_gap.rs
-- Documented cross_contract_test.rs execution flows
-- Added explanatory notes in env_file_no_env.rs
+- Improved inline documentation in env_file_missing_file.rs
+- Optimized allocations in invalid_arg.rs
+- Improved documentation in scaling_unknown_model.rs
+- Optimized allocations in budget_lt_unknown_property.rs

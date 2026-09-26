@@ -237,4 +237,44 @@ mod tests {
         assert!(!html.contains("PASS"));
         assert!(!html.contains("FAIL"));
     }
+
+    #[test]
+    fn html_output_is_valid_self_contained_page() {
+        let html = render_html(&sample_report(), true);
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(html.contains("<html lang=\"en\">"));
+        assert!(html.contains("</html>"));
+        assert!(html.contains("<style>"));
+        assert!(
+            !html.contains("<link"),
+            "must not reference external stylesheets"
+        );
+        assert!(
+            !html.contains("<script src"),
+            "must not reference external scripts"
+        );
+    }
+
+    #[test]
+    fn html_renders_none_value_as_mdash() {
+        let reports = vec![CostReport {
+            package: "pkg".to_string(),
+            function: "fn_name".to_string(),
+            metric: "CPU Instructions",
+            value: None,
+            limit: Some(100),
+            pass: Some(false),
+        }];
+        let html = render_html(&reports, true);
+        assert!(html.contains("&mdash;"));
+    }
+
+    #[test]
+    fn format_thousands_edge_cases() {
+        assert_eq!(format_thousands(0), "0");
+        assert_eq!(format_thousands(1), "1");
+        assert_eq!(format_thousands(999), "999");
+        assert_eq!(format_thousands(1000), "1,000");
+        assert_eq!(format_thousands(1_000_000), "1,000,000");
+    }
 }
