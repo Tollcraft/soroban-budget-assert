@@ -18,7 +18,8 @@ mod tests {
     /// Helper to parse BudgetReportArgs from a vector of strings.
     /// Prepends "cargo budget-report" to simulate the cargo subcommand structure.
     fn parse_args(args: &[&str]) -> Result<BudgetReportArgs, clap::Error> {
-        let mut full_args = vec!["cargo", "budget-report"];
+        let mut full_args = Vec::with_capacity(args.len() + 2);
+        full_args.extend_from_slice(&["cargo", "budget-report"]);
         full_args.extend_from_slice(args);
         match CargoCli::try_parse_from(full_args) {
             Ok(CargoCli::BudgetReport(args)) => Ok(args),
