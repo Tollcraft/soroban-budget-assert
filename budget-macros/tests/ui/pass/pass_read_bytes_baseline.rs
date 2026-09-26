@@ -49,4 +49,3 @@ fn main() {
         "the message should show the raw measurement and the baseline: {message}"
     );
 }
-// Optimized perf

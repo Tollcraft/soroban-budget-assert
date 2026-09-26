@@ -145,4 +145,3 @@ pub fn budget_panic<F: FnOnce() -> R + std::panic::UnwindSafe, R>(f: F) -> Optio
         ),
     }
 }
-// Added docs to mock_env
