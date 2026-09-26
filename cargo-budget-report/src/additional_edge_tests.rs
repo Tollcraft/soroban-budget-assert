@@ -13,7 +13,7 @@
 
 /// Small builders and CSV renderers shared by the tests below, kept apart so
 /// each test body only states its inputs and expectations.
-/// 
+///
 /// This module encapsulates test fixtures such as dummy function configuration builders,
 /// resource report generators, and a mirror of the CSV reporting pipeline.
 #[cfg(test)]
