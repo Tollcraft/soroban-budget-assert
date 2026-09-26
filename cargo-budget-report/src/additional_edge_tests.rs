@@ -7,52 +7,179 @@
 //! - Comma-insertion boundaries in `format_with_commas_and_units`
 //! - JSON edge cases in `TransactionData::parse_json`
 //! - TOML edge cases in `load_budget_toml`
+//!
+//! Shared builders and the CSV renderer live in the `helpers` module so the
+//! test bodies only carry inputs and expectations.
+
+/// Small builders and CSV renderers shared by the tests below, kept apart so
+/// each test body only states its inputs and expectations.
+#[cfg(test)]
+mod helpers {
+    use crate::*;
+
+    /// A [`FunctionConfig`] with the given limits and no args or tolerance.
+    pub(super) fn config_with_limits(
+        cpu: Option<u64>,
+        read: Option<u64>,
+        write: Option<u64>,
+    ) -> FunctionConfig {
+        FunctionConfig {
+            args: vec![],
+            cpu_limit: cpu,
+            read_limit: read,
+            write_limit: write,
+            tolerance: None,
+        }
+    }
+
+    /// A `CPU Instructions` [`CostReport`] row.
+    pub(super) fn cpu_report(
+        package: &str,
+        function: &str,
+        value: Option<u32>,
+        limit: Option<u64>,
+        pass: Option<bool>,
+    ) -> CostReport {
+        CostReport {
+            package: package.to_string(),
+            function: function.to_string(),
+            metric: "CPU Instructions",
+            value,
+            limit,
+            pass,
+        }
+    }
+
+    /// Write `contents` to a temp file and run [`load_budget_toml`] on it.
+    pub(super) fn load_toml_str(contents: &str) -> crate::error::Result<BudgetToml> {
+        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        std::fs::write(tmp.path(), contents).unwrap();
+        load_budget_toml(tmp.path())
+    }
+
+    /// Render an optional value as a CSV cell: the value, or empty.
+    fn cell<T: ToString>(v: Option<T>) -> String {
+        v.map(|v| v.to_string()).unwrap_or_default()
+    }
+
+    /// `--check` layout: every row, six columns.
+    fn write_check_rows(wtr: &mut csv::Writer<Vec<u8>>, reports: &[CostReport]) {
+        wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
+            .unwrap();
+        for r in reports {
+            let (value, limit, pass) = (cell(r.value), cell(r.limit), cell(r.pass));
+            wtr.write_record([
+                r.package.as_str(),
+                r.function.as_str(),
+                r.metric,
+                value.as_str(),
+                limit.as_str(),
+                pass.as_str(),
+            ])
+            .unwrap();
+        }
+    }
+
+    /// Plain layout: four columns, rows without a measured value skipped.
+    fn write_value_rows(wtr: &mut csv::Writer<Vec<u8>>, reports: &[CostReport]) {
+        wtr.write_record(["package", "function", "metric", "value"])
+            .unwrap();
+        for r in reports.iter().filter(|r| r.value.is_some()) {
+            let value = cell(r.value);
+            wtr.write_record([
+                r.package.as_str(),
+                r.function.as_str(),
+                r.metric,
+                value.as_str(),
+            ])
+            .unwrap();
+        }
+    }
+
+    /// Mirror of the `--csv` output path in `main`, rendered to a string.
+    pub(super) fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
+        let mut wtr = csv::Writer::from_writer(vec![]);
+        if check {
+            write_check_rows(&mut wtr, reports);
+        } else {
+            write_value_rows(&mut wtr, reports);
+        }
+        wtr.flush().unwrap();
+        String::from_utf8(wtr.into_inner().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn cell_renders_none_as_empty() {
+        assert_eq!(cell::<u32>(None), "");
+        assert_eq!(cell(Some(0u32)), "0");
+        assert_eq!(cell(Some(false)), "false");
+    }
+
+    #[test]
+    fn csv_with_no_reports_is_header_only() {
+        assert_eq!(
+            reports_to_csv(&[], false),
+            "package,function,metric,value\n"
+        );
+        assert_eq!(
+            reports_to_csv(&[], true),
+            "package,function,metric,value,limit,pass\n"
+        );
+    }
+
+    #[test]
+    fn csv_without_check_skips_rows_without_value() {
+        let reports = [
+            cpu_report("p", "measured", Some(1), None, None),
+            cpu_report("p", "failed", None, Some(5), Some(false)),
+        ];
+        let csv = reports_to_csv(&reports, false);
+        assert!(csv.contains("measured"));
+        assert!(!csv.contains("failed"));
+    }
+
+    #[test]
+    fn load_toml_str_surfaces_parse_errors() {
+        assert!(load_toml_str("network = ").is_err());
+    }
+}
 
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
+    use super::helpers::{config_with_limits, cpu_report, load_toml_str, reports_to_csv};
     use crate::*;
 
     // ── evaluate_check additional boundary tests ───────────────────────
 
     #[test]
     fn evaluate_check_value_one_limit_one_passes() {
-        let (limit, pass) = evaluate_check(1, Some(1));
-        assert_eq!(limit, Some(1));
-        assert_eq!(pass, Some(true));
+        assert_eq!(evaluate_check(1, Some(1)), (Some(1), Some(true)));
     }
 
     #[test]
     fn evaluate_check_value_u32_max_minus_one_limit_u32_max_passes() {
-        let (limit, pass) = evaluate_check(u32::MAX - 1, Some(u64::from(u32::MAX)));
-        assert_eq!(limit, Some(u64::from(u32::MAX)));
-        assert_eq!(pass, Some(true));
+        let max = u64::from(u32::MAX);
+        assert_eq!(
+            evaluate_check(u32::MAX - 1, Some(max)),
+            (Some(max), Some(true))
+        );
     }
 
     #[test]
     fn evaluate_check_value_one_limit_none_returns_none() {
-        let (limit, pass) = evaluate_check(1, None);
-        assert_eq!(limit, None);
-        assert_eq!(pass, None);
+        assert_eq!(evaluate_check(1, None), (None, None));
     }
 
     #[test]
     fn evaluate_check_value_u32_max_limit_zero_fails() {
-        let (limit, pass) = evaluate_check(u32::MAX, Some(0));
-        assert_eq!(limit, Some(0));
-        assert_eq!(pass, Some(false));
+        assert_eq!(evaluate_check(u32::MAX, Some(0)), (Some(0), Some(false)));
     }
 
     // ── limit_for_metric additional edge cases ─────────────────────────
 
     #[test]
     fn limit_for_metric_metric_exactly_bytes() {
-        let config = FunctionConfig {
-            args: vec![],
-            cpu_limit: Some(5_000_000),
-            read_limit: Some(1_000),
-            write_limit: Some(500),
-            tolerance: None,
-        };
+        let config = config_with_limits(Some(5_000_000), Some(1_000), Some(500));
         // "Bytes" (exact match, no prefix) does not match any known metric.
         assert_eq!(limit_for_metric(&config, "Bytes"), None);
     }
@@ -66,13 +193,7 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn limit_for_metric_newline_terminated_metric() {
-        let config = FunctionConfig {
-            args: vec![],
-            cpu_limit: Some(5_000_000),
-            read_limit: None,
-            write_limit: None,
-            tolerance: None,
-        };
+        let config = config_with_limits(Some(5_000_000), None, None);
         assert_eq!(limit_for_metric(&config, "CPU Instructions\n"), None);
     }
 
@@ -296,9 +417,7 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn load_budget_toml_only_foreign_section_returns_default() {
-        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-        std::fs::write(tmp.path(), "[lints]\nunused_imports = \"warn\"\n").unwrap();
-        let config = load_budget_toml(tmp.path())
+        let config = load_toml_str("[lints]\nunused_imports = \"warn\"\n")
             .expect("file with only foreign sections should parse as default");
         assert!(config.network.is_none());
         assert!(config.source.is_none());
@@ -307,16 +426,13 @@ mod off_by_one_and_zero_length_tests {
 
     #[test]
     fn load_budget_toml_no_trailing_newline_parses_correctly() {
-        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
-        std::fs::write(tmp.path(), "network = \"testnet\"").unwrap();
-        let config = load_budget_toml(tmp.path())
+        let config = load_toml_str("network = \"testnet\"")
             .expect("file without trailing newline should parse correctly");
         assert_eq!(config.network.as_deref(), Some("testnet"));
     }
 
     #[test]
     fn load_budget_toml_extra_top_level_fields_ignored() {
-        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         let content = r#"
 network = "testnet"
 source = "alice"
@@ -325,9 +441,7 @@ unknown_top_level = "should be ignored"
 [functions.do_work]
 cpu_limit = 5000000
 "#;
-        std::fs::write(tmp.path(), content).unwrap();
-        let config =
-            load_budget_toml(tmp.path()).expect("extra top-level fields should be tolerated");
+        let config = load_toml_str(content).expect("extra top-level fields should be tolerated");
         assert_eq!(config.network.as_deref(), Some("testnet"));
         assert_eq!(config.source.as_deref(), Some("alice"));
         assert!(config.functions.contains_key("do_work"));
@@ -335,14 +449,12 @@ cpu_limit = 5000000
 
     #[test]
     fn load_budget_toml_function_config_args_preserved() {
-        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         let content = r#"
 [functions.do_work]
 args = ["--n", "10000", "--flag"]
 cpu_limit = 5000000
 "#;
-        std::fs::write(tmp.path(), content).unwrap();
-        let config = load_budget_toml(tmp.path()).expect("should parse args correctly");
+        let config = load_toml_str(content).expect("should parse args correctly");
         let func = config.functions.get("do_work").unwrap();
         assert_eq!(
             func.args,
@@ -358,111 +470,37 @@ cpu_limit = 5000000
 
     // ── CSV output additional edge cases ───────────────────────────────
 
-    fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
-        let mut wtr = csv::Writer::from_writer(vec![]);
-        if check {
-            wtr.write_record(["package", "function", "metric", "value", "limit", "pass"])
-                .unwrap();
-            for r in reports {
-                let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                let limit_str = r.limit.map(|l| l.to_string()).unwrap_or_default();
-                let pass_str = r.pass.map(|p| p.to_string()).unwrap_or_default();
-                wtr.write_record([
-                    r.package.as_str(),
-                    r.function.as_str(),
-                    r.metric,
-                    value_str.as_str(),
-                    limit_str.as_str(),
-                    pass_str.as_str(),
-                ])
-                .unwrap();
-            }
-        } else {
-            wtr.write_record(["package", "function", "metric", "value"])
-                .unwrap();
-            for r in reports {
-                if r.value.is_some() {
-                    let value_str = r.value.map(|v| v.to_string()).unwrap_or_default();
-                    wtr.write_record([
-                        r.package.as_str(),
-                        r.function.as_str(),
-                        r.metric,
-                        value_str.as_str(),
-                    ])
-                    .unwrap();
-                }
-            }
-        }
-        wtr.flush().unwrap();
-        String::from_utf8(wtr.into_inner().unwrap()).unwrap()
-    }
-
     #[test]
     fn csv_output_with_check_limit_none_pass_false() {
-        let reports = vec![CostReport {
-            package: "p".to_string(),
-            function: "f".to_string(),
-            metric: "CPU Instructions",
-            value: None,
-            limit: None,
-            pass: Some(false),
-        }];
+        let reports = [cpu_report("p", "f", None, None, Some(false))];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("p,f,CPU Instructions,,,false"));
     }
 
     #[test]
     fn csv_output_with_check_limit_some_pass_none() {
-        let reports = vec![CostReport {
-            package: "p".to_string(),
-            function: "f".to_string(),
-            metric: "CPU Instructions",
-            value: Some(100),
-            limit: Some(200),
-            pass: None,
-        }];
+        let reports = [cpu_report("p", "f", Some(100), Some(200), None)];
         let csv = reports_to_csv(&reports, true);
         assert!(csv.contains("p,f,CPU Instructions,100,200,"));
     }
 
     #[test]
     fn csv_output_without_check_empty_package_name() {
-        let reports = vec![CostReport {
-            package: "".to_string(),
-            function: "f".to_string(),
-            metric: "CPU Instructions",
-            value: Some(100),
-            limit: None,
-            pass: None,
-        }];
+        let reports = [cpu_report("", "f", Some(100), None, None)];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(",f,CPU Instructions,100"));
     }
 
     #[test]
     fn csv_output_without_check_empty_function_name() {
-        let reports = vec![CostReport {
-            package: "p".to_string(),
-            function: "".to_string(),
-            metric: "CPU Instructions",
-            value: Some(100),
-            limit: None,
-            pass: None,
-        }];
+        let reports = [cpu_report("p", "", Some(100), None, None)];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains("p,,CPU Instructions,100"));
     }
 
     #[test]
     fn csv_output_value_u32_max() {
-        let reports = vec![CostReport {
-            package: "p".to_string(),
-            function: "f".to_string(),
-            metric: "CPU Instructions",
-            value: Some(u32::MAX),
-            limit: None,
-            pass: None,
-        }];
+        let reports = [cpu_report("p", "f", Some(u32::MAX), None, None)];
         let csv = reports_to_csv(&reports, false);
         assert!(csv.contains(&u32::MAX.to_string()));
     }

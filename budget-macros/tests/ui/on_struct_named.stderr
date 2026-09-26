@@ -1,0 +1,5 @@
+error: expected `fn`
+ --> tests/ui/on_struct_named.rs:6:1
+  |
+6 | struct NamedFields {
+  | ^^^^^^

@@ -24,14 +24,27 @@
 //! These values are manually transcribed into `MEASUREMENTS.md` under the
 //! "Local Cost Estimates (SDK 22.x)" section.
 
+mod common;
+
 #[cfg(test)]
 mod calibrate_gap {
     use amm_pool_contract::ConstantProductPoolClient;
     use soroban_sdk::Env;
 
+    const WASM_TARGET: &str = "wasm32v1-none";
+
+    fn load_wasm() -> Vec<u8> {
+        let path = crate::common::wasm_path(WASM_TARGET);
+        std::fs::read(&path).unwrap_or_else(|err| {
+            panic!(
+                "WASM file not found at {}: {err}. Run: cargo build --target {WASM_TARGET} --release -p amm-pool-contract",
+                path.display()
+            )
+        })
+    }
+
     fn measure_do_expensive_work(env: &Env) {
-        let wasm_path = "../target/wasm32v1-none/release/amm_pool_contract.wasm";
-        let wasm = std::fs::read(wasm_path).expect("WASM file not found, did you run cargo build?");
+        let wasm = load_wasm();
         let contract_id = env.register(wasm.as_slice(), ());
         let client = ConstantProductPoolClient::new(env, &contract_id);
 
@@ -54,5 +67,19 @@ mod calibrate_gap {
     fn calibrate_gap() {
         let env = Env::default();
         measure_do_expensive_work(&env);
+    }
+
+    #[test]
+    fn wasm_path_respects_target_dir() {
+        let path = crate::common::wasm_path(WASM_TARGET);
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains(WASM_TARGET),
+            "wasm path should contain the target triple"
+        );
+        assert!(
+            path_str.ends_with("amm_pool_contract.wasm"),
+            "wasm path should end with the contract filename"
+        );
     }
 }

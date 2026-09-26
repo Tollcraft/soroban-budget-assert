@@ -16,6 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Returns the absolute path to the real repository root (where `scripts/`
+/// lives), regardless of the cwd the test binary is invoked from.
 fn repo_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -24,11 +26,13 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// A bash that provides `mapfile`, which the script uses to collect the
-/// harness list. macOS ships bash 3.2 as `/bin/bash`, where `mapfile` is
-/// missing and the script aborts before it ever parses a marker; the
-/// bash 3.2 rewrite is a separate change, so look for a newer bash instead
-/// of asserting against one that cannot run the script at all.
+/// Returns a bash binary path that supports `mapfile`, which the
+/// `regenerate-measurements.sh` script uses to collect the harness list.
+///
+/// macOS ships bash 3.2 as `/bin/bash`, where `mapfile` is missing and
+/// the script aborts before it ever parses a marker. This function looks
+/// for a newer bash instead of asserting against one that cannot run the
+/// script at all.
 fn bash_with_mapfile() -> Option<PathBuf> {
     for candidate in ["bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"] {
         let ok = Command::new(candidate)
@@ -44,8 +48,13 @@ fn bash_with_mapfile() -> Option<PathBuf> {
 }
 
 /// Lays out a git work tree holding one crate whose `tests/` directory
-/// contains a harness per marker, a copy of the real script, and a stub
-/// `cargo` that records the argv it is handed.
+/// contains a harness per marker, a copy of the real `regenerate-measurements.sh`
+/// script, and a stub `cargo` that records the argv it is handed.
+///
+/// The stub `cargo` writes each invocation's arguments to `$CARGO_LOG`
+/// so the tests can verify the script built the correct argv for each
+/// harness. The files are added to the git index (not committed) so
+/// that `git ls-files` can discover them.
 fn setup_scratch_tree(dir: &Path, markers: &[(&str, &str)]) {
     let tests = dir.join("scratch-crate").join("tests");
     fs::create_dir_all(&tests).unwrap();
@@ -93,11 +102,20 @@ fn setup_scratch_tree(dir: &Path, markers: &[(&str, &str)]) {
     }
 }
 
+/// Holds the stdout from the script run and the path to the cargo
+/// invocation log, which records all `cargo test` invocations made by
+/// the script.
 struct Run {
     stdout: String,
     cargo_log: String,
 }
 
+/// Runs the `regenerate-measurements.sh` script in the scratch tree
+/// at `dir` using the given `bash` binary, and returns the combined
+/// stdout and the cargo invocation log.
+///
+/// The `PATH` is modified to put the stub `cargo` first so the script
+/// invokes our stub rather than the real cargo.
 fn run_script(dir: &Path, bash: &Path) -> Run {
     let cargo_log = dir.join("cargo-invocations.log");
     let path = format!(
@@ -122,8 +140,13 @@ fn run_script(dir: &Path, bash: &Path) -> Run {
     }
 }
 
-/// The argv of the `cargo test` invocation for a given harness, as the
-/// stub recorded it.
+/// Extracts the argv of the `cargo test` invocation for a given harness
+/// from the cargo log as recorded by the stub `cargo`.
+///
+/// The log contains blocks separated by "INVOCATION\n", each with
+/// "ARG:" prefixed lines. This function finds the block that starts
+/// with "test" and includes the given `test_target`, then returns
+/// the arguments as a vector of strings.
 fn test_invocation(cargo_log: &str, test_target: &str) -> Vec<String> {
     for block in cargo_log.split("INVOCATION\n") {
         let args: Vec<String> = block
@@ -139,6 +162,8 @@ fn test_invocation(cargo_log: &str, test_target: &str) -> Vec<String> {
     Vec::new()
 }
 
+/// Asserts that a `local` marker with a trailing comment is still
+/// parsed as mode `local` and not skipped.
 #[test]
 fn marker_with_trailing_comment_still_runs_locally() {
     let Some(bash) = bash_with_mapfile() else {
@@ -182,6 +207,8 @@ fn marker_with_trailing_comment_still_runs_locally() {
     );
 }
 
+/// Asserts that the feature extracted from a marker like `local:sdk22`
+/// does not include the trailing comment that follows the marker.
 #[test]
 fn marker_feature_excludes_the_trailing_comment() {
     let Some(bash) = bash_with_mapfile() else {
@@ -217,6 +244,9 @@ fn marker_feature_excludes_the_trailing_comment() {
     );
 }
 
+/// Asserts that a marker with three colon-separated fields correctly
+/// splits into mode, feature, and test_name, with the test_name
+/// passed as the harness filter.
 #[test]
 fn marker_splits_feature_and_test_name() {
     let Some(bash) = bash_with_mapfile() else {
@@ -249,6 +279,9 @@ fn marker_splits_feature_and_test_name() {
     );
 }
 
+/// Asserts that a bare marker (no colon) carries no `--features` flag
+/// and no test filter, avoiding the pitfall where `cut -f2` echoes
+/// the whole string when the delimiter is absent.
 #[test]
 fn bare_marker_carries_no_feature_or_test_filter() {
     let Some(bash) = bash_with_mapfile() else {
@@ -275,6 +308,8 @@ fn bare_marker_carries_no_feature_or_test_filter() {
     );
 }
 
+/// Asserts that a `testnet` marker is still skipped by the script
+/// and no `cargo test` invocation is produced for it.
 #[test]
 fn testnet_marker_is_still_skipped() {
     let Some(bash) = bash_with_mapfile() else {

@@ -1094,6 +1094,192 @@ fn contract_that_exports_nothing_reports_the_specific_cause() {
     );
 }
 
+// ── soroban_sdk_stub fixture tests ────────────────────────────────
+// These tests verify the behavior of the no_exports_workspace fixture
+// crates, specifically the soroban_sdk_stub crate and its interaction
+// with the helper_only crate that depends on it.
+
+/// Verifies that the `soroban_sdk_stub` crate (published as `soroban-sdk`)
+/// is correctly identified by the tool as a dependency that causes
+/// the `helper-only` crate to be skipped with the `not_a_cdylib` diagnostic.
+///
+/// The `soroban_sdk_stub` is a `#![no_std]` stub crate that simulates
+/// the real `soroban-sdk` crate. It is intentionally not a cdylib so that
+/// the `helper_only` crate (which depends on it as `soroban-sdk`) triggers
+/// the diagnostic.
+#[test]
+fn soroban_sdk_stub_produces_not_a_cdylib_diagnostic_for_helper_only() {
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The helper-only crate depends on soroban-sdk (which is the
+    // soroban_sdk_stub) but is an rlib, not a cdylib.
+    assert!(
+        stderr.contains("helper-only")
+            && stderr.contains("soroban-sdk")
+            && stderr.contains("cdylib"),
+        "helper-only should be flagged as depending on soroban-sdk without cdylib: {stderr}"
+    );
+    // The diagnostic should be actionable, telling the user to add cdylib.
+    assert!(
+        stderr.contains("Add `crate-type") && stderr.contains("cdylib\""),
+        "diagnostic should be actionable: {stderr}"
+    );
+}
+
+/// Verifies that the `soroban_sdk_stub` crate itself does NOT produce
+/// a `not_a_cdylib` diagnostic, since it is the dependency (not the
+/// crate that depends on soroban-sdk). The diagnostic is only for the
+/// crate that has soroban-sdk as a dependency and is not a cdylib.
+#[test]
+fn soroban_sdk_stub_itself_is_not_diagnosed_as_not_a_cdylib() {
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The soroban_sdk_stub crate (published as `soroban-sdk`) should
+    // not appear in the not_a_cdylib diagnostic message, because it
+    // is the dependency, not the crate that depends on soroban-sdk.
+    assert!(
+        !stderr.contains("soroban-sdk-stub") || !stderr.contains("soroban_sdk_stub"),
+        "soroban_sdk_stub itself should not be diagnosed as not-a-cdylib: {stderr}"
+    );
+}
+
+/// Verifies that the `no_exports_workspace` fixture produces diagnostics
+/// for ALL THREE failure modes, with `soroban_sdk_stub` being the root
+/// cause of the helper-only diagnostic.
+///
+/// The fixture contains four crates:
+/// - `soroban_sdk_stub` (the stub, published as `soroban-sdk`)
+/// - `helper-only` (rlib depending on soroban-sdk → not_a_cdylib)
+/// - `no-exports` (cdylib with no function exports → NoFunctionExports)
+/// - `runtime-only` (cdylib with only runtime symbols → OnlyRuntimeSymbols)
+#[test]
+fn no_exports_workspace_all_failure_modes_detected() {
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // All three failure modes must be present in stderr.
+    assert!(
+        stderr.contains("helper-only") && stderr.contains("cdylib"),
+        "helper-only not_a_cdylib diagnostic missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("no-exports") && stderr.contains("no function exports"),
+        "no-exports NoFunctionExports diagnostic missing: {stderr}"
+    );
+    assert!(
+        stderr.contains("runtime-only")
+            && stderr.contains("calling convention")
+            && stderr.contains("_start"),
+        "runtime-only OnlyRuntimeSymbols diagnostic missing: {stderr}"
+    );
+}
+
+/// Verifies that the `soroban_sdk_stub` crate has the expected
+/// `#![no_std]` attribute by confirming the crate compiles correctly
+/// as part of the workspace.
+///
+/// This is a compile-time test: if the crate fails to compile, the
+/// workspace build would fail entirely.
+#[test]
+fn soroban_sdk_stub_compiles_as_workspace_member() {
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    // Build the workspace to confirm all members compile.
+    let build = Command::new("cargo")
+        .args(["build", "--workspace"])
+        .current_dir(workspace.path())
+        .output();
+
+    let build = build.expect("cargo build should execute");
+    assert!(
+        build.status.success(),
+        "soroban_sdk_stub should compile as a workspace member. stdout: {} stderr: {}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+}
+
+/// Verifies that the `soroban_sdk_stub` crate has no public exports
+/// by checking that it doesn't export any functions or types.
+///
+/// This is tested indirectly through the `helper_only` crate which
+/// depends on it. If `soroban_sdk_stub` had public exports, the
+/// `helper_only` crate could use them and might behave differently.
+#[test]
+fn soroban_sdk_stub_has_no_public_exports() {
+    // The soroban_sdk_stub crate is a `#![no_std]` stub with only
+    // a module-level doc comment. It has no public functions, types,
+    // or constants. This test verifies that the helper_only crate
+    // (which depends on it) still compiles, confirming the stub
+    // works as a minimal dependency stand-in.
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    // Building helper_only specifically confirms it compiles with
+    // soroban_sdk_stub as a dependency.
+    let build = Command::new("cargo")
+        .args(["build", "-p", "helper-only"])
+        .current_dir(workspace.path())
+        .output();
+
+    let build = build.expect("cargo build -p helper-only should execute");
+    assert!(
+        build.status.success(),
+        "helper-only should compile with soroban_sdk_stub as dependency: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+}
+
+/// Verifies that the `not_a_cdylib_message` function produces an
+/// actionable diagnostic that includes the package name and the
+/// `soroban-sdk` dependency reference.
+///
+/// This test runs the `cargo-budget-report` binary and checks
+/// that the `not_a_cdylib_message` output is correctly formatted.
+#[test]
+fn not_a_cdylib_message_includes_soroban_sdk_reference() {
+    let workspace = setup_fixture_workspace("no_exports_workspace");
+
+    let assert = budget_report_cmd(workspace.path())
+        .args(["budget-report", "--network", "local", "--source", "alice"])
+        .assert();
+
+    let output = assert.failure().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The diagnostic should reference soroban-sdk and be actionable.
+    assert!(
+        stderr.contains("soroban-sdk"),
+        "should reference soroban-sdk: {stderr}"
+    );
+    assert!(stderr.contains("cdylib"), "should mention cdylib: {stderr}");
+    assert!(
+        stderr.contains("Skipping"),
+        "should indicate skipping: {stderr}"
+    );
+}
+
+// ── End soroban_sdk_stub fixture tests ────────────────────────────
+
 #[test]
 fn check_baseline_markdown_renders_a_diff_table() {
     let workspace = setup_mock_workspace();

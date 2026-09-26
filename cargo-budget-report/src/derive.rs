@@ -238,6 +238,9 @@ fn ceil_apply(value: u64, margin: f64) -> u64 {
     scaled.ceil() as u64
 }
 
+type FunctionMetricMap = BTreeMap<String, BTreeMap<String, u64>>;
+type RawMetricMap = BTreeMap<(String, String, String), u64>;
+
 impl Derivation {
     /// Derive per-function and per-scenario Tier A limits.
     ///
@@ -247,35 +250,31 @@ impl Derivation {
         measurements: &[TierBMeasurement],
         config: &DerivationConfig,
     ) -> Result<Self> {
-        // First pass: bucket measurements by `(package, function)` and
-        // compute per-function Tier A limits. The bucket is keyed
-        // `<package>::<function>` to mimic the existing Tier B
-        // baseline key style in `compare.rs`.
-        let mut per_function: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-        // Track the raw Tier B value per (package, function, metric) so
-        // the provenance ledger can cite it. Keys mirror the limit keys
-        // but include the metric.
-        let mut raw_measurements: BTreeMap<(String, String, String), u64> = BTreeMap::new();
+        let (per_function, raw_measurements) = Self::collect_measurements(measurements, config);
+        let mut limits = Self::derive_function_limits(&per_function, &raw_measurements, config);
+        Self::derive_scenario_limits(&mut limits, &raw_measurements, config)?;
+
+        // Stable sort by key so emitted diffs stay bounded.
+        limits.sort_by(|a, b| a.key.cmp(&b.key));
+
+        Ok(Self { limits })
+    }
+
+    /// Bucket measurements by `(package, function)` and track raw values per `(package, function, metric)`.
+    fn collect_measurements(
+        measurements: &[TierBMeasurement],
+        config: &DerivationConfig,
+    ) -> (FunctionMetricMap, RawMetricMap) {
+        let mut per_function: FunctionMetricMap = BTreeMap::new();
+        let mut raw_measurements: RawMetricMap = BTreeMap::new();
 
         for m in measurements {
             let margin = match config.margin.for_metric(&m.metric) {
                 Some(m) => m,
-                None => {
-                    // Metrics without a configured margin (e.g. WASM Bytes)
-                    // are build artifacts, not runtime resources. Skip them
-                    // rather than erroring so --derive-limits works on
-                    // real Tier B reports that include such rows.
-                    continue;
-                }
+                None => continue,
             };
             let limit_key = format!("{}::{}", m.package, m.function);
             let scaled = ceil_apply(m.value, margin);
-            // When two metrics in the same function both contribute to a
-            // single Tier A limit, the macro emits them as separate
-            // (cpu, mem, read, write) values keyed separately. We
-            // therefore emit one row per `(package, function, metric)`
-            // and avoid silently accumulating unrelated limits under
-            // the same key.
             per_function
                 .entry(limit_key)
                 .or_default()
@@ -286,9 +285,17 @@ impl Derivation {
             );
         }
 
-        let mut limits: Vec<DerivedLimit> = Vec::new();
+        (per_function, raw_measurements)
+    }
 
-        for (func_key, by_metric) in &per_function {
+    /// Derive function-level Tier A limits from collected measurement maps.
+    fn derive_function_limits(
+        per_function: &BTreeMap<String, BTreeMap<String, u64>>,
+        raw_measurements: &BTreeMap<(String, String, String), u64>,
+        config: &DerivationConfig,
+    ) -> Vec<DerivedLimit> {
+        let mut limits = Vec::new();
+        for (func_key, by_metric) in per_function {
             for (metric, tier_a_limit) in by_metric {
                 let (pkg, fn_name) = func_key
                     .split_once("::")
@@ -303,25 +310,25 @@ impl Derivation {
                     .copied()
                     .unwrap_or(0);
                 limits.push(DerivedLimit {
-                    key: env_var_key(&pkg, &fn_name, metric),
-                    tier_b_value,
-                    margin,
-                    tier_a_limit: *tier_a_limit,
-                    provenance: format!(
-                        "{pkg}::{fn_name} [{metric}] tier_b={tier_b_value} × margin={margin:.4} = {tier_a_limit}"
-                    ),
-                });
+                key: env_var_key(&pkg, &fn_name, metric),
+                tier_b_value,
+                margin,
+                tier_a_limit: *tier_a_limit,
+                provenance: format!(
+                    "{pkg}::{fn_name} [{metric}] tier_b={tier_b_value} × margin={margin:.4} = {tier_a_limit}"
+                ),
+            });
             }
         }
+        limits
+    }
 
-        // Second pass: per-scenario sums. A scenario's CPU limit is
-        // `ceil(sum(component_cpu_values) * cpu_margin)` and likewise
-        // for mem/read/write. Scenarios with no components at all are
-        // skipped; scenarios whose components are partially missing
-        // return an error so the user sees the broken mapping instead
-        // of a half-correct limit. Scenarios prefixed with a package
-        // key that matches a row already in `per_function` are left
-        // alone (no double-emit).
+    /// Derive scenario-level Tier A limits across configured scenario groupings.
+    fn derive_scenario_limits(
+        limits: &mut Vec<DerivedLimit>,
+        raw_measurements: &BTreeMap<(String, String, String), u64>,
+        config: &DerivationConfig,
+    ) -> Result<()> {
         for (scenario_full_key, components) in &config.scenarios {
             if components.is_empty() {
                 continue;
@@ -331,10 +338,6 @@ impl Derivation {
                 .map(|(p, n)| (p.to_string(), n.to_string()))
                 .unwrap_or_else(|| ("".to_string(), scenario_full_key.clone()));
 
-            // For each metric, sum the Tier B values across components
-            // and apply the margin. The missing-component check fires
-            // *before* the zero-sum check so a fully-absent scenario
-            // produces a clear error rather than a silent skip.
             for metric_label in [
                 "CPU Instructions",
                 "Memory Bytes",
@@ -363,9 +366,9 @@ impl Derivation {
                 if !missing.is_empty() {
                     return Err(Error::Message(format!(
                         "scenario {scenario_full_key} includes component(s) {missing:?} \
-                         for metric {metric_label:?} but the Tier B report has no value \
-                         for {scenario_pkg}::{:?} [{metric_label:?}]; \
-                         run `cargo budget-report` to refresh the report",
+                     for metric {metric_label:?} but the Tier B report has no value \
+                     for {scenario_pkg}::{:?} [{metric_label:?}]; \
+                     run `cargo budget-report` to refresh the report",
                         missing
                     )));
                 }
@@ -380,17 +383,13 @@ impl Derivation {
                     tier_a_limit,
                     provenance: format!(
                         "scenario {scenario_full_key} [{metric_label}] \
-                         tier_b={total_tier_b} (sum of {components:?}) \
-                         × margin={margin:.4} = {tier_a_limit}"
+                     tier_b={total_tier_b} (sum of {components:?}) \
+                     × margin={margin:.4} = {tier_a_limit}"
                     ),
                 });
             }
         }
-
-        // Stable sort by key so emitted diffs stay bounded.
-        limits.sort_by(|a, b| a.key.cmp(&b.key));
-
-        Ok(Self { limits })
+        Ok(())
     }
 
     /// Render the limits as a `.env`-shaped string with a provenanced

@@ -317,4 +317,275 @@ mod tests {
         assert_eq!(resolved, MAINNET_PASSPHRASE);
         assert_eq!(classify(&resolved), NetworkClass::Mainnet);
     }
+
+    /// Build a throwaway Stellar config root holding `network/<name>.toml`
+    /// for each `(name, contents)` pair.
+    fn config_root_with(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("network")).unwrap();
+        for (name, contents) in files {
+            std::fs::write(
+                root.path().join("network").join(format!("{name}.toml")),
+                contents,
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    // ── NetworkClass ───────────────────────────────────────────────────
+
+    #[test]
+    fn only_test_networks_are_disposable() {
+        assert!(NetworkClass::Testnet.is_disposable());
+        assert!(NetworkClass::Futurenet.is_disposable());
+        assert!(NetworkClass::Local.is_disposable());
+        assert!(!NetworkClass::Mainnet.is_disposable());
+        assert!(!NetworkClass::Unknown.is_disposable());
+    }
+
+    #[test]
+    fn every_class_has_a_distinct_description() {
+        let all = [
+            NetworkClass::Testnet,
+            NetworkClass::Futurenet,
+            NetworkClass::Local,
+            NetworkClass::Mainnet,
+            NetworkClass::Unknown,
+        ];
+        let descriptions: std::collections::HashSet<_> = all.iter().map(|c| c.describe()).collect();
+        assert_eq!(descriptions.len(), all.len());
+        assert!(NetworkClass::Mainnet.describe().contains("Mainnet"));
+    }
+
+    // ── classify ───────────────────────────────────────────────────────
+
+    #[test]
+    fn classifies_every_documented_alias() {
+        for alias in ["test", "testnet"] {
+            assert_eq!(classify(alias), NetworkClass::Testnet, "{alias}");
+        }
+        for alias in ["future", "futurenet"] {
+            assert_eq!(classify(alias), NetworkClass::Futurenet, "{alias}");
+        }
+        for alias in ["local", "localnet", "standalone"] {
+            assert_eq!(classify(alias), NetworkClass::Local, "{alias}");
+        }
+        for alias in ["mainnet", "pubnet", "publicnet", "public"] {
+            assert_eq!(classify(alias), NetworkClass::Mainnet, "{alias}");
+        }
+    }
+
+    #[test]
+    fn empty_and_whitespace_input_is_unknown() {
+        assert_eq!(classify(""), NetworkClass::Unknown);
+        assert_eq!(classify("   \t\n"), NetworkClass::Unknown);
+    }
+
+    #[test]
+    fn passphrase_is_classified_after_trimming() {
+        assert_eq!(
+            classify(&format!("  {MAINNET_PASSPHRASE}\n")),
+            NetworkClass::Mainnet
+        );
+    }
+
+    #[test]
+    fn passphrase_match_is_case_sensitive() {
+        assert_eq!(
+            classify(&MAINNET_PASSPHRASE.to_ascii_lowercase()),
+            NetworkClass::Unknown
+        );
+    }
+
+    #[test]
+    fn alias_with_inner_whitespace_or_suffix_is_unknown() {
+        assert_eq!(classify("test net"), NetworkClass::Unknown);
+        assert_eq!(classify("mainnet2"), NetworkClass::Unknown);
+        assert_eq!(classify("testnet-mirror"), NetworkClass::Unknown);
+    }
+
+    #[test]
+    fn passphrase_without_spaced_separator_is_treated_as_alias() {
+        // No " ; " separator, so it goes through alias matching — which
+        // must not recognise it as anything.
+        assert_eq!(
+            classify("Public Global Stellar Network;September 2015"),
+            NetworkClass::Unknown
+        );
+    }
+
+    // ── passphrase_from_network_toml ───────────────────────────────────
+
+    #[test]
+    fn passphrase_extraction_tolerates_indentation_and_spacing() {
+        assert_eq!(
+            passphrase_from_network_toml(
+                "   network_passphrase   =   \"Test SDF Network ; September 2015\"   "
+            )
+            .as_deref(),
+            Some(TESTNET_PASSPHRASE)
+        );
+    }
+
+    #[test]
+    fn passphrase_extraction_returns_first_non_empty_value() {
+        let contents = "passphrase = \"\"\nnetwork_passphrase = \"Standalone Network ; February 2017\"\npassphrase = \"Public Global Stellar Network ; September 2015\"\n";
+        assert_eq!(
+            passphrase_from_network_toml(contents).as_deref(),
+            Some(STANDALONE_PASSPHRASE)
+        );
+    }
+
+    #[test]
+    fn passphrase_extraction_ignores_keys_that_only_share_a_prefix() {
+        assert_eq!(
+            passphrase_from_network_toml("passphrase_hint = \"x ; y\"\n"),
+            None
+        );
+        assert_eq!(
+            passphrase_from_network_toml("network_passphrase \"no equals\"\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn passphrase_extraction_on_empty_input_is_none() {
+        assert_eq!(passphrase_from_network_toml(""), None);
+        assert_eq!(passphrase_from_network_toml("\n\n"), None);
+    }
+
+    #[test]
+    fn passphrase_extraction_accepts_unquoted_value() {
+        assert_eq!(
+            passphrase_from_network_toml("passphrase = Standalone Network ; February 2017")
+                .as_deref(),
+            Some(STANDALONE_PASSPHRASE)
+        );
+    }
+
+    // ── resolve_passphrase_in ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_returns_input_when_no_config_dirs() {
+        assert_eq!(resolve_passphrase_in(&[], "custom"), "custom");
+    }
+
+    #[test]
+    fn resolve_skips_lookup_for_empty_and_passphrase_input() {
+        let root = config_root_with(&[("", "passphrase = \"should not be read\"")]);
+        let dirs = [root.path().to_path_buf()];
+        assert_eq!(resolve_passphrase_in(&dirs, ""), "");
+        assert_eq!(resolve_passphrase_in(&dirs, "  "), "  ");
+        assert_eq!(
+            resolve_passphrase_in(&dirs, TESTNET_PASSPHRASE),
+            TESTNET_PASSPHRASE
+        );
+    }
+
+    #[test]
+    fn resolve_returns_input_unchanged_when_alias_file_missing() {
+        let root = config_root_with(&[]);
+        assert_eq!(
+            resolve_passphrase_in(&[root.path().to_path_buf()], " testnet "),
+            " testnet "
+        );
+    }
+
+    #[test]
+    fn resolve_trims_alias_before_lookup() {
+        let root =
+            config_root_with(&[("dev", "passphrase = \"Standalone Network ; February 2017\"")]);
+        assert_eq!(
+            resolve_passphrase_in(&[root.path().to_path_buf()], "  dev \n"),
+            STANDALONE_PASSPHRASE
+        );
+    }
+
+    #[test]
+    fn resolve_falls_through_dirs_without_a_usable_passphrase() {
+        let empty = config_root_with(&[("dev", "rpc_url = \"http://localhost\"\n")]);
+        let missing = config_root_with(&[]);
+        let good = config_root_with(&[(
+            "dev",
+            "network_passphrase = \"Public Global Stellar Network ; September 2015\"",
+        )]);
+        let dirs = [
+            missing.path().to_path_buf(),
+            empty.path().to_path_buf(),
+            good.path().to_path_buf(),
+        ];
+        assert_eq!(resolve_passphrase_in(&dirs, "dev"), MAINNET_PASSPHRASE);
+    }
+
+    #[test]
+    fn resolve_prefers_the_first_matching_dir() {
+        let first =
+            config_root_with(&[("dev", "passphrase = \"Test SDF Network ; September 2015\"")]);
+        let second = config_root_with(&[(
+            "dev",
+            "passphrase = \"Public Global Stellar Network ; September 2015\"",
+        )]);
+        let dirs = [first.path().to_path_buf(), second.path().to_path_buf()];
+        assert_eq!(resolve_passphrase_in(&dirs, "dev"), TESTNET_PASSPHRASE);
+    }
+
+    #[test]
+    fn resolve_can_turn_a_mainnet_looking_alias_into_testnet() {
+        // The passphrase wins over the alias spelling in both directions.
+        let root = config_root_with(&[(
+            "mainnet",
+            "passphrase = \"Test SDF Network ; September 2015\"",
+        )]);
+        let resolved = resolve_passphrase_in(&[root.path().to_path_buf()], "mainnet");
+        assert_eq!(classify(&resolved), NetworkClass::Testnet);
+    }
+
+    // ── ensure_deploy_allowed ──────────────────────────────────────────
+
+    #[test]
+    fn all_disposable_passphrases_pass_without_opt_in() {
+        for passphrase in [
+            TESTNET_PASSPHRASE,
+            FUTURENET_PASSPHRASE,
+            STANDALONE_PASSPHRASE,
+        ] {
+            assert!(
+                ensure_deploy_allowed(passphrase, false).is_ok(),
+                "{passphrase} should pass"
+            );
+        }
+    }
+
+    #[test]
+    fn opt_in_does_not_break_disposable_networks() {
+        assert!(ensure_deploy_allowed(TESTNET_PASSPHRASE, true).is_ok());
+    }
+
+    #[test]
+    fn mainnet_passphrase_is_refused_without_opt_in() {
+        let err = ensure_deploy_allowed(MAINNET_PASSPHRASE, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Stellar Mainnet"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_passphrase_is_refused_without_opt_in() {
+        let err = ensure_deploy_allowed("Private Net ; 2024", false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unrecognised network"), "got: {err}");
+    }
+
+    #[test]
+    fn refusal_quotes_the_trimmed_network_value() {
+        let err = ensure_deploy_allowed(&format!("  {MAINNET_PASSPHRASE}  "), false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("{MAINNET_PASSPHRASE:?}")),
+            "value is quoted trimmed: {err}"
+        );
+    }
 }

@@ -1,0 +1,5 @@
+error: expected `fn`
+ --> tests/ui/on_struct_pct_limit.rs:7:1
+  |
+7 | struct NotAFunction;
+  | ^^^^^^

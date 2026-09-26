@@ -2152,6 +2152,93 @@ mod tests {
         assert_tokens_contain(&output, "expected `fn`");
     }
 
+    // ── `tests/ui/on_struct*.rs` — struct rejection branch coverage ────────
+    //
+    // The `expand_targets_inner` function attempts to parse the annotated item
+    // as `ItemFn`, then as `ItemImpl`, and falls through to the `fn`-parse
+    // error when neither succeeds. These tests exercise that fallthrough
+    // path for every struct shape to ensure the error is consistent and
+    // never silently succeeds.
+
+    #[test]
+    fn a_tuple_struct_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(
+            quote! { struct TupleStruct(u32, String); },
+            |f, _| quote! { #f },
+        );
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_named_fields_struct_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(
+            quote! {
+                struct NamedFields {
+                    x: i32,
+                    y: String,
+                }
+            },
+            |f, _| quote! { #f },
+        );
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn an_enum_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(
+            quote! { enum Direction { North, South } },
+            |f, _| quote! { #f },
+        );
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_union_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(
+            quote! { union MyUnion { x: u32, y: f64 } },
+            |f, _| quote! { #f },
+        );
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_const_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(quote! { const X: i32 = 42; }, |f, _| quote! { #f });
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_static_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(quote! { static X: i32 = 42; }, |f, _| quote! { #f });
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_type_alias_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(quote! { type MyType = i32; }, |f, _| quote! { #f });
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_module_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(quote! { mod foo {} }, |f, _| quote! { #f });
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_trait_receives_the_fn_parse_error() {
+        let output = expand_targets_inner(quote! { trait MyTrait {} }, |f, _| quote! { #f });
+        assert_tokens_contain(&output, "expected `fn`");
+    }
+
+    #[test]
+    fn a_impl_block_without_methods_emits_no_methods_diagnostic() {
+        // This is a separate code path from the struct rejection: the item
+        // parses as `ItemImpl` but has zero instrumentable methods.
+        let output = expand_targets_inner(quote! { impl Foo {} }, |f, _| quote! { #f });
+        assert_tokens_contain(&output, "instrumented no methods");
+    }
+
     // ── `tests/ui/wrong_baseline_key.rs` (#634) ────────────────────────────
     //
     // That fixture pins the diagnostic for a comma followed by a non-`baseline`
@@ -2280,5 +2367,93 @@ mod tests {
                 "diagnostic {err:?} should reject the trailing source"
             );
         }
+    }
+
+    // ── `tests/ui/budget_lt_mem_baseline_no_mem.rs` ────────────────────────
+    //
+    // The compile-fail fixture pins the diagnostic for `mem_baseline` without
+    // a matching `mem` limit. These tests drive the `BudgetSpec` parser
+    // validation directly, covering both baseline-guard branches and the
+    // interaction between baseline and limit presence.
+
+    #[test]
+    fn a_mem_baseline_without_mem_is_rejected() {
+        let err = parse_str::<BudgetSpec>("cpu = 1000, mem_baseline = 50")
+            .err()
+            .expect("mem_baseline without mem must be rejected")
+            .to_string();
+        assert!(
+            err.contains("`mem_baseline` requires a `mem` limit"),
+            "diagnostic {err:?} should name the missing `mem` limit"
+        );
+    }
+
+    #[test]
+    fn a_cpu_baseline_without_cpu_is_rejected() {
+        let err = parse_str::<BudgetSpec>("mem = 500, cpu_baseline = 100")
+            .err()
+            .expect("cpu_baseline without cpu must be rejected")
+            .to_string();
+        assert!(
+            err.contains("`cpu_baseline` requires a `cpu` limit"),
+            "diagnostic {err:?} should name the missing `cpu` limit"
+        );
+    }
+
+    #[test]
+    fn both_baselines_without_any_limits_is_caught_by_no_metrics_guard() {
+        // When neither `cpu` nor `mem` is present, the "must provide at least
+        // one" guard fires before the baseline checks — baselines without
+        // their matching limits are a subset of "no metrics at all".
+        let err = parse_str::<BudgetSpec>("cpu_baseline = 100, mem_baseline = 50")
+            .err()
+            .expect("no metrics must be rejected")
+            .to_string();
+        assert!(
+            err.contains("at least one of `cpu` or `mem`"),
+            "diagnostic {err:?} should demand a metric"
+        );
+    }
+
+    #[test]
+    fn a_mem_baseline_with_mem_parses_cleanly() {
+        let spec = parse_str::<BudgetSpec>("cpu = 1000, mem = 500, mem_baseline = 50")
+            .expect("mem_baseline with mem must parse");
+        assert!(spec.mem.is_some());
+        assert!(spec.mem_baseline.is_some());
+    }
+
+    #[test]
+    fn a_cpu_baseline_with_cpu_parses_cleanly() {
+        let spec = parse_str::<BudgetSpec>("cpu = 1000, cpu_baseline = 100")
+            .expect("cpu_baseline with cpu must parse");
+        assert!(spec.cpu.is_some());
+        assert!(spec.cpu_baseline.is_some());
+    }
+
+    #[test]
+    fn both_baselines_with_both_limits_parse_cleanly() {
+        let spec =
+            parse_str::<BudgetSpec>("cpu = 1000, mem = 500, cpu_baseline = 100, mem_baseline = 50")
+                .expect("both baselines with both limits must parse");
+        assert!(spec.cpu.is_some());
+        assert!(spec.mem.is_some());
+        assert!(spec.cpu_baseline.is_some());
+        assert!(spec.mem_baseline.is_some());
+    }
+
+    #[test]
+    fn mem_baseline_rejection_precedes_unknown_property_check() {
+        // The baseline guards run after the while-loop that parses properties,
+        // so an unknown property is caught first. Verify the ordering by
+        // including both an unknown key and a baseline without its limit.
+        let err = parse_str::<BudgetSpec>("cpu = 1000, bogus = 1, mem_baseline = 50")
+            .err()
+            .expect("unknown property must be caught")
+            .to_string();
+        assert!(
+            err.contains("unknown property"),
+            "diagnostic {err:?} should report the unknown property first"
+        );
     }
 }

@@ -1,0 +1,5 @@
+error: expected `fn`
+ --> tests/ui/on_struct_env_limit.rs:8:1
+  |
+8 | struct NotAFunction;
+  | ^^^^^^
