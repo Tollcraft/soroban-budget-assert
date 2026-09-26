@@ -78,6 +78,12 @@ impl RelayContract {
         }
     }
 }
+/// Internal module for AMM pool logic.
+///
+/// Extracts the complex constant-product calculations and storage updates
+/// from the main contract implementation to improve readability and testability.
+mod pool_logic;
+
 
 #[contract]
 pub struct ConstantProductPool;
@@ -88,9 +94,7 @@ impl ConstantProductPool {
         if env.storage().instance().has(&RESERVE_A) {
             return Err(Error::AlreadyInitialized);
         }
-        env.storage().instance().set(&RESERVE_A, &0i128);
-        env.storage().instance().set(&RESERVE_B, &0i128);
-        env.storage().instance().set(&TOTAL_SHARES, &0i128);
+        pool_logic::initialize_storage(&env);
         Ok(())
     }
 
@@ -98,9 +102,7 @@ impl ConstantProductPool {
         to.require_auth();
 
         // Invariant: initialize() sets these keys before any deposit/swap/withdraw.
-        let reserve_a: i128 = env.storage().instance().get(&RESERVE_A).unwrap();
-        let reserve_b: i128 = env.storage().instance().get(&RESERVE_B).unwrap();
-        let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES).unwrap();
+        let (reserve_a, reserve_b, total_shares) = pool_logic::get_reserves(&env);
 
         // ── LP share calculation ───────────────────────────────────────
         //
@@ -109,34 +111,8 @@ impl ConstantProductPool {
         // `isqrt()` computes the integer (floor) square root — this is the
         // standard Uniswap v2 / constant-product AMM convention for
         // initial share minting:  shares = sqrt(amount_a * amount_b).
-        //
-        // For subsequent deposits, shares are minted proportionally — the
-        // depositor receives whichever of the two token ratios yields the
-        // smaller share count (protecting existing LPs from dilution).
-        let shares = if total_shares == 0 {
-            (amount_a * amount_b).isqrt()
-        } else {
-            let from_a = amount_a * total_shares / reserve_a;
-            let from_b = amount_b * total_shares / reserve_b;
-            from_a.min(from_b)
-        };
-
-        let bal_a: i128 = env.storage().instance().get(&BAL_A).unwrap_or(0);
-        let bal_b: i128 = env.storage().instance().get(&BAL_B).unwrap_or(0);
-        let lp_bal: i128 = env.storage().instance().get(&LP_BAL).unwrap_or(0);
-
-        env.storage().instance().set(&BAL_A, &(bal_a + amount_a));
-        env.storage().instance().set(&BAL_B, &(bal_b + amount_b));
-        env.storage()
-            .instance()
-            .set(&RESERVE_A, &(reserve_a + amount_a));
-        env.storage()
-            .instance()
-            .set(&RESERVE_B, &(reserve_b + amount_b));
-        env.storage()
-            .instance()
-            .set(&TOTAL_SHARES, &(total_shares + shares));
-        env.storage().instance().set(&LP_BAL, &(lp_bal + shares));
+        let shares = pool_logic::calculate_shares(amount_a, amount_b, total_shares, reserve_a, reserve_b);
+        pool_logic::update_balances_and_reserves(&env, amount_a, amount_b, shares, true);
 
         env.events()
             .publish(("deposit",), (to, amount_a, amount_b, shares));
@@ -154,8 +130,7 @@ impl ConstantProductPool {
         to.require_auth();
 
         // Invariant: initialize() sets these keys before any deposit/swap/withdraw.
-        let reserve_a: i128 = env.storage().instance().get(&RESERVE_A).unwrap();
-        let reserve_b: i128 = env.storage().instance().get(&RESERVE_B).unwrap();
+        let (reserve_a, reserve_b) = pool_logic::get_reserves_pair(&env);
 
         let (in_reserve, out_reserve) = if is_a_in {
             (reserve_a, reserve_b)
@@ -176,45 +151,10 @@ impl ConstantProductPool {
         //
         //   amount_out = (out_reserve · amount_in) / (in_reserve + amount_in)
         //
-        // Soroban uses integer arithmetic (i128); division truncates
-        // toward zero, which slightly favours the pool.
-        let amount_out = out_reserve * amount_in / (in_reserve + amount_in);
+        let amount_out = pool_logic::calculate_amount_out(out_reserve, amount_in, in_reserve);
 
-        if amount_out < min_amount_out {
-            return Err(Error::SlippageExceeded);
-        }
-
-        let bal_a: i128 = env.storage().instance().get(&BAL_A).unwrap_or(0);
-        let bal_b: i128 = env.storage().instance().get(&BAL_B).unwrap_or(0);
-
-        // ── Update per-user and pool balances after swap ────────────────
-        //
-        // The conditionals below encode which side is the "in" asset (added
-        // to the pool / deducted from the user's tracked balance) vs the
-        // "out" asset (removed from the pool / added to the user's tracked
-        // balance).  When `is_a_in` is true:
-        //   • A flows into the pool   → bal_a decreases, reserve_a increases
-        //   • B flows out of the pool → bal_b increases, reserve_b decreases
-        // The pattern reverses when `is_a_in` is false.
-        //
-        // These tracked balances (`BAL_A`, `BAL_B`) are simulated token
-        // holdings within the contract — they are not on-chain token
-        // transfers.  The reserves drive the pricing formula; the balances
-        // merely track what the user is owed, as an approximate substitute
-        // for real token contracts in this benchmarking fixture.
-        let new_bal_a =
-            bal_a + if is_a_in { amount_in } else { 0 } - if is_a_in { 0 } else { amount_out };
-        let new_bal_b =
-            bal_b + if is_a_in { 0 } else { amount_in } - if is_a_in { amount_out } else { 0 };
-        let new_reserve_a =
-            reserve_a + if is_a_in { amount_in } else { 0 } - if is_a_in { 0 } else { amount_out };
-        let new_reserve_b =
-            reserve_b + if is_a_in { 0 } else { amount_in } - if is_a_in { amount_out } else { 0 };
-
-        env.storage().instance().set(&BAL_A, &new_bal_a);
-        env.storage().instance().set(&BAL_B, &new_bal_b);
-        env.storage().instance().set(&RESERVE_A, &new_reserve_a);
-        env.storage().instance().set(&RESERVE_B, &new_reserve_b);
+        pool_logic::check_slippage(amount_out, min_amount_out)?;
+        pool_logic::update_balances_and_reserves_after_swap(&env, is_a_in, amount_in, amount_out);
 
         env.events()
             .publish(("swap",), (to, is_a_in, amount_in, amount_out));
@@ -232,33 +172,10 @@ impl ConstantProductPool {
         to.require_auth();
 
         // Invariant: initialize() sets these keys before any deposit/swap/withdraw.
-        let reserve_a: i128 = env.storage().instance().get(&RESERVE_A).unwrap();
-        let reserve_b: i128 = env.storage().instance().get(&RESERVE_B).unwrap();
-        let total_shares: i128 = env.storage().instance().get(&TOTAL_SHARES).unwrap();
-
-        let amount_a = reserve_a * shares / total_shares;
-        let amount_b = reserve_b * shares / total_shares;
-
-        if amount_a < min_a || amount_b < min_b {
-            return Err(Error::SlippageExceeded);
-        }
-
-        let bal_a: i128 = env.storage().instance().get(&BAL_A).unwrap_or(0);
-        let bal_b: i128 = env.storage().instance().get(&BAL_B).unwrap_or(0);
-        let lp_bal: i128 = env.storage().instance().get(&LP_BAL).unwrap_or(0);
-
-        env.storage().instance().set(&BAL_A, &(bal_a - amount_a));
-        env.storage().instance().set(&BAL_B, &(bal_b - amount_b));
-        env.storage()
-            .instance()
-            .set(&RESERVE_A, &(reserve_a - amount_a));
-        env.storage()
-            .instance()
-            .set(&RESERVE_B, &(reserve_b - amount_b));
-        env.storage()
-            .instance()
-            .set(&TOTAL_SHARES, &(total_shares - shares));
-        env.storage().instance().set(&LP_BAL, &(lp_bal - shares));
+        let (reserve_a, reserve_b, total_shares) = pool_logic::get_reserves(&env);
+        let (amount_a, amount_b) = pool_logic::calculate_withdraw_amounts(reserve_a, reserve_b, shares, total_shares);
+        pool_logic::check_slippage_withdraw(amount_a, min_a, amount_b, min_b)?;
+        pool_logic::update_balances_and_reserves(&env, amount_a, amount_b, shares, false);
 
         env.events()
             .publish(("withdraw",), (to, shares, amount_a, amount_b));
