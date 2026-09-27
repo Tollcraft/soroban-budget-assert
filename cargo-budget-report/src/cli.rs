@@ -1,9 +1,29 @@
+//! Command-line surface for `cargo budget-report`.
+//!
+//! This module owns *only* the argument definitions: the flags and options
+//! users type, their defaults, and the relationships between them
+//! (`conflicts_with`, `requires`, `env`). Every doc comment on a field below
+//! is user-facing — clap renders it as the `--help` text — so keep the
+//! wording accurate for end users rather than describing implementation
+//! details.
+//!
+//! Behaviour lives in `main.rs`. A field here should never do work; it only
+//! carries a parsed value that `main.rs` interprets (typically in
+//! [`crate::Mode::from_args`]).
+
 use clap::Parser;
 
 /// Top-level CLI entry point for `cargo budget-report`.
 ///
-/// Wraps the binary in a `cargo <subcommand>` compatible enum so it can be
-/// invoked as `cargo budget-report [OPTIONS]`.
+/// A cargo subcommand is invoked as `cargo budget-report [OPTIONS]`, i.e. the
+/// binary receives `budget-report` as its first positional argument. Wrapping
+/// the real argument struct in a single-variant enum (instead of parsing
+/// [`BudgetReportArgs`] directly) lets clap model that leading subcommand
+/// token while still accepting the arguments that follow it.
+///
+/// `name`/`bin_name` are deliberately `cargo`: they make `--help` and error
+/// messages read `cargo budget-report ...`, matching how the user actually
+/// typed the command, rather than the internal binary name.
 #[derive(Parser, Debug)]
 #[command(name = "cargo", bin_name = "cargo")]
 pub enum CargoCli {
@@ -28,9 +48,19 @@ pub struct BudgetReportArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// Target network to build, deploy, and simulate against (for example
+    /// `testnet`, `futurenet`, or `local`). Falls back to the `network` field
+    /// in `budget.toml` when omitted.
+    ///
+    /// The value is resolved to a passphrase before anything is deployed so
+    /// that a custom alias cannot silently point at Mainnet; see
+    /// `network_guard`.
     #[arg(long)]
     pub network: Option<String>,
 
+    /// Stellar CLI identity (key name) used as the source account for deploy
+    /// and simulate. Falls back to the `source` field in `budget.toml` when
+    /// omitted.
     #[arg(long)]
     pub source: Option<String>,
 
@@ -46,6 +76,10 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false)]
     pub allow_mainnet: bool,
 
+    /// Emit the report as JSON instead of a table.
+    ///
+    /// Mutually exclusive with `--csv`; clap rejects the combination in both
+    /// directions and reports it as an argument conflict.
     #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
@@ -65,10 +99,17 @@ pub struct BudgetReportArgs {
     pub check: bool,
 
     /// Emit the report as CSV instead of a table or JSON.
+    ///
+    /// The conflict with `--json` is declared on that field (clap enforces
+    /// the relationship symmetrically), so no `conflicts_with` is repeated
+    /// here.
     #[arg(long, default_value_t = false)]
     pub csv: bool,
 
     /// Write a new resource-usage baseline snapshot to this path and exit.
+    ///
+    /// Cannot be combined with `--check-baseline`: a run either records a
+    /// baseline or compares against one, never both.
     #[arg(long, conflicts_with = "check_baseline")]
     pub record_baseline: Option<String>,
 
@@ -241,6 +282,9 @@ pub struct BudgetReportArgs {
     /// Docker quickstart image) can be targeted to avoid public-network rate
     /// limits or to exercise custom fee settings. `--network-passphrase` is
     /// required whenever this is set.
+    /// `requires` names the *field*, not the flag: clap maps it back to
+    /// `--network-passphrase`, so a custom endpoint without a passphrase is
+    /// rejected at parse time rather than failing mid-run.
     #[arg(long, value_name = "URL", requires = "network_passphrase")]
     pub rpc_url: Option<String>,
 
@@ -269,6 +313,9 @@ pub struct BudgetReportArgs {
     /// Falls back to the `STELLAR_SECRET_KEY` environment variable. When
     /// neither is set, deploy and invoke still go through the `stellar` CLI,
     /// which must be installed (checked at preflight).
+    /// This is a secret: prefer the `STELLAR_SECRET_KEY` environment variable
+    /// over the flag, which leaves the seed in shell history and in the
+    /// process list. The parsed value is never echoed back in output.
     #[arg(long, value_name = "S...", env = "STELLAR_SECRET_KEY")]
     pub source_secret: Option<String>,
 

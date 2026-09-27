@@ -143,7 +143,7 @@ fn pct_no_of_fixture_pins_the_missing_of_error() {
 
     assert!(source.contains("pct = 25"), "must request a percentage");
     assert!(
-        snapshot.contains("requires `of`"),
+        snapshot.contains("requires `of = <source>`"),
         "diagnostic must explain the missing reference"
     );
 }

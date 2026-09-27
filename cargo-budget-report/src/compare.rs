@@ -680,13 +680,14 @@ fn status_label(m: &MetricComparison) -> String {
     }
 }
 
+/// One metric row paired with the function it was measured under.
+///
+/// Both rendering paths (text and Markdown) partition the same borrow-based
+/// rows, so naming the pair keeps [`partition_rows`]'s signature readable.
+type MetricRow<'a> = (&'a FunctionComparison, &'a MetricComparison);
+
 /// Partition metric rows into (changed, unchanged) for rendering.
-fn partition_rows(
-    report: &CheckReport,
-) -> (
-    Vec<(&FunctionComparison, &MetricComparison)>,
-    Vec<(&FunctionComparison, &MetricComparison)>,
-) {
+fn partition_rows(report: &CheckReport) -> (Vec<MetricRow<'_>>, Vec<MetricRow<'_>>) {
     let mut changed = Vec::new();
     let mut unchanged = Vec::new();
     for row in &report.compared {
