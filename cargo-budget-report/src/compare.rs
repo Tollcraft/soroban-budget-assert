@@ -680,13 +680,11 @@ fn status_label(m: &MetricComparison) -> String {
     }
 }
 
+/// A `(function, metric)` row borrowed from a `CheckReport`.
+type MetricRow<'a> = (&'a FunctionComparison, &'a MetricComparison);
+
 /// Partition metric rows into (changed, unchanged) for rendering.
-fn partition_rows(
-    report: &CheckReport,
-) -> (
-    Vec<(&FunctionComparison, &MetricComparison)>,
-    Vec<(&FunctionComparison, &MetricComparison)>,
-) {
+fn partition_rows(report: &CheckReport) -> (Vec<MetricRow<'_>>, Vec<MetricRow<'_>>) {
     let mut changed = Vec::new();
     let mut unchanged = Vec::new();
     for row in &report.compared {
