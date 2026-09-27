@@ -59,7 +59,7 @@ pub(crate) struct TypedArg {
 
 /// Renders a function's whole `args` list to the flat CLI vector.
 pub(crate) fn render_args(specs: &[ArgSpec], function: &str) -> anyhow::Result<Vec<String>> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(specs.len() * 2);
     for spec in specs {
         match spec {
             ArgSpec::Raw(s) => out.push(s.clone()),
@@ -73,6 +73,7 @@ pub(crate) fn render_args(specs: &[ArgSpec], function: &str) -> anyhow::Result<V
             }
         }
     }
+    out.shrink_to_fit();
     Ok(out)
 }
 
