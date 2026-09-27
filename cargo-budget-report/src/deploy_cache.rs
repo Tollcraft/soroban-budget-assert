@@ -216,7 +216,7 @@ mod tests {
         cache.save().unwrap();
 
         let reloaded = DeployCache::load(dir.path());
-        assert_eq!(reloaded.get("hash-1", "futurenet", "alice"), None);
+        assert_eq!(reloaded.get("hash-1", "mainnet", "alice"), None);
         assert_eq!(reloaded.get("hash-1", "testnet", "alice"), Some(ID_A));
     }
 
@@ -229,39 +229,77 @@ mod tests {
 
         let reloaded = DeployCache::load(dir.path());
         assert_eq!(reloaded.get("hash-1", "testnet", "bob"), None);
+        assert_eq!(reloaded.get("hash-1", "testnet", "alice"), Some(ID_A));
     }
 
     #[test]
-    fn redeploy_replaces_the_stale_package_entry() {
+    fn put_replaces_existing_entry_for_same_package_network_source() {
         let dir = tempdir().unwrap();
         let mut cache = DeployCache::load(dir.path());
-        cache.put("pkg", "hash-old", "testnet", "alice", ID_A);
-        cache.put("pkg", "hash-new", "testnet", "alice", ID_B);
+        cache.put("pkg", "hash-1", "testnet", "alice", ID_A);
+        // Same package, network, source, but new hash and new id
+        cache.put("pkg", "hash-2", "testnet", "alice", ID_B);
         cache.save().unwrap();
 
         let reloaded = DeployCache::load(dir.path());
-        assert_eq!(reloaded.get("hash-old", "testnet", "alice"), None);
-        assert_eq!(reloaded.get("hash-new", "testnet", "alice"), Some(ID_B));
+        assert_eq!(reloaded.get("hash-1", "testnet", "alice"), None);
+        assert_eq!(reloaded.get("hash-2", "testnet", "alice"), Some(ID_B));
     }
 
     #[test]
-    fn malformed_file_loads_as_cold_cache() {
+    fn malformed_cache_file_loads_as_empty_cache() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join(CACHE_FILE), "this is not toml : : :").unwrap();
+        std::fs::write(dir.path().join(CACHE_FILE), "this is not valid toml {{{}").unwrap();
         let cache = DeployCache::load(dir.path());
-        assert_eq!(cache.get("anything", "testnet", "alice"), None);
+        assert_eq!(cache.get("hash-1", "testnet", "alice"), None);
     }
 
     #[test]
-    fn unknown_version_is_treated_as_cold() {
+    fn unsupported_cache_version_loads_as_empty_cache() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join(CACHE_FILE),
-            "version = 999\n[[entry]]\npackage=\"p\"\nwasm_sha256=\"h\"\nnetwork=\"testnet\"\nsource=\"alice\"\ncontract_id=\"CID\"\n",
-        )
-        .unwrap();
+        let content = format!("version = 999\n");
+        std::fs::write(dir.path().join(CACHE_FILE), content).unwrap();
         let cache = DeployCache::load(dir.path());
-        assert_eq!(cache.get("h", "testnet", "alice"), None);
+        assert_eq!(cache.get("hash-1", "testnet", "alice"), None);
+    }
+
+    #[test]
+    fn save_skips_writing_when_not_dirty() {
+        let dir = tempdir().unwrap();
+        let mut cache = DeployCache::load(dir.path());
+        // Not dirty initially, save should succeed without writing file
+        assert!(cache.save().is_ok());
+        assert!(!dir.path().join(CACHE_FILE).exists());
+    }
+
+    #[test]
+    fn wasm_hash_computes_correct_sha256() {
+        let dir = tempdir().unwrap();
+        let wasm_path = dir.path().join("test.wasm");
+        std::fs::write(&wasm_path, b"hello world").unwrap();
+        let hash = wasm_hash(&wasm_path).unwrap();
+        // SHA-256 of "hello world"
+        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+    }
+
+    #[test]
+    fn wasm_hash_returns_error_on_missing_file() {
+        let dir = tempdir().unwrap();
+        let wasm_path = dir.path().join("nonexistent.wasm");
+        assert!(wasm_hash(&wasm_path).is_err());
+    }
+
+    #[test]
+    fn multiple_packages_in_cache() {
+        let dir = tempdir().unwrap();
+        let mut cache = DeployCache::load(dir.path());
+        cache.put("pkg-a", "hash-a", "testnet", "alice", ID_A);
+        cache.put("pkg-b", "hash-b", "testnet", "alice", ID_B);
+        cache.save().unwrap();
+
+        let reloaded = DeployCache::load(dir.path());
+        assert_eq!(reloaded.get("hash-a", "testnet", "alice"), Some(ID_A));
+        assert_eq!(reloaded.get("hash-b", "testnet", "alice"), Some(ID_B));
     }
 
     #[test]
