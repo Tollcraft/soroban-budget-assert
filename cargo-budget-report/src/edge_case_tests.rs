@@ -912,4 +912,131 @@ write_limit = 0
         assert!(config.read_limit.is_none());
         assert!(config.write_limit.is_none());
     }
+
+    // ── load_budget_toml error-path edge cases ─────────────────────────
+
+    #[test]
+    fn load_budget_toml_invalid_limit_type_errors() {
+        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        // `cpu_limit` must deserialize to a number, so a string is a parse
+        // error rather than a silently ignored field.
+        std::fs::write(
+            tmp.path(),
+            "[functions.do_work]\ncpu_limit = \"not a number\"\n",
+        )
+        .unwrap();
+
+        assert!(
+            load_budget_toml(tmp.path()).is_err(),
+            "malformed TOML should surface a parse error, not a default"
+        );
+    }
+
+    #[test]
+    fn load_budget_toml_unterminated_table_header_errors() {
+        let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+        // An unterminated table header is not a comments/whitespace-only file,
+        // so it must reach the parser and fail rather than fall back.
+        std::fs::write(tmp.path(), "[functions.do_work\n").unwrap();
+
+        assert!(load_budget_toml(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn load_budget_toml_nonexistent_path_returns_default() {
+        // A missing file is the normal "no configuration" case and must not be
+        // treated as an error. Use an absolute temp path so the result is
+        // independent of the process CWD (other tests change it).
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let missing = tmp.path().join("no-such-budget.toml");
+        assert!(!missing.exists());
+
+        let config = load_budget_toml(&missing).expect("missing file should fall back to default");
+        assert!(config.network.is_none());
+        assert!(config.source.is_none());
+        assert!(config.functions.is_empty());
+    }
+
+    // ── format_with_commas_and_units comma boundaries ──────────────────
+
+    #[test]
+    fn formatter_exactly_one_million_has_both_commas() {
+        assert_eq!(
+            format_with_commas_and_units(1_000_000, "CPU Instructions"),
+            "1,000,000 inst."
+        );
+        assert_eq!(
+            format_with_commas_and_units(1_000_000, "Read Bytes"),
+            "1,000,000 B"
+        );
+    }
+
+    // ── limit_for_metric partial-limit independence ────────────────────
+
+    #[test]
+    fn limit_for_metric_partial_limits_are_independent() {
+        let config = FunctionConfig {
+            args: vec![],
+            cpu_limit: None,
+            read_limit: Some(1_000),
+            write_limit: None,
+            tolerance: None,
+        };
+        assert_eq!(limit_for_metric(&config, "CPU Instructions"), None);
+        assert_eq!(limit_for_metric(&config, "Read Bytes"), Some(1_000));
+        assert_eq!(limit_for_metric(&config, "Write Bytes"), None);
+    }
+
+    // ── build_invoke_args RPC override edge cases ──────────────────────
+
+    #[test]
+    fn build_invoke_args_rpc_override_swaps_network_for_rpc_flags() {
+        let args = build_invoke_args(
+            "C",
+            "alice",
+            "testnet",
+            "ping",
+            &[],
+            Some((
+                "http://localhost:8000",
+                "Standalone Network ; February 2017",
+            )),
+        );
+        // Base 6 args + 4 RPC override args + 3 trailing = 13 with no func args.
+        assert_eq!(args.len(), 13);
+        assert!(args.contains(&"--rpc-url".to_string()));
+        assert!(args.contains(&"http://localhost:8000".to_string()));
+        assert!(args.contains(&"--network-passphrase".to_string()));
+        assert!(args.contains(&"Standalone Network ; February 2017".to_string()));
+        // The `--network` alias must not be forwarded alongside an RPC override.
+        assert!(!args.contains(&"--network".to_string()));
+        assert_eq!(args.last(), Some(&"ping".to_string()));
+    }
+
+    // ── TransactionData missing-field edge case ────────────────────────
+
+    #[test]
+    fn transaction_data_parse_missing_write_bytes_fails() {
+        let json_str = r#"{"resources": {"instructions": 1, "disk_read_bytes": 2}}"#;
+        assert!(
+            TransactionData::parse_json(json_str).is_err(),
+            "resources without write_bytes should fail to deserialize"
+        );
+    }
+
+    // ── scaffold_init force-without-existing-file edge case ────────────
+
+    #[test]
+    fn scaffold_init_force_creates_file_when_missing() {
+        let _guard = crate::TEST_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (_tmp, prev) = isolate_temp_dir();
+
+        // `--force` with no pre-existing file must still succeed.
+        assert!(scaffold_init(true, false).is_ok());
+        assert!(std::path::Path::new("budget.toml").exists());
+
+        restore_cwd(&prev);
+    }
 }
