@@ -84,6 +84,13 @@ mod off_by_one_and_zero_length_tests {
         assert_eq!(pass, Some(false));
     }
 
+    #[test]
+    fn evaluate_check_u32_max_with_u64_max_limit_passes() {
+        let (limit, pass) = evaluate_check(u32::MAX, Some(u64::MAX));
+        assert_eq!(limit, Some(u64::MAX));
+        assert_eq!(pass, Some(true));
+    }
+
     // ── limit_for_metric zero-length / boundary input tests ─────────────
 
     #[test]
@@ -212,6 +219,14 @@ mod off_by_one_and_zero_length_tests {
         assert_eq!(
             format_with_commas_and_units(0, "CPU Instructions"),
             "0 inst."
+        );
+    }
+
+    #[test]
+    fn formatter_u64_max_preserves_all_digits() {
+        assert_eq!(
+            format_with_commas_and_units(u64::MAX, "Read Bytes"),
+            "18,446,744,073,709,551,615 B"
         );
     }
 
