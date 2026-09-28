@@ -18,7 +18,9 @@ mod tests {
     /// Helper to parse BudgetReportArgs from a vector of strings.
     /// Prepends "cargo budget-report" to simulate the cargo subcommand structure.
     fn parse_args(args: &[&str]) -> Result<BudgetReportArgs, clap::Error> {
-        let mut full_args = vec!["cargo", "budget-report"];
+        let mut full_args = Vec::with_capacity(2 + args.len());
+        full_args.push("cargo");
+        full_args.push("budget-report");
         full_args.extend_from_slice(args);
         match CargoCli::try_parse_from(full_args) {
             Ok(CargoCli::BudgetReport(args)) => Ok(args),
@@ -984,31 +986,6 @@ mod tests {
     // at runtime by the main logic. We document them here for completeness.
 
     #[test]
-    fn test_init_with_other_flags_allowed_at_parse_time() {
-        // --init should likely be exclusive with other operations, but
-        // clap doesn't enforce this - runtime logic should check
-        let args = parse_args(&["--init", "--check"]).unwrap();
-        assert!(args.init);
-        assert!(args.check);
-        // Runtime should probably reject this combination
-    }
-
-    #[test]
-    fn test_record_and_check_baseline_together_rejected() {
-        // Same conflict as `test_record_and_check_baseline_conflict`; kept as
-        // a separate case so the rejection is covered alongside the other
-        // baseline-flag tests in this section.
-        let err = parse_args(&[
-            "--record-baseline",
-            "new.json",
-            "--check-baseline",
-            "old.json",
-        ])
-        .expect_err("--record-baseline and --check-baseline together should be rejected");
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
     fn test_derive_limits_without_from_allowed_at_parse_time() {
         // --derive-limits without --from doesn't make sense (where's the input?)
         // but clap allows it - runtime should reject or default to stdin
@@ -1029,11 +1006,12 @@ mod tests {
     }
 
     #[test]
-    fn test_json_and_csv_together_rejected() {
-        // Same conflict as `test_json_and_csv_together`, asserted through the
-        // error kind clap reports rather than the message text.
-        let err = parse_args(&["--json", "--csv"])
-            .expect_err("--json and --csv together should be rejected");
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    fn test_init_with_other_flags_allowed_at_parse_time() {
+        // --init should likely be exclusive with other operations, but
+        // clap doesn't enforce this - runtime logic should check
+        let args = parse_args(&["--init", "--check"]).unwrap();
+        assert!(args.init);
+        assert!(args.check);
+        // Runtime should probably reject this combination
     }
 }

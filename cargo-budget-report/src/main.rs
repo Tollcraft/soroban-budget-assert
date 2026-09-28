@@ -49,11 +49,11 @@ mod watch;
 /// when friendbot funding is suspected to have failed transiently
 /// (rate-limiting, network hiccups, or the account not being fully
 /// confirmed on-ledger yet).
-const MAX_DEPLOY_ATTEMPTS: u32 = 4;
+pub(crate) const MAX_DEPLOY_ATTEMPTS: u32 = 4;
 
 /// Initial backoff delay between deployment retries. Doubles on each
 /// subsequent attempt (2 s → 4 s → 8 s).
-const INITIAL_RETRY_DELAY_SECS: u64 = 2;
+pub(crate) const INITIAL_RETRY_DELAY_SECS: u64 = 2;
 
 /// WASM target used for every contract build and measurement.
 ///
@@ -151,14 +151,14 @@ enum RetryFailure {
 /// Retried: rate-limit / HTTP-429 style responses ("rate limit",
 /// "rate-limited", "429", "too many requests"), connection-level
 /// failures ("connection", "timed out", "timeout", "reset by peer",
-/// "broken pipe", "network"), server-side blips ("503", "502", "504",
-/// "unavailable", "temporarily", "try again").
+/// "broken pipe", "503", "502", "504", "unavailable", "temporarily",
+/// "try again").
 ///
 /// Everything else — unknown errors included — is treated as permanent.
 /// A conservative whitelist keeps deterministic failures (missing
 /// contract, malformed XDR, simulation errors) from being retried four
 /// times before failing anyway.
-fn is_transient_error(message: &str) -> bool {
+pub(crate) fn is_transient_error(message: &str) -> bool {
     const TRANSIENT_MARKERS: [&str; 15] = [
         "rate limit",
         "rate-limited",
@@ -840,7 +840,7 @@ fn extract_metrics(rpc_response: &serde_json::Value) -> Result<(u32, u32, u32)> 
 /// * `func_args` - Additional CLI arguments forwarded after the `--` separator.
 /// * `rpc_override` - `Some((rpc_url, network_passphrase))` to target a custom
 ///   local/standalone RPC node instead of a built-in `--network` alias (#49).
-fn build_invoke_args(
+pub(crate) fn build_invoke_args(
     contract_id: &str,
     source: &str,
     network: &str,
@@ -885,7 +885,7 @@ fn build_invoke_args(
 /// # Arguments
 ///
 /// * `b64_xdr` - The base64-encoded XDR transaction envelope.
-fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
+pub(crate) fn build_rpc_payload(b64_xdr: &str) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -1018,7 +1018,7 @@ pub(crate) fn resolve_tolerance(
 /// budget-exceeded result, which beats a network/infrastructure fault. A
 /// regression is a real signal that should block a PR, whereas a network
 /// fault is safe to retry, so surfacing the regression wins when both occur.
-fn classify_outcome(has_regressions: bool, budget_exceeded: bool, network_failure: bool) -> i32 {
+pub(crate) fn classify_outcome(has_regressions: bool, budget_exceeded: bool, network_failure: bool) -> i32 {
     if has_regressions {
         EXIT_REGRESSION
     } else if budget_exceeded {
@@ -1192,7 +1192,7 @@ fn render_check_report_json(
 
 /// Scaffold a commented `budget.toml` template. Errors if the file already
 /// exists and `force` is not set.
-fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
+pub(crate) fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
     let path = Path::new("budget.toml");
     if path.exists() && !force {
         return Err(Error::Message(

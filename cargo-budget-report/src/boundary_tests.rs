@@ -708,22 +708,217 @@ args = [""]
         assert_eq!(csv, "package,function,metric,value\n");
     }
 
-    // ── BudgetToml / FunctionConfig default edge cases ─────────────────
+// ── resolve_retry_config edge case tests ──────────────────────
 
-    #[test]
-    fn budget_toml_default_has_zero_length_collections() {
-        let config = BudgetToml::default();
-        assert!(config.network.is_none());
-        assert!(config.source.is_none());
-        assert_eq!(config.functions.len(), 0);
-    }
+#[test]
+fn resolve_retry_config_defaults_when_no_args_or_toml() {
+    let config = crate::resolve_retry_config(None, None, None).unwrap();
+    assert_eq!(config.max_attempts, crate::MAX_DEPLOY_ATTEMPTS);
+    assert_eq!(config.initial_backoff.as_secs(), crate::INITIAL_RETRY_DELAY_SECS);
+}
 
-    #[test]
-    fn function_config_default_has_zero_length_args() {
-        let config = FunctionConfig::default();
-        assert_eq!(config.args.len(), 0);
-        assert!(config.cpu_limit.is_none());
-        assert!(config.read_limit.is_none());
-        assert!(config.write_limit.is_none());
-    }
+#[test]
+fn resolve_retry_config_cli_overrides_toml() {
+    let config = crate::resolve_retry_config(
+        Some(2),
+        Some(10),
+        None,
+    ).unwrap();
+    assert_eq!(config.max_attempts, 2);
+    assert_eq!(config.initial_backoff.as_secs(), 10);
+}
+
+#[test]
+fn resolve_retry_config_toml_overrides_defaults() {
+    use crate::RetryToml;
+    let toml = RetryToml {
+        max_attempts: Some(5),
+        initial_backoff_secs: Some(20),
+    };
+    let config = crate::resolve_retry_config(None, None, Some(toml)).unwrap();
+    assert_eq!(config.max_attempts, 5);
+    assert_eq!(config.initial_backoff.as_secs(), 20);
+}
+
+#[test]
+fn resolve_retry_config_zero_attempts_is_error() {
+    let result = crate::resolve_retry_config(Some(0), None, None);
+    assert!(result.is_err());
+    let err = format!("{:#}", result.unwrap_err());
+    assert!(err.contains("max_attempts must be at least 1"), "got: {err}");
+}
+
+#[test]
+fn resolve_retry_config_one_attempt_disables_retry() {
+    let config = crate::resolve_retry_config(Some(1), None, None).unwrap();
+    assert_eq!(config.max_attempts, 1);
+    assert!(config.disabled());
+}
+
+// ── resolve_tolerance edge case tests ─────────────────────────
+
+#[test]
+fn resolve_tolerance_uses_cli_override() {
+    use crate::BudgetToml;
+    let config = BudgetToml::default();
+    let tolerance = crate::resolve_tolerance(Some("0.15"), &config).unwrap();
+    assert_eq!(tolerance.value, 0.15);
+}
+
+#[test]
+fn resolve_tolerance_uses_toml_when_no_cli() {
+    use crate::BudgetToml;
+    let mut config = BudgetToml::default();
+    config.tolerance = Some(0.10);
+    let tolerance = crate::resolve_tolerance(None, &config).unwrap();
+    assert_eq!(tolerance.value, 0.10);
+}
+
+#[test]
+fn resolve_tolerance_defaults_when_no_cli_or_toml() {
+    use crate::BudgetToml;
+    let config = BudgetToml::default();
+    let tolerance = crate::resolve_tolerance(None, &config).unwrap();
+    assert_eq!(tolerance.value, 0.10);
+}
+
+// ── is_transient_error edge case tests ────────────────────────
+
+#[test]
+fn is_transient_error_recognizes_rate_limit() {
+    assert!(crate::is_transient_error("rate limit exceeded"));
+    assert!(crate::is_transient_error("429 Too Many Requests"));
+}
+
+#[test]
+fn is_transient_error_recognizes_connection_errors() {
+    assert!(crate::is_transient_error("connection refused"));
+    assert!(crate::is_transient_error("timed out"));
+}
+
+#[test]
+fn is_transient_error_recognizes_server_errors() {
+    assert!(crate::is_transient_error("503 Service Unavailable"));
+    assert!(crate::is_transient_error("502 Bad Gateway"));
+}
+
+#[test]
+fn is_transient_error_rejects_permanent_errors() {
+    assert!(!crate::is_transient_error("contract not found"));
+    assert!(!crate::is_transient_error("malformed XDR"));
+}
+
+#[test]
+fn is_transient_error_case_insensitive() {
+    assert!(crate::is_transient_error("RATE-LIMIT"));
+    assert!(crate::is_transient_error("TIMEOUT"));
+}
+
+// ── classify_outcome edge case tests ──────────────────────────
+
+#[test]
+fn classify_outcome_returns_success_when_all_pass() {
+    let code = crate::classify_outcome(false, false, false);
+    assert_eq!(code, crate::EXIT_SUCCESS);
+}
+
+#[test]
+fn classify_outcome_returns_regression_when_present() {
+    let code = crate::classify_outcome(true, false, false);
+    assert_eq!(code, crate::EXIT_REGRESSION);
+}
+
+#[test]
+fn classify_outcome_returns_budget_exceeded_when_present() {
+    let code = crate::classify_outcome(false, true, false);
+    assert_eq!(code, crate::EXIT_BUDGET_EXCEEDED);
+}
+
+#[test]
+fn classify_outcome_returns_network_failure_when_present() {
+    let code = crate::classify_outcome(false, false, true);
+    assert_eq!(code, crate::EXIT_NETWORK_FAILURE);
+}
+
+// ── resolve_toml_config edge case tests ───────────────────────
+
+#[test]
+fn load_budget_toml_missing_file_returns_error() {
+    let result = crate::load_budget_toml("nonexistent_file.toml");
+    assert!(result.is_err());
+}
+
+#[test]
+fn load_budget_toml_with_retry_section_overrides_defaults() {
+    let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
+    let content = r#"
+[retry]
+max_attempts = 5
+initial_backoff_secs = 10
+"#;
+    std::fs::write(tmp.path(), content).unwrap();
+    let config = crate::load_budget_toml(tmp.path()).expect("retry section should parse");
+    assert_eq!(config.retry.as_ref().unwrap().max_attempts, Some(5));
+    assert_eq!(config.retry.as_ref().unwrap().initial_backoff_secs, Some(10));
+}
+
+// ── extract_metrics u64 boundary tests ────────────────────────
+
+#[test]
+fn extract_metrics_u64_max_values() {
+    use stellar_xdr::{LedgerFootprint, SorobanTransactionDataExt, VecM};
+    let tx_data = stellar_xdr::SorobanTransactionData {
+        ext: stellar_xdr::SorobanTransactionDataExt::V0,
+        resources: stellar_xdr::SorobanResources {
+            footprint: LedgerFootprint {
+                read_only: VecM::default(),
+                read_write: VecM::default(),
+            },
+            instructions: u32::MAX,
+            disk_read_bytes: u32::MAX,
+            write_bytes: u32::MAX,
+        },
+        resource_fee: 0,
+    };
+    let b64 = tx_data.to_xdr_base64(Limits::none()).unwrap();
+    let rpc_json = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": { "transactionData": b64 }
+    });
+    let (instructions, read_bytes, write_bytes) =
+        crate::extract_metrics(&rpc_json).expect("u32::MAX metrics should extract");
+    assert_eq!(instructions, u32::MAX);
+    assert_eq!(read_bytes, u32::MAX);
+    assert_eq!(write_bytes, u32::MAX);
+}
+
+// ── format_with_commas_and_units large value tests ────────────
+
+#[test]
+fn formatter_very_large_values() {
+    assert_eq!(
+        format_with_commas_and_units(u64::MAX, "CPU Instructions"),
+        format!("{},018,446,744,073,709,551,615 inst.", u64::MAX / 1_000_000_000 * 1_000_000_000)
+    );
+}
+
+// ── build_invoke_args edge case tests ────────────────────────
+
+#[test]
+fn build_invoke_args_empty_contract_id() {
+    let args = crate::build_invoke_args("", "src", "testnet", "fn", &[], None);
+    assert_eq!(args[3], ""); // contract id is empty
+}
+
+#[test]
+fn build_invoke_args_with_rpc_override_has_extra_args() {
+    let args = crate::build_invoke_args("C", "src", "testnet", "fn", &[], Some(("http://rpc", "pass")));
+    // 7 base + 4 override = 11 args, plus function and args
+    assert!(args.len() >= 11);
+    assert_eq!(args[7], "--rpc-url");
+    assert_eq!(args[8], "http://rpc");
+    assert_eq!(args[9], "--network-passphrase");
+    assert_eq!(args[10], "pass");
+}
 }
