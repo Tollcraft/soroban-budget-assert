@@ -1,5 +1,6 @@
 use crate::BudgetToml;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -56,6 +57,8 @@ pub fn decode_with_cli(xdr_b64: &str) -> Result<CliDecodedMetrics> {
         .context("failed to spawn stellar xdr decode")?;
 
     {
+        // Scoped so the mutable borrow of `child.stdin` ends here: the handle
+        // is released before `wait_with_output` takes the child by value.
         let stdin = child.stdin.as_mut().context("failed to open stdin")?;
         stdin
             .write_all(xdr_b64.as_bytes())
@@ -270,23 +273,39 @@ pub(crate) fn validate_budget_toml(
         // functions to compare against (e.g. nothing was built).
         if !available_functions.is_empty() {
             if let Some(toml::Value::Table(fns)) = top.get("functions") {
-                let avail: Vec<&str> = available_functions.iter().map(String::as_str).collect();
-                let avail_list = available_functions.join(", ");
+                // Membership is asked once per configured function, so a set
+                // replaces the previous scan of the whole export list for
+                // every name. The typo candidates and the rendered
+                // "available functions" hint are built lazily, on the first
+                // name that is actually missing, so a config where every
+                // function resolves allocates neither.
+                let known: HashSet<&str> =
+                    available_functions.iter().map(String::as_str).collect();
+                let mut hint: Option<(Vec<&str>, String)> = None;
                 for name in fns.keys() {
-                    if !available_functions.iter().any(|f| f == name) {
-                        let suggestion = closest_match(name, &avail);
-                        errors.push(ValidationError::new(
-                            "budget.toml [functions]",
-                            match suggestion {
-                                Some(s) => format!(
-                                    "function `{name}` is configured in budget.toml but does not exist in the workspace (did you mean `{s}`?). Available functions: {avail_list}"
-                                ),
-                                None => format!(
-                                    "function `{name}` is configured in budget.toml but does not exist in the workspace. Available functions: {avail_list}"
-                                ),
-                            },
-                        ));
+                    if known.contains(name.as_str()) {
+                        continue;
                     }
+                    let (candidate_list, avail_list) = hint.get_or_insert_with(|| {
+                        (
+                            available_functions.iter().map(String::as_str).collect(),
+                            available_functions.join(", "),
+                        )
+                    });
+                    let suggestion = closest_match(name, candidate_list.as_slice());
+                    errors.push(ValidationError::new(
+                        "budget.toml [functions]",
+                        match suggestion {
+                            Some(s) => format!(
+                                "function `{name}` is configured in budget.toml but does not exist in the workspace (did you mean `{s}`?). Available functions: {}",
+                                avail_list.as_str()
+                            ),
+                            None => format!(
+                                "function `{name}` is configured in budget.toml but does not exist in the workspace. Available functions: {}",
+                                avail_list.as_str()
+                            ),
+                        },
+                    ));
                 }
             }
         }
@@ -297,64 +316,108 @@ pub(crate) fn validate_budget_toml(
     // surfaced by deserializing into the real `BudgetToml`. The top-level
     // struct intentionally does not deny unknown keys, so those are not
     // double-counted here.
-    if let Err(e) = toml::from_str::<BudgetToml>(content) {
-        let msg = e.to_string();
-        let already_covered = KNOWN_TOP_LEVEL_KEYS.iter().any(|k| msg.contains(k));
-        if !already_covered {
-            errors.push(ValidationError::new(
-                "budget.toml",
-                format!("schema error: {msg}"),
-            ));
+    //
+    // The text is deserialized exactly once: the successful value is handed
+    // back below instead of being discarded and parsed a second time, which is
+    // what the previous `if errors.is_empty() { toml::from_str(content) }` tail
+    // did on every valid file.
+    match toml::from_str::<BudgetToml>(content) {
+        Ok(config) if errors.is_empty() => Ok(config),
+        Ok(_) => Err(errors),
+        Err(e) => {
+            let msg = e.to_string();
+            let already_covered = KNOWN_TOP_LEVEL_KEYS.iter().any(|k| msg.contains(k));
+            if !already_covered {
+                errors.push(ValidationError::new(
+                    "budget.toml",
+                    format!("schema error: {msg}"),
+                ));
+            } else if errors.is_empty() {
+                // The message already names a known key, so it was not
+                // re-reported as a separate schema error, and nothing else
+                // rejected the document. Surface the raw deserialization
+                // failure anyway: a file the schema check does not cover must
+                // not pass silently.
+                errors.push(ValidationError::new("budget.toml", msg));
+            }
+            Err(errors)
         }
-    }
-
-    if errors.is_empty() {
-        toml::from_str(content)
-            .map_err(|e| vec![ValidationError::new("budget.toml", format!("{e}"))])
-    } else {
-        Err(errors)
     }
 }
 
-/// Levenshtein edit distance between two strings.
-#[allow(clippy::needless_range_loop)]
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let n = a.len();
-    let m = b.len();
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-    for i in 0..=n {
-        dp[i][0] = i;
+/// Levenshtein edit distance between two strings, computed into a
+/// caller-owned scratch buffer.
+///
+/// Only the previous row of the recurrence is retained (a single `Vec<usize>`
+/// of `b`'s length), instead of the full `(n + 1) × (m + 1)` matrix the
+/// previous implementation allocated — which matters because this runs once
+/// per candidate for every name in `budget.toml` that fails to resolve.
+/// Characters are pulled straight out of the `&str`s as they are visited, so
+/// the two `Vec<char>` copies per call are gone as well.
+///
+/// `scratch` is taken by reference rather than allocated per call so a caller
+/// that measures one name against many candidates pays for the row once; the
+/// buffer is cleared and resized as needed, so it is safe to reuse for any
+/// pair of inputs.
+fn edit_distance_into(a: &str, b: &str, scratch: &mut Vec<usize>) -> usize {
+    let m = b.chars().count();
+    scratch.clear();
+    scratch.resize(m + 1, 0);
+    for (j, cell) in scratch.iter_mut().enumerate() {
+        // Row 0 of the recurrence: the cost of deleting every character of `b`.
+        *cell = j;
     }
-    for j in 0..=m {
-        dp[0][j] = j;
-    }
-    for i in 1..=n {
-        for j in 1..=m {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            dp[i][j] = (dp[i - 1][j] + 1)
-                .min(dp[i][j - 1] + 1)
-                .min(dp[i - 1][j - 1] + cost);
+
+    for (i, a_char) in a.chars().enumerate() {
+        // `prev_diag` carries `dp[i - 1][j - 1]` into the next inner step; the
+        // cell it is read from still holds the previous row at this point.
+        let mut prev_diag = scratch[0];
+        scratch[0] = i + 1;
+        for (j, b_char) in b.chars().enumerate() {
+            let above = scratch[j + 1];
+            let cost = usize::from(a_char != b_char);
+            scratch[j + 1] = (above + 1)
+                .min(scratch[j] + 1)
+                .min(prev_diag + cost);
+            prev_diag = above;
         }
     }
-    dp[n][m]
+
+    scratch[m]
 }
 
 /// Return the closest `option` to `candidate` when the edit distance is small
 /// enough to be a plausible typo, else `None`.
+///
+/// One DP row is reused across every candidate (see [`edit_distance_into`]),
+/// and only the winning option is copied into a `String`, once, at the end —
+/// the previous version allocated a `String` for every candidate it examined,
+/// including the ones it immediately discarded.
 fn closest_match(candidate: &str, options: &[&str]) -> Option<String> {
-    let threshold = if candidate.chars().count() <= 4 { 1 } else { 2 };
-    let mut best: Option<(usize, String)> = None;
+    let candidate_len = candidate.chars().count();
+    let threshold = if candidate_len <= 4 { 1 } else { 2 };
+
+    let mut scratch: Vec<usize> = Vec::new();
+    let mut best: Option<(usize, &str)> = None;
     for opt in options {
-        let d = edit_distance(candidate, opt);
+        // Edit distance is at least the difference in lengths, so an option
+        // that is already further away than `threshold` characters can never
+        // satisfy the final check. Skipping it here keeps the `O(n × m)` DP
+        // off the common "nothing is close" path; candidates above the
+        // threshold were rejected by the final check anyway, so the result is
+        // unchanged.
+        if opt.chars().count().abs_diff(candidate_len) > threshold {
+            continue;
+        }
+        let d = edit_distance_into(candidate, opt, &mut scratch);
         match best {
-            Some((bd, _)) if d >= bd => {}
-            _ => best = Some((d, (*opt).to_string())),
+            Some((best_d, _)) if d >= best_d => {}
+            _ => best = Some((d, opt)),
         }
     }
+
     match best {
-        Some((d, s)) if d > 0 && d <= threshold && d < candidate.chars().count() => Some(s),
+        Some((d, s)) if d > 0 && d <= threshold && d < candidate_len => Some(s.to_string()),
         _ => None,
     }
 }
@@ -508,6 +571,169 @@ cpu_limit = 5_000_000
             closest_match("cpu_lmit", &["cpu_limit"]),
             Some("cpu_limit".to_string())
         );
+    }
+
+    // ── edit-distance / typo-suggestion edge cases ────────────────────
+
+    /// Single-shot wrapper over the shared-scratch DP so the assertions below
+    /// read like the old helper; production code reuses one buffer across
+    /// every candidate it measures.
+    fn edit_distance(a: &str, b: &str) -> usize {
+        let mut scratch = Vec::new();
+        edit_distance_into(a, b, &mut scratch)
+    }
+
+    #[test]
+    fn edit_distance_matches_known_values() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("cpu_limit", "cpu_limit"), 0);
+        assert_eq!(edit_distance("cpu_lmit", "cpu_limit"), 1);
+    }
+
+    #[test]
+    fn edit_distance_is_symmetric_over_multibyte_chars() {
+        assert_eq!(
+            edit_distance("tolernce", "tolerance"),
+            edit_distance("tolerance", "tolernce")
+        );
+        // Characters are compared, not bytes: `é` is one substitution away
+        // from `e` even though it encodes as two bytes.
+        assert_eq!(edit_distance("café", "cafe"), 1);
+        assert_eq!(edit_distance("日本", "日本語"), 1);
+    }
+
+    #[test]
+    fn edit_distance_reuses_a_single_dp_row() {
+        // One row of the recurrence, never the full (n + 1) × (m + 1) table:
+        // this is what keeps the typo scan allocation-light.
+        let mut scratch = Vec::new();
+        assert_eq!(edit_distance_into("aaaaaaaa", "bbbbbbbb", &mut scratch), 8);
+        assert_eq!(scratch.len(), 9, "one row, sized by the second operand");
+        // A buffer left over from a longer comparison still answers a shorter
+        // one correctly, in both directions.
+        assert_eq!(edit_distance_into("ab", "ab", &mut scratch), 0);
+        assert_eq!(scratch.len(), 3);
+        assert_eq!(edit_distance_into("abc", "ab", &mut scratch), 1);
+        assert_eq!(scratch.len(), 3);
+    }
+
+    #[test]
+    fn closest_match_skips_candidates_of_impossible_length() {
+        // Edit distance is at least the length difference, so a candidate
+        // whose length already exceeds the threshold can never win.
+        assert_eq!(
+            closest_match("cpu_limit", &["a_much_longer_function_name"]),
+            None
+        );
+        assert_eq!(closest_match("", &["anything"]), None);
+    }
+
+    #[test]
+    fn closest_match_prefers_the_first_equally_distant_candidate() {
+        // Both options are one edit away; the first one examined wins, which
+        // is what the previous implementation did too.
+        assert_eq!(closest_match("aa", &["ab", "ba"]), Some("ab".to_string()));
+    }
+
+    #[test]
+    fn closest_match_ignores_an_exact_name() {
+        // Distance zero is not a typo, so an exact match is never suggested
+        // back to the user.
+        assert_eq!(closest_match("tolerance", &["tolerance"]), None);
+    }
+
+    #[test]
+    fn closest_match_picks_the_nearest_of_many_options() {
+        let options = ["tolerance", "network", "source", "margin", "scenarios"];
+        assert_eq!(closest_match("margn", &options), Some("margin".to_string()));
+        assert_eq!(
+            closest_match("scenerios", &options),
+            Some("scenarios".to_string())
+        );
+        // Nothing is within the threshold of `src`, so no suggestion (and no
+        // distance computation) is produced for the long options.
+        assert_eq!(closest_match("src", &options), None);
+    }
+
+    #[test]
+    fn closest_match_is_case_sensitive() {
+        assert_eq!(
+            closest_match("Tolerance", &["tolerance"]),
+            Some("tolerance".to_string())
+        );
+    }
+
+    // ── validate_budget_toml success path and error combination ───────
+
+    #[test]
+    fn valid_config_returns_the_parsed_values() {
+        // The successful deserialization is handed back to the caller rather
+        // than discarded and parsed a second time, so the values it carries
+        // must be the ones from the file.
+        let toml = "tolerance = 0.25\n\n[functions.do_expensive_work]\ncpu_limit = 5_000_000\n";
+        let parsed = validate_budget_toml(toml, &avail()).expect("expected a valid config");
+        assert_eq!(parsed.tolerance, Some(0.25));
+        assert!(parsed.functions.contains_key("do_expensive_work"));
+    }
+
+    #[test]
+    fn every_configured_function_present_produces_no_errors() {
+        let toml = "[functions.do_expensive_work]\ncpu_limit = 1\n\n\
+                    [functions.require_auth_only]\ncpu_limit = 1\n";
+        assert!(
+            validate_budget_toml(toml, &avail()).is_ok(),
+            "no name is missing, so no typo hint is built and no error raised"
+        );
+    }
+
+    #[test]
+    fn each_missing_function_reports_the_available_list() {
+        let toml = "[functions.depsoit]\ncpu_limit = 1\n\n[functions.wthdraw]\ncpu_limit = 1\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        assert_eq!(errs.len(), 2, "errors: {errs:?}");
+        for err in &errs {
+            assert_eq!(err.location, "budget.toml [functions]");
+            assert!(
+                err.message.contains("Available functions: do_expensive_work"),
+                "got: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn top_level_type_error_is_still_reported() {
+        // `network` is a known key, so the deserialization failure is not
+        // re-reported as an extra schema error; it must still reach the
+        // caller rather than letting the document pass.
+        let errs = validate_budget_toml("network = 1\n", &avail()).unwrap_err();
+        assert_eq!(errs.len(), 1, "errors: {errs:?}");
+        assert!(
+            errs[0].message.contains("network"),
+            "got: {}",
+            errs[0].message
+        );
+    }
+
+    #[test]
+    fn unknown_key_is_reported_even_when_the_schema_check_also_fails() {
+        let toml = "tolernce = 0.1\n\n[functions.do_expensive_work]\ncpu_limit = \"high\"\n";
+        let errs = validate_budget_toml(toml, &avail()).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.message.contains("tolernce")),
+            "errors: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn unparseable_toml_reports_a_single_parse_error() {
+        let errs = validate_budget_toml("this is not toml = =\n", &avail()).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].location, "budget.toml");
+        assert!(errs[0].message.contains("could not parse TOML"));
     }
 }
 
