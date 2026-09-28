@@ -5,6 +5,11 @@
 //! - Off-by-one errors around inclusive/exclusive limit checks
 //! - Zero-length and zero-value inputs
 //! - Boundary values at type limits (u32::MAX, u64::MAX)
+//!
+//! Allocation note: assertions compare borrowed views (`String::as_str`,
+//! slices) rather than materialising an owned `String` per comparison. This
+//! module has hundreds of assertions and each spurious allocation adds up
+//! across the suite without changing what is being asserted.
 
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
@@ -726,7 +731,7 @@ write_limit = 0
     #[test]
     fn build_invoke_args_function_name_with_hyphens() {
         let args = build_invoke_args("C", "alice", "testnet", "do-something", &[], None);
-        assert_eq!(args.last(), Some(&"do-something".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("do-something"));
     }
 
     // ── build_rpc_payload additional edge cases ────────────────────────
@@ -800,7 +805,7 @@ write_limit = 0
         // included here for the focused edge-case module.
         let args = build_invoke_args("CCONTRACT", "alice", "testnet", "ping", &[], None);
         assert_eq!(args.len(), 11);
-        assert_eq!(args.last(), Some(&"ping".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("ping"));
     }
 
     #[test]
@@ -827,7 +832,7 @@ write_limit = 0
     #[test]
     fn build_invoke_args_zero_length_function_name() {
         let args = build_invoke_args("C", "alice", "testnet", "", &[], None);
-        assert_eq!(args.last(), Some(&"".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some(""));
     }
 
     // ── build_rpc_payload zero-length edge cases ────────────────────────
