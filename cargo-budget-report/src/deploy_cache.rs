@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn unsupported_cache_version_loads_as_empty_cache() {
         let dir = tempdir().unwrap();
-        let content = format!("version = 999\n");
+        let content = "version = 999\n";
         std::fs::write(dir.path().join(CACHE_FILE), content).unwrap();
         let cache = DeployCache::load(dir.path());
         assert_eq!(cache.get("hash-1", "testnet", "alice"), None);
