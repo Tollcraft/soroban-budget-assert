@@ -279,8 +279,7 @@ pub(crate) fn validate_budget_toml(
                 // "available functions" hint are built lazily, on the first
                 // name that is actually missing, so a config where every
                 // function resolves allocates neither.
-                let known: HashSet<&str> =
-                    available_functions.iter().map(String::as_str).collect();
+                let known: HashSet<&str> = available_functions.iter().map(String::as_str).collect();
                 let mut hint: Option<(Vec<&str>, String)> = None;
                 for name in fns.keys() {
                     if known.contains(name.as_str()) {
@@ -376,9 +375,7 @@ fn edit_distance_into(a: &str, b: &str, scratch: &mut Vec<usize>) -> usize {
         for (j, b_char) in b.chars().enumerate() {
             let above = scratch[j + 1];
             let cost = usize::from(a_char != b_char);
-            scratch[j + 1] = (above + 1)
-                .min(scratch[j] + 1)
-                .min(prev_diag + cost);
+            scratch[j + 1] = (above + 1).min(scratch[j] + 1).min(prev_diag + cost);
             prev_diag = above;
         }
     }
@@ -697,7 +694,8 @@ cpu_limit = 5_000_000
         for err in &errs {
             assert_eq!(err.location, "budget.toml [functions]");
             assert!(
-                err.message.contains("Available functions: do_expensive_work"),
+                err.message
+                    .contains("Available functions: do_expensive_work"),
                 "got: {}",
                 err.message
             );

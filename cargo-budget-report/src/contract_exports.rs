@@ -395,7 +395,9 @@ mod tests {
 
     #[test]
     fn no_function_exports_diagnostic_names_the_missing_attributes() {
-        let message = ExportScan::NoFunctionExports.diagnostic("my-contract").unwrap();
+        let message = ExportScan::NoFunctionExports
+            .diagnostic("my-contract")
+            .unwrap();
         assert!(message.contains("my-contract"), "got: {message}");
         assert!(message.contains("plain library"), "got: {message}");
         assert!(message.contains("#[contract]"), "got: {message}");

@@ -182,7 +182,10 @@ mod tests {
     #[test]
     fn output_is_pretty_printed_multi_line_json() {
         let json_str = render_json(&[report("pkg", "fn")]);
-        assert!(json_str.contains('\n'), "expected a pretty-printed document");
+        assert!(
+            json_str.contains('\n'),
+            "expected a pretty-printed document"
+        );
         assert!(json_str.starts_with("{\n"), "got: {json_str}");
     }
 }
