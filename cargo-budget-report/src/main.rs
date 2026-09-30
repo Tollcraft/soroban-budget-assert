@@ -1,4 +1,6 @@
-use crate::cli::{BudgetReportArgs, CargoCli, ColorChoice};
+use crate::cli::args::BudgetReportArgs;
+use crate::cli::color::ColorChoice;
+use crate::cli::CargoCli;
 use crate::derive::{DerivationConfig, Margin};
 use crate::error::{
     Error, Result, SimulationFailure, SimulationOutcome, EXIT_BUDGET_EXCEEDED,

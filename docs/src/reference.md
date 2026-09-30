@@ -440,9 +440,9 @@ println!("CPU: {cpu}, Memory: {mem}");
 cargo budget-report [--network <network>] [--source <source>] [--json] [--check]
 ```
 
-This section is the **complete** flag reference: every `#[arg(...)]` field declared on `BudgetReportArgs` in [`cargo-budget-report/src/cli.rs`][cli-rs] appears in the table below. [`scripts/check-cli-docs.sh`](#keeping-this-page-current) enforces that a newly added flag cannot be merged without at least a mention here, so the table cannot silently fall as far behind as it once had.
+This section is the **complete** flag reference: every `#[arg(...)]` field declared on `BudgetReportArgs` in [`cargo-budget-report/src/cli/args.rs`][cli-rs] appears in the table below. [`scripts/check-cli-docs.sh`](#keeping-this-page-current) enforces that a newly added flag cannot be merged without at least a mention here, so the table cannot silently fall as far behind as it once had.
 
-[cli-rs]: https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/src/cli.rs
+[cli-rs]: https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/src/cli/args.rs
 
 ### Full flag table
 
@@ -535,7 +535,7 @@ So `cargo budget-report --csv --json` prints CSV only; `--json --html` prints JS
 
 ### `--color` does not actually force colour into a pipe
 
-`--color`'s own doc comment in `cli.rs` says `Always` will "always emit colour, even into pipes and files." That is not what the implementation does: `color_enabled_with` (the pure decision function backing `--color`, exhaustively unit-tested in `main.rs`) returns `false` whenever stdout is not a terminal or `NO_COLOR` is set, **before** it even looks at whether the choice was `Always`, `Auto`, or `Never`. A test in the same module asserts this directly: `--color always` piped to a file or another process produces no ANSI escapes. In practice `--always` and `--auto` currently behave identically; only `--never` is distinguishable from the other two. This looks like an intentional safety choice (never corrupt a file or a downstream parser with escape codes) that the help text's wording never caught up to — the behavior was not changed here, since changing flag behavior is out of scope for this page; only the discrepancy is reported.
+`--color`'s own doc comment in `cli/args.rs` says `Always` will "always emit colour, even into pipes and files." That is not what the implementation does: `color_enabled_with` (the pure decision function backing `--color`, exhaustively unit-tested in `main.rs`) returns `false` whenever stdout is not a terminal or `NO_COLOR` is set, **before** it even looks at whether the choice was `Always`, `Auto`, or `Never`. A test in the same module asserts this directly: `--color always` piped to a file or another process produces no ANSI escapes. In practice `--always` and `--auto` currently behave identically; only `--never` is distinguishable from the other two. This looks like an intentional safety choice (never corrupt a file or a downstream parser with escape codes) that the help text's wording never caught up to — the behavior was not changed here, since changing flag behavior is out of scope for this page; only the discrepancy is reported.
 
 ### `--network` does not actually route the simulate step
 
@@ -548,7 +548,7 @@ This is a real functional gap, not just missing prose — no flag or `budget.tom
 
 ### Keeping this page current
 
-The real failure mode here is drift, not the one-time gap this page used to have: a flag added to `cli.rs` in a future PR with no corresponding row here. [`scripts/check-cli-docs.sh`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/scripts/check-cli-docs.sh) is a CI-enforced drift check (wired into `quality.yml`) that derives every `--kebab-case` flag name from `cli.rs`'s `#[arg(...)]`-decorated fields and fails the build if any of them is not at least mentioned somewhere in this file. It catches a flag being completely undocumented; it cannot catch prose that is present but wrong, incomplete, or stale relative to the flag's actual behavior — that still needs human review, ideally by running the flag rather than trusting its `--help` text (see the `--color` and `--csv`/`--json`/`--html` findings above, both of which the flags' own help text does not mention).
+The real failure mode here is drift, not the one-time gap this page used to have: a flag added to `cli/args.rs` in a future PR with no corresponding row here. [`scripts/check-cli-docs.sh`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/scripts/check-cli-docs.sh) is a CI-enforced drift check (wired into `quality.yml`) that derives every `--kebab-case` flag name from `cli/args.rs`'s `#[arg(...)]`-decorated fields and fails the build if any of them is not at least mentioned somewhere in this file. It catches a flag being completely undocumented; it cannot catch prose that is present but wrong, incomplete, or stale relative to the flag's actual behavior — that still needs human review, ideally by running the flag rather than trusting its `--help` text (see the `--color` and `--csv`/`--json`/`--html` findings above, both of which the flags' own help text does not mention).
 | Flag | Required | Meaning |
 |---|---|---|
 | `--network` | yes (flag or `budget.toml`) | Network to deploy and simulate against, e.g. `testnet` |

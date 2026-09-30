@@ -13,11 +13,16 @@
 
 /// Small builders and CSV renderers shared by the tests below, kept apart so
 /// each test body only states its inputs and expectations.
+///
+/// This module encapsulates test fixtures such as dummy function configuration builders,
+/// resource report generators, and a mirror of the CSV reporting pipeline.
 #[cfg(test)]
 mod helpers {
     use crate::*;
 
-    /// A [`FunctionConfig`] with the given limits and no args or tolerance.
+    /// Constructs a [`FunctionConfig`] populated with the specified resource limits
+    /// and empty argument vectors and no custom tolerance overrides. Useful for testing
+    /// threshold enforcement boundaries.
     pub(super) fn config_with_limits(
         cpu: Option<u64>,
         read: Option<u64>,
@@ -32,7 +37,7 @@ mod helpers {
         }
     }
 
-    /// A `CPU Instructions` [`CostReport`] row.
+    /// Constructs a sample `CPU Instructions` [`CostReport`] entry for mock reporting validation.
     pub(super) fn cpu_report(
         package: &str,
         function: &str,
@@ -96,7 +101,9 @@ mod helpers {
         }
     }
 
-    /// Mirror of the `--csv` output path in `main`, rendered to a string.
+    /// Serializes a slice of [`CostReport`] entries into a CSV formatted string,
+    /// mirroring the CLI's `--csv` output structure for both plain value reports
+    /// and check-mode assertion reports.
     pub(super) fn reports_to_csv(reports: &[CostReport], check: bool) -> String {
         let mut wtr = csv::Writer::from_writer(vec![]);
         if check {
@@ -144,6 +151,8 @@ mod helpers {
     }
 }
 
+/// Unit tests covering numerical precision boundaries, type-cast thresholds,
+/// and zero-length inputs across core parser and formatter functions.
 #[cfg(test)]
 mod off_by_one_and_zero_length_tests {
     use super::helpers::{config_with_limits, cpu_report, load_toml_str, reports_to_csv};
