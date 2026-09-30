@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::cli::BudgetReportArgs;
+use crate::cli::args::BudgetReportArgs;
 use crate::compare::Measurement;
 use crate::compare::Tolerance;
 use crate::error::Error;

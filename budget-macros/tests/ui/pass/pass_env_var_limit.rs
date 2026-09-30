@@ -1,12 +1,20 @@
 //! The `env = "VAR"` limit form keeps working, including for bodies that set the
 //! variable themselves (the limit is still read after the body has run) and for
 //! bodies that end in a trailing expression.
+//!
+//! As in `pass_mem.rs`, the pass/failure orchestration is split into focused
+//! helpers (`run_passing_cases` / `run_failing_cases` / `assert_limit_exceeded`)
+//! so each scenario stays independently reviewable as the case matrix grows.
 
 #[path = "../support/mock_env.rs"]
 mod mock_env;
 
 use budget_macros::{budget_cpu_lt, budget_mem_lt};
 use mock_env::{budget_panic, Env};
+
+/// The diagnostic every exceeded-CPU case must produce: both the env-provided
+/// limit (1000) and the mock cost (1001) are named.
+const CPU_LIMIT_EXCEEDED: &str = "CPU instruction cost 1001 exceeded limit 1000";
 
 #[derive(Debug, PartialEq)]
 struct TestError;
@@ -53,26 +61,40 @@ fn limit_missing_falls_back() -> Result<u64, TestError> {
     Ok(env.cost_estimate().budget().memory_bytes_cost())
 }
 
-fn main() {
+/// Runs `case`, requiring it to panic with the exceeded-CPU diagnostic.
+fn assert_limit_exceeded<F, R>(case: &str, f: F)
+where
+    F: FnOnce() -> R + std::panic::UnwindSafe,
+{
+    let message = budget_panic(f)
+        .unwrap_or_else(|| panic!("{case}: the budget assertion should have failed"));
+    assert!(
+        message.contains(CPU_LIMIT_EXCEEDED),
+        "{case}: unexpected panic message: {message}"
+    );
+}
+
+/// Bodies that stay within the env-configured limit must not panic and must
+/// return their value unchanged.
+fn run_passing_cases() {
     assert_eq!(limit_set_inside_body(), Ok(()));
     assert_eq!(limit_missing_falls_back(), Ok(u64::MAX - 1));
+}
 
-    for (name, message) in [
-        ("limit_exceeded", budget_panic(limit_exceeded)),
-        (
-            "limit_from_shadowed_resolver",
-            budget_panic(|| limit_from_shadowed_resolver().map(|_| ())),
-        ),
-        (
-            "shadowed_resolver_on_early_return",
-            budget_panic(|| shadowed_resolver_on_early_return(true)),
-        ),
-    ] {
-        let message = message
-            .unwrap_or_else(|| panic!("{name}: the budget assertion should have failed"));
-        assert!(
-            message.contains("CPU instruction cost 1001 exceeded limit 1000"),
-            "{name}: unexpected panic message: {message}"
-        );
-    }
+/// Every path that resolves the limit to 1000 while the mock costs 1001 must
+/// panic: whether the limit comes from the body, a shadowed resolver, or an
+/// early return.
+fn run_failing_cases() {
+    assert_limit_exceeded("limit_exceeded", limit_exceeded);
+    assert_limit_exceeded("limit_from_shadowed_resolver", || {
+        limit_from_shadowed_resolver().map(|_| ())
+    });
+    assert_limit_exceeded("shadowed_resolver_on_early_return", || {
+        shadowed_resolver_on_early_return(true)
+    });
+}
+
+fn main() {
+    run_passing_cases();
+    run_failing_cases();
 }

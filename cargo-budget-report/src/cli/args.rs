@@ -1,25 +1,22 @@
 use clap::Parser;
 
-/// Top-level CLI entry point for `cargo budget-report`.
-///
-/// Wraps the binary in a `cargo <subcommand>` compatible enum so it can be
-/// invoked as `cargo budget-report [OPTIONS]`.
-#[derive(Parser, Debug)]
-#[command(name = "cargo", bin_name = "cargo")]
-pub enum CargoCli {
-    BudgetReport(BudgetReportArgs),
-}
-
-/// Conservative default for `--concurrency` (functions in flight per
-/// package). See the flag help text for the rationale.
-pub const DEFAULT_CONCURRENCY: usize = 4;
+use super::color::ColorChoice;
+use super::DEFAULT_CONCURRENCY;
 
 /// CLI arguments for `cargo budget-report`.
 ///
 /// All fields are optional; missing values fall back to the corresponding
 /// `budget.toml` configuration when available.
+///
+/// Fields are grouped by concern below with section banners. The relative
+/// order of the fields is significant: clap renders them in declaration order
+/// in `--help` and in the generated man page, so move a field only together
+/// with a deliberate decision about how the help output should read.
 #[derive(Parser, Debug)]
 pub struct BudgetReportArgs {
+    // -----------------------------------------------------------------
+    // Scaffolding
+    // -----------------------------------------------------------------
     /// Scaffold a commented `budget.toml` template and exit.
     #[arg(long)]
     pub init: bool,
@@ -28,9 +25,22 @@ pub struct BudgetReportArgs {
     #[arg(long)]
     pub force: bool,
 
+    // -----------------------------------------------------------------
+    // Target network, source account, and safety
+    // -----------------------------------------------------------------
+    /// Target network to build, deploy, and simulate against (for example
+    /// `testnet`, `futurenet`, or `local`). Falls back to the `network` field
+    /// in `budget.toml` when omitted.
+    ///
+    /// The value is resolved to a passphrase before anything is deployed so
+    /// that a custom alias cannot silently point at Mainnet; see
+    /// `network_guard`.
     #[arg(long)]
     pub network: Option<String>,
 
+    /// Stellar CLI identity (key name) used as the source account for deploy
+    /// and simulate. Falls back to the `source` field in `budget.toml` when
+    /// omitted.
     #[arg(long)]
     pub source: Option<String>,
 
@@ -46,6 +56,13 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false)]
     pub allow_mainnet: bool,
 
+    // -----------------------------------------------------------------
+    // Output format and limit enforcement
+    // -----------------------------------------------------------------
+    /// Emit the report as JSON instead of a table.
+    ///
+    /// Mutually exclusive with `--csv`; clap rejects the combination in both
+    /// directions and reports it as an argument conflict.
     #[arg(long, default_value_t = false, conflicts_with = "csv")]
     pub json: bool,
 
@@ -65,10 +82,20 @@ pub struct BudgetReportArgs {
     pub check: bool,
 
     /// Emit the report as CSV instead of a table or JSON.
+    ///
+    /// The conflict with `--json` is declared on that field (clap enforces
+    /// the relationship symmetrically), so no `conflicts_with` is repeated
+    /// here.
     #[arg(long, default_value_t = false)]
     pub csv: bool,
 
+    // -----------------------------------------------------------------
+    // Baseline recording and checking
+    // -----------------------------------------------------------------
     /// Write a new resource-usage baseline snapshot to this path and exit.
+    ///
+    /// Cannot be combined with `--check-baseline`: a run either records a
+    /// baseline or compares against one, never both.
     #[arg(long, conflicts_with = "check_baseline")]
     pub record_baseline: Option<String>,
 
@@ -90,6 +117,9 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false)]
     pub hide_unchanged: bool,
 
+    // -----------------------------------------------------------------
+    // Diagnostics and run behaviour
+    // -----------------------------------------------------------------
     /// Suppress non-essential progress messages and warnings on stderr.
     ///
     /// The final report (table, JSON, or CSV) is still printed to stdout.
@@ -119,6 +149,9 @@ pub struct BudgetReportArgs {
     #[arg(long)]
     pub profile: Option<String>,
 
+    // -----------------------------------------------------------------
+    // Tier A limit derivation
+    // -----------------------------------------------------------------
     /// Derive local (Tier A) test limits from a Tier B JSON report and
     /// exit. Reads the Tier B report from `--from <PATH>` (or stdin if
     /// `--from -`) and writes the chosen `KEY=VALUE` shape to the file
@@ -171,6 +204,9 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "PATH")]
     pub provenance_out: Option<String>,
 
+    // -----------------------------------------------------------------
+    // Retry policy
+    // -----------------------------------------------------------------
     /// Maximum number of attempts (including the first) for deploy,
     /// invoke-build, and simulate-RPC calls before giving up. `1`
     /// disables retry entirely. Overrides `retry.max_attempts` in
@@ -184,6 +220,9 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "SECS")]
     pub retry_backoff_secs: Option<u64>,
 
+    // -----------------------------------------------------------------
+    // HTML output
+    // -----------------------------------------------------------------
     /// Write the report as a single self-contained HTML page to PATH.
     ///
     /// The page has no external CSS, scripts, or fonts, so it renders
@@ -193,6 +232,9 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "PATH")]
     pub html: Option<String>,
 
+    // -----------------------------------------------------------------
+    // Record and replay
+    // -----------------------------------------------------------------
     /// Record every transport response (deploy, invoke-build, and
     /// simulate RPC) into a replayable fixture file at this path.
     ///
@@ -210,6 +252,9 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "PATH", conflicts_with = "record")]
     pub replay: Option<String>,
 
+    // -----------------------------------------------------------------
+    // Terminal colour policy
+    // -----------------------------------------------------------------
     /// When to colourise the plain-text `--check` report.
     ///
     /// Breaching rows are rendered red so they stand out when scanning a
@@ -219,6 +264,9 @@ pub struct BudgetReportArgs {
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
 
+    // -----------------------------------------------------------------
+    // Watch mode
+    // -----------------------------------------------------------------
     /// Watch the workspace for file changes and re-measure on save.
     ///
     /// When set, the tool enters a loop: it watches the workspace for
@@ -234,6 +282,9 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false)]
     pub watch: bool,
 
+    // -----------------------------------------------------------------
+    // Custom RPC endpoint (#49)
+    // -----------------------------------------------------------------
     /// Custom Soroban RPC endpoint to simulate against (#49).
     ///
     /// Overrides the built-in `testnet` / `futurenet` endpoints so a local
@@ -241,6 +292,9 @@ pub struct BudgetReportArgs {
     /// Docker quickstart image) can be targeted to avoid public-network rate
     /// limits or to exercise custom fee settings. `--network-passphrase` is
     /// required whenever this is set.
+    /// `requires` names the *field*, not the flag: clap maps it back to
+    /// `--network-passphrase`, so a custom endpoint without a passphrase is
+    /// rejected at parse time rather than failing mid-run.
     #[arg(long, value_name = "URL", requires = "network_passphrase")]
     pub rpc_url: Option<String>,
 
@@ -252,6 +306,9 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "PASSPHRASE")]
     pub network_passphrase: Option<String>,
 
+    // -----------------------------------------------------------------
+    // Deploy cache and signing
+    // -----------------------------------------------------------------
     /// Skip the on-disk deploy cache for this run and redeploy every
     /// contract from scratch (#79).
     ///
@@ -269,9 +326,15 @@ pub struct BudgetReportArgs {
     /// Falls back to the `STELLAR_SECRET_KEY` environment variable. When
     /// neither is set, deploy and invoke still go through the `stellar` CLI,
     /// which must be installed (checked at preflight).
+    /// This is a secret: prefer the `STELLAR_SECRET_KEY` environment variable
+    /// over the flag, which leaves the seed in shell history and in the
+    /// process list. The parsed value is never echoed back in output.
     #[arg(long, value_name = "S...", env = "STELLAR_SECRET_KEY")]
     pub source_secret: Option<String>,
 
+    // -----------------------------------------------------------------
+    // Concurrency (#455)
+    // -----------------------------------------------------------------
     /// Maximum per-function simulations in flight per package (#455).
     ///
     /// Per-function simulations are independent, read-only and
@@ -282,100 +345,4 @@ pub struct BudgetReportArgs {
     /// measured values never depend on completion order.
     #[arg(long, value_name = "N", default_value_t = DEFAULT_CONCURRENCY)]
     pub concurrency: usize,
-}
-
-/// Colour policy for the plain-text `--check` output.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ColorChoice {
-    /// Colour only when stdout is a terminal and `NO_COLOR` is unset or
-    /// empty (the no-color.org convention).
-    #[default]
-    Auto,
-    /// Always emit colour, even into pipes and files.
-    Always,
-    /// Never emit colour.
-    Never,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::error::ErrorKind;
-
-    #[test]
-    fn json_and_csv_are_mutually_exclusive() {
-        let err = CargoCli::try_parse_from(["cargo", "budget-report", "--json", "--csv"])
-            .expect_err("--json and --csv together should be rejected");
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn json_alone_is_accepted() {
-        let result = CargoCli::try_parse_from(["cargo", "budget-report", "--json"]);
-        assert!(result.is_ok(), "--json alone should parse: {result:?}");
-    }
-
-    #[test]
-    fn csv_alone_is_accepted() {
-        let result = CargoCli::try_parse_from(["cargo", "budget-report", "--csv"]);
-        assert!(result.is_ok(), "--csv alone should parse: {result:?}");
-    }
-
-    fn parse_args(argv: &[&str]) -> Result<BudgetReportArgs, clap::Error> {
-        let mut full = vec!["cargo", "budget-report"];
-        full.extend_from_slice(argv);
-        CargoCli::try_parse_from(full).map(|CargoCli::BudgetReport(a)| a)
-    }
-
-    #[test]
-    fn rpc_url_requires_network_passphrase() {
-        let err = parse_args(&["--rpc-url", "http://localhost:8000/soroban/rpc"])
-            .expect_err("--rpc-url without --network-passphrase should be rejected");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn rpc_url_with_passphrase_parses_and_overrides() {
-        let args = parse_args(&[
-            "--rpc-url",
-            "http://localhost:8000/soroban/rpc",
-            "--network-passphrase",
-            "Standalone Network ; February 2017",
-        ])
-        .expect("--rpc-url + --network-passphrase should parse");
-        assert_eq!(
-            args.rpc_url.as_deref(),
-            Some("http://localhost:8000/soroban/rpc")
-        );
-        assert_eq!(
-            args.network_passphrase.as_deref(),
-            Some("Standalone Network ; February 2017")
-        );
-    }
-
-    #[test]
-    fn no_deploy_cache_defaults_off_and_parses_on() {
-        assert!(!parse_args(&[]).unwrap().no_deploy_cache);
-        assert!(parse_args(&["--no-deploy-cache"]).unwrap().no_deploy_cache);
-    }
-
-    #[test]
-    fn source_secret_parses_from_flag() {
-        let args = parse_args(&["--source-secret", "SXXXXXXXX"]).unwrap();
-        assert_eq!(args.source_secret.as_deref(), Some("SXXXXXXXX"));
-    }
-
-    #[test]
-    fn record_baseline_and_check_baseline_are_mutually_exclusive() {
-        let err = CargoCli::try_parse_from([
-            "cargo",
-            "budget-report",
-            "--record-baseline",
-            "out.json",
-            "--check-baseline",
-            "base.json",
-        ])
-        .expect_err("--record-baseline and --check-baseline together should be rejected");
-        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
-    }
 }
