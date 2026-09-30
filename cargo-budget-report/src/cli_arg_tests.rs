@@ -11,14 +11,16 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::cli::{BudgetReportArgs, CargoCli};
+    use crate::cli::args::BudgetReportArgs;
+    use crate::cli::CargoCli;
     use clap::error::ErrorKind;
     use clap::Parser;
 
     /// Helper to parse BudgetReportArgs from a vector of strings.
     /// Prepends "cargo budget-report" to simulate the cargo subcommand structure.
     fn parse_args(args: &[&str]) -> Result<BudgetReportArgs, clap::Error> {
-        let mut full_args = vec!["cargo", "budget-report"];
+        let mut full_args = Vec::with_capacity(args.len() + 2);
+        full_args.extend_from_slice(&["cargo", "budget-report"]);
         full_args.extend_from_slice(args);
         match CargoCli::try_parse_from(full_args) {
             Ok(CargoCli::BudgetReport(args)) => Ok(args),
@@ -262,35 +264,35 @@ mod tests {
 
     #[test]
     fn test_default_json_is_false() {
-        // According to cli.rs, json has default_value_t = false
+        // According to cli/args.rs, json has default_value_t = false
         let args = parse_args(&[]).unwrap();
         assert!(!args.json, "json should default to false");
     }
 
     #[test]
     fn test_default_check_is_false() {
-        // According to cli.rs, check has default_value_t = false
+        // According to cli/args.rs, check has default_value_t = false
         let args = parse_args(&[]).unwrap();
         assert!(!args.check, "check should default to false");
     }
 
     #[test]
     fn test_default_csv_is_false() {
-        // According to cli.rs, csv has default_value_t = false
+        // According to cli/args.rs, csv has default_value_t = false
         let args = parse_args(&[]).unwrap();
         assert!(!args.csv, "csv should default to false");
     }
 
     #[test]
     fn test_default_quiet_is_false() {
-        // According to cli.rs, quiet has default_value_t = false
+        // According to cli/args.rs, quiet has default_value_t = false
         let args = parse_args(&[]).unwrap();
         assert!(!args.quiet, "quiet should default to false");
     }
 
     #[test]
     fn test_default_validate_is_false() {
-        // According to cli.rs, validate has default_value_t = false
+        // According to cli/args.rs, validate has default_value_t = false
         let args = parse_args(&[]).unwrap();
         assert!(!args.validate, "validate should default to false");
     }
@@ -1035,5 +1037,565 @@ mod tests {
         let err = parse_args(&["--json", "--csv"])
             .expect_err("--json and --csv together should be rejected");
         assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    // ========================================================================
+    // SECTION 9: Arguments added after the original suite (#700)
+    //
+    // Each flag below previously had no parse-level coverage. For every one we
+    // pin: the default, the happy path, and the failure modes clap owns
+    // (missing value, wrong type, declared conflicts and requirements).
+    // ========================================================================
+
+    use crate::cli::color::ColorChoice;
+    use crate::cli::DEFAULT_CONCURRENCY;
+    use clap::CommandFactory;
+
+    /// Looks up a clap argument definition by its field id.
+    fn arg_def(id: &str) -> clap::Arg {
+        BudgetReportArgs::command()
+            .get_arguments()
+            .find(|a| a.get_id() == id)
+            .unwrap_or_else(|| panic!("no argument with id `{id}`"))
+            .clone()
+    }
+
+    // ---- boolean switches: --allow-mainnet, --markdown, --hide-unchanged, --watch ----
+
+    #[test]
+    fn test_default_allow_mainnet_is_false() {
+        // Safety-relevant: a mainnet deploy must be an explicit opt-in.
+        assert!(!parse_args(&[]).unwrap().allow_mainnet);
+    }
+
+    #[test]
+    fn test_allow_mainnet_flag_parses() {
+        assert!(parse_args(&["--allow-mainnet"]).unwrap().allow_mainnet);
+    }
+
+    #[test]
+    fn test_default_markdown_is_false() {
+        assert!(!parse_args(&[]).unwrap().markdown);
+    }
+
+    #[test]
+    fn test_markdown_flag_parses() {
+        assert!(parse_args(&["--markdown"]).unwrap().markdown);
+    }
+
+    #[test]
+    fn test_markdown_has_no_parse_time_conflict_with_other_formats() {
+        // Only `--json`/`--csv` declare a conflict. Combining `--markdown` with
+        // either is accepted by clap; the format precedence is resolved at
+        // runtime, so this pins that it is *not* a parse error.
+        let args = parse_args(&["--markdown", "--json"]).unwrap();
+        assert!(args.markdown && args.json);
+        let args = parse_args(&["--markdown", "--csv"]).unwrap();
+        assert!(args.markdown && args.csv);
+    }
+
+    #[test]
+    fn test_default_hide_unchanged_is_false() {
+        assert!(!parse_args(&[]).unwrap().hide_unchanged);
+    }
+
+    #[test]
+    fn test_hide_unchanged_flag_parses() {
+        assert!(parse_args(&["--hide-unchanged"]).unwrap().hide_unchanged);
+    }
+
+    #[test]
+    fn test_hide_unchanged_with_check_baseline() {
+        let args = parse_args(&["--check-baseline", "base.json", "--hide-unchanged"]).unwrap();
+        assert!(args.hide_unchanged);
+        assert_eq!(args.check_baseline.as_deref(), Some("base.json"));
+    }
+
+    #[test]
+    fn test_default_watch_is_false() {
+        assert!(!parse_args(&[]).unwrap().watch);
+    }
+
+    #[test]
+    fn test_watch_flag_parses() {
+        assert!(parse_args(&["--watch"]).unwrap().watch);
+    }
+
+    #[test]
+    fn test_default_no_deploy_cache_is_false() {
+        assert!(!parse_args(&[]).unwrap().no_deploy_cache);
+    }
+
+    #[test]
+    fn test_no_deploy_cache_flag_parses() {
+        assert!(parse_args(&["--no-deploy-cache"]).unwrap().no_deploy_cache);
+    }
+
+    #[test]
+    fn test_boolean_switches_reject_an_explicit_value() {
+        // These are presence flags, not `--flag=true`; a value is an error
+        // rather than being silently ignored.
+        for flag in [
+            "--allow-mainnet=true",
+            "--markdown=false",
+            "--hide-unchanged=1",
+            "--watch=yes",
+            "--no-deploy-cache=true",
+        ] {
+            let err = parse_args(&[flag]).expect_err(flag);
+            assert_eq!(err.kind(), ErrorKind::TooManyValues, "{flag}");
+        }
+    }
+
+    // ---- --html ----
+
+    #[test]
+    fn test_default_html_is_none() {
+        assert_eq!(parse_args(&[]).unwrap().html, None);
+    }
+
+    #[test]
+    fn test_html_parses_a_path() {
+        let args = parse_args(&["--html", "report.html"]).unwrap();
+        assert_eq!(args.html.as_deref(), Some("report.html"));
+    }
+
+    #[test]
+    fn test_html_parses_equals_syntax_and_nested_path() {
+        let args = parse_args(&["--html=out/nested dir/report.html"]).unwrap();
+        assert_eq!(args.html.as_deref(), Some("out/nested dir/report.html"));
+    }
+
+    #[test]
+    fn test_html_requires_value() {
+        let err = parse_args(&["--html"]).expect_err("--html needs a path");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn test_html_combines_with_check() {
+        let args = parse_args(&["--check", "--html", "r.html"]).unwrap();
+        assert!(args.check);
+        assert_eq!(args.html.as_deref(), Some("r.html"));
+    }
+
+    // ---- --record / --replay ----
+
+    #[test]
+    fn test_default_record_and_replay_are_none() {
+        let args = parse_args(&[]).unwrap();
+        assert_eq!(args.record, None);
+        assert_eq!(args.replay, None);
+    }
+
+    #[test]
+    fn test_record_parses_a_path() {
+        let args = parse_args(&["--record", "run.fixture.json"]).unwrap();
+        assert_eq!(args.record.as_deref(), Some("run.fixture.json"));
+        assert_eq!(args.replay, None);
+    }
+
+    #[test]
+    fn test_replay_parses_a_path() {
+        let args = parse_args(&["--replay", "run.fixture.json"]).unwrap();
+        assert_eq!(args.replay.as_deref(), Some("run.fixture.json"));
+        assert_eq!(args.record, None);
+    }
+
+    #[test]
+    fn test_record_and_replay_conflict_in_both_orders() {
+        for argv in [
+            ["--record", "a.json", "--replay", "b.json"],
+            ["--replay", "b.json", "--record", "a.json"],
+        ] {
+            let err = parse_args(&argv).expect_err("--record and --replay are mutually exclusive");
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn test_record_and_replay_require_values() {
+        for flag in ["--record", "--replay"] {
+            let err = parse_args(&[flag]).expect_err(flag);
+            assert_eq!(err.kind(), ErrorKind::InvalidValue, "{flag}");
+        }
+    }
+
+    #[test]
+    fn test_replay_allows_offline_output_flags() {
+        let args = parse_args(&["--replay", "f.json", "--json", "--check", "--quiet"]).unwrap();
+        assert!(args.json && args.check && args.quiet);
+    }
+
+    // ---- --color ----
+
+    #[test]
+    fn test_default_color_is_auto() {
+        assert_eq!(parse_args(&[]).unwrap().color, ColorChoice::Auto);
+        assert_eq!(ColorChoice::default(), ColorChoice::Auto);
+    }
+
+    #[test]
+    fn test_color_accepts_each_documented_value() {
+        for (value, expected) in [
+            ("auto", ColorChoice::Auto),
+            ("always", ColorChoice::Always),
+            ("never", ColorChoice::Never),
+        ] {
+            let args = parse_args(&["--color", value]).unwrap();
+            assert_eq!(args.color, expected, "--color {value}");
+            let args = parse_args(&[&format!("--color={value}")]).unwrap();
+            assert_eq!(args.color, expected, "--color={value}");
+        }
+    }
+
+    #[test]
+    fn test_color_rejects_unknown_and_wrongly_cased_values() {
+        // Matching is case-sensitive and there is no boolean shorthand.
+        for value in ["ALWAYS", "Never", "yes", "true", "0", ""] {
+            let err = parse_args(&["--color", value]).expect_err(value);
+            assert_eq!(err.kind(), ErrorKind::InvalidValue, "--color {value:?}");
+        }
+    }
+
+    #[test]
+    fn test_color_invalid_value_error_lists_the_valid_choices() {
+        let err = parse_args(&["--color", "rainbow"]).unwrap_err();
+        let message = err.to_string();
+        for choice in ["auto", "always", "never"] {
+            assert!(message.contains(choice), "missing `{choice}` in: {message}");
+        }
+    }
+
+    #[test]
+    fn test_color_requires_value() {
+        let err = parse_args(&["--color"]).expect_err("--color needs a value");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    // ---- --rpc-url / --network-passphrase ----
+
+    #[test]
+    fn test_default_rpc_url_and_passphrase_are_none() {
+        let args = parse_args(&[]).unwrap();
+        assert_eq!(args.rpc_url, None);
+        assert_eq!(args.network_passphrase, None);
+    }
+
+    #[test]
+    fn test_rpc_url_requires_network_passphrase_in_either_order() {
+        let err = parse_args(&["--rpc-url", "http://localhost:8000/soroban/rpc"])
+            .expect_err("--rpc-url alone must be rejected");
+        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(
+            err.to_string().contains("--network-passphrase"),
+            "the error should name the missing flag: {err}"
+        );
+
+        for argv in [
+            [
+                "--rpc-url",
+                "http://localhost:8000/soroban/rpc",
+                "--network-passphrase",
+                "P",
+            ],
+            [
+                "--network-passphrase",
+                "P",
+                "--rpc-url",
+                "http://localhost:8000/soroban/rpc",
+            ],
+        ] {
+            let args = parse_args(&argv).unwrap();
+            assert_eq!(
+                args.rpc_url.as_deref(),
+                Some("http://localhost:8000/soroban/rpc")
+            );
+            assert_eq!(args.network_passphrase.as_deref(), Some("P"));
+        }
+    }
+
+    #[test]
+    fn test_network_passphrase_alone_is_accepted() {
+        // The requirement is one-directional: only `--rpc-url` needs the
+        // passphrase, not the other way round.
+        let args =
+            parse_args(&["--network-passphrase", "Standalone Network ; February 2017"]).unwrap();
+        assert_eq!(
+            args.network_passphrase.as_deref(),
+            Some("Standalone Network ; February 2017")
+        );
+        assert_eq!(args.rpc_url, None);
+    }
+
+    #[test]
+    fn test_network_passphrase_keeps_spaces_and_semicolons() {
+        let passphrase = "Test SDF Network ; September 2015";
+        let args = parse_args(&["--network-passphrase", passphrase]).unwrap();
+        assert_eq!(args.network_passphrase.as_deref(), Some(passphrase));
+    }
+
+    #[test]
+    fn test_rpc_url_is_not_validated_at_parse_time() {
+        // URL checking happens later (url_checks); clap only carries the string.
+        let args = parse_args(&["--rpc-url", "not a url", "--network-passphrase", "P"]).unwrap();
+        assert_eq!(args.rpc_url.as_deref(), Some("not a url"));
+    }
+
+    #[test]
+    fn test_rpc_url_and_passphrase_require_values() {
+        for argv in [
+            vec!["--rpc-url"],
+            vec!["--network-passphrase"],
+            vec!["--network-passphrase", "P", "--rpc-url"],
+        ] {
+            let err = parse_args(&argv).expect_err("a value-less flag must be rejected");
+            assert_eq!(err.kind(), ErrorKind::InvalidValue, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn test_rpc_url_combines_with_network_flag() {
+        let args = parse_args(&[
+            "--network",
+            "local",
+            "--rpc-url",
+            "http://localhost:8000/soroban/rpc",
+            "--network-passphrase",
+            "Standalone Network ; February 2017",
+        ])
+        .unwrap();
+        assert_eq!(args.network.as_deref(), Some("local"));
+        assert!(args.rpc_url.is_some());
+    }
+
+    // ---- --source-secret ----
+
+    #[test]
+    fn test_source_secret_parses_from_flag() {
+        let args = parse_args(&["--source-secret", "SABC"]).unwrap();
+        assert_eq!(args.source_secret.as_deref(), Some("SABC"));
+    }
+
+    #[test]
+    fn test_source_secret_requires_value() {
+        let err = parse_args(&["--source-secret"]).expect_err("--source-secret needs a value");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn test_source_secret_falls_back_to_stellar_secret_key_env() {
+        // Inspect the definition instead of mutating the process environment:
+        // setting variables from a parallel test run would race with every
+        // other test that parses arguments.
+        assert_eq!(
+            arg_def("source_secret").get_env().and_then(|e| e.to_str()),
+            Some("STELLAR_SECRET_KEY")
+        );
+    }
+
+    #[test]
+    fn test_only_source_secret_reads_the_environment() {
+        // Everything else must come from flags or budget.toml; an extra env
+        // binding would be an undocumented configuration channel.
+        for arg in BudgetReportArgs::command().get_arguments() {
+            if arg.get_id() != "source_secret" {
+                assert!(
+                    arg.get_env().is_none(),
+                    "`{}` unexpectedly reads an environment variable",
+                    arg.get_id()
+                );
+            }
+        }
+    }
+
+    // ---- --concurrency ----
+
+    #[test]
+    fn test_default_concurrency_matches_the_documented_constant() {
+        assert_eq!(DEFAULT_CONCURRENCY, 4);
+        assert_eq!(parse_args(&[]).unwrap().concurrency, DEFAULT_CONCURRENCY);
+    }
+
+    #[test]
+    fn test_concurrency_parses_values() {
+        for (value, expected) in [("1", 1), ("8", 8), ("64", 64)] {
+            assert_eq!(
+                parse_args(&["--concurrency", value]).unwrap().concurrency,
+                expected
+            );
+        }
+        assert_eq!(parse_args(&["--concurrency=2"]).unwrap().concurrency, 2);
+    }
+
+    #[test]
+    fn test_concurrency_zero_is_accepted_at_parse_time() {
+        // Not rejected by clap; the runner clamps it to 1 (sequential).
+        assert_eq!(parse_args(&["--concurrency", "0"]).unwrap().concurrency, 0);
+    }
+
+    #[test]
+    fn test_concurrency_rejects_negative_fractional_and_non_numeric_values() {
+        for value in ["-1", "1.5", "four", "", "0x10", "1e3"] {
+            // `=` binds the value, so even `-1` reaches value validation.
+            let err = parse_args(&[&format!("--concurrency={value}")]).expect_err(value);
+            assert_eq!(
+                err.kind(),
+                ErrorKind::ValueValidation,
+                "--concurrency={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_separated_negative_number_is_read_as_a_flag_not_a_value() {
+        // Without `=`, clap treats `-1` as the (unknown) short flag `-1`, so the
+        // user sees "unexpected argument" rather than a range error.
+        let err = parse_args(&["--concurrency", "-1"]).expect_err("-1 is not a valid value");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn test_concurrency_rejects_values_beyond_usize() {
+        let err = parse_args(&["--concurrency", "99999999999999999999999999"])
+            .expect_err("overflowing usize must be rejected");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn test_concurrency_requires_value() {
+        let err = parse_args(&["--concurrency"]).expect_err("--concurrency needs a value");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    // ---- integer range limits of the retry flags ----
+
+    #[test]
+    fn test_max_retry_attempts_accepts_u32_max_and_rejects_overflow() {
+        let args = parse_args(&["--max-retry-attempts", "4294967295"]).unwrap();
+        assert_eq!(args.max_retry_attempts, Some(u32::MAX));
+        let err = parse_args(&["--max-retry-attempts", "4294967296"])
+            .expect_err("u32 overflow must be rejected");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn test_retry_backoff_secs_accepts_u64_max_and_rejects_negative() {
+        let args = parse_args(&["--retry-backoff-secs", "18446744073709551615"]).unwrap();
+        assert_eq!(args.retry_backoff_secs, Some(u64::MAX));
+        let err = parse_args(&["--retry-backoff-secs=-1"]).expect_err("negative backoff");
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
+    }
+
+    // ---- generic parser behaviour ----
+
+    #[test]
+    fn test_repeating_a_single_valued_flag_is_rejected() {
+        let err = parse_args(&["--network", "testnet", "--network", "futurenet"])
+            .expect_err("a repeated option must not silently keep one value");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn test_unexpected_positional_argument_is_rejected() {
+        let err = parse_args(&["stray"]).expect_err("no positional arguments are defined");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn test_flag_value_can_start_with_a_dash_only_via_equals_syntax() {
+        let err = parse_args(&["--network", "--json"]).expect_err("--json is not a value");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        let args = parse_args(&["--source=-alice"]).unwrap();
+        assert_eq!(args.source.as_deref(), Some("-alice"));
+    }
+
+    #[test]
+    fn test_missing_subcommand_is_rejected() {
+        let err = CargoCli::try_parse_from(["cargo"]).expect_err("subcommand is required");
+        assert_eq!(
+            err.kind(),
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    #[test]
+    fn test_other_cargo_subcommand_is_rejected() {
+        let err = CargoCli::try_parse_from(["cargo", "build"]).expect_err("not our subcommand");
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn test_help_flag_short_circuits_with_display_help() {
+        for flag in ["--help", "-h"] {
+            let err = parse_args(&[flag]).expect_err("help is reported as an early exit");
+            assert_eq!(err.kind(), ErrorKind::DisplayHelp, "{flag}");
+            assert!(!err.use_stderr(), "help goes to stdout, not stderr");
+        }
+    }
+
+    #[test]
+    fn test_help_documents_every_flag() {
+        // Drift guard: a flag added to the struct but hidden from `--help` (or a
+        // renamed flag with stale docs) fails here.
+        let help = BudgetReportArgs::command().render_long_help().to_string();
+        for arg in BudgetReportArgs::command().get_arguments() {
+            if let Some(long) = arg.get_long() {
+                if long == "help" {
+                    continue;
+                }
+                assert!(
+                    help.contains(&format!("--{long}")),
+                    "`--{long}` is missing from --help"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_every_option_has_user_facing_help_text() {
+        for arg in BudgetReportArgs::command().get_arguments() {
+            if arg.get_id() == "help" {
+                continue;
+            }
+            assert!(
+                arg.get_help().is_some() || arg.get_long_help().is_some(),
+                "`{}` has no help text",
+                arg.get_id()
+            );
+        }
+    }
+
+    #[test]
+    fn test_clap_definitions_are_internally_consistent() {
+        // `debug_assert` panics on duplicate flags, dangling `requires` /
+        // `conflicts_with` ids and similar definition mistakes.
+        CargoCli::command().debug_assert();
+        BudgetReportArgs::command().debug_assert();
+    }
+
+    #[test]
+    fn test_declared_conflicts_are_exactly_these() {
+        // Guards against a conflict being added or dropped without a matching
+        // parse test above. clap records a conflict on the field that declares
+        // it (`--json` names `csv`, not the reverse) though it enforces both
+        // directions, so compare unordered pairs.
+        let command = BudgetReportArgs::command();
+        let mut pairs = std::collections::BTreeSet::new();
+        for arg in command.get_arguments() {
+            for other in command.get_arg_conflicts_with(arg) {
+                let (a, b) = (arg.get_id().to_string(), other.get_id().to_string());
+                pairs.insert(if a <= b { (a, b) } else { (b, a) });
+            }
+        }
+        let expected: std::collections::BTreeSet<(String, String)> = [
+            ("csv", "json"),
+            ("record", "replay"),
+            ("check_baseline", "record_baseline"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        assert_eq!(pairs, expected);
     }
 }

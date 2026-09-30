@@ -11,15 +11,54 @@
 //! host-function overhead from other billing dimensions (such as read/write bytes or VM instructions).
 //!
 //! It also hosts the Map-operation fixtures (`map_insert`, `map_get`, `map_remove`,
-//! `map_iterate`), which isolate Soroban [`Map`] host calls without storage, event, or
-//! arithmetic side-effects, for the local-vs-network Map cost-gap measurement.
+//! `map_iterate`), which isolate Soroban [`Map`](soroban_sdk::Map) host calls without
+//! storage, event, or arithmetic side-effects, for the local-vs-network Map
+//! cost-gap measurement.
 //!
 //! See `README.md` and `MEASUREMENTS.md` at the repository root for detailed methodology
 //! and captured figures.
+//!
+//! ## Module layout
+//!
+//! Each public entry point below performs exactly one repeated host-function
+//! operation, so a measurement of that entry point isolates that operation. The
+//! reusable Map setup is factored into the private `support` submodule so the
+//! four `map_*` entry points do not each repeat the same seeding loop (#718).
+//! The public contract interface is unchanged by that factoring.
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, Bytes, Env, Map};
+use soroban_sdk::{contract, contractimpl, Bytes, Env};
+
+/// Internal helper components shared by the contract entry points below.
+///
+/// Factoring this logic out of the `#[contractimpl]` block keeps each public
+/// entry point short and focused on the single host-function operation it
+/// exists to measure, and gives the shared setup one place to be documented,
+/// tested, and changed (#718).
+mod support {
+    use soroban_sdk::{Env, Map};
+
+    /// Builds a fresh `Map<u32, u32>` seeded with `size` identity entries.
+    ///
+    /// Entry `i` maps the key `i` to the value `i`, so the result is
+    /// deterministic and every key is distinct. Building the map performs
+    /// exactly `size` `Map::set` host calls.
+    ///
+    /// The `map_get`, `map_remove`, and `map_iterate` fixtures each build this
+    /// identical map before measuring their own operation, so subtracting the
+    /// cost of `map_insert(size)` from theirs yields the marginal cost of the
+    /// operation under measurement.
+    ///
+    /// A `size` of `0` returns an empty map without invoking any host call.
+    pub(super) fn seed_identity_map(env: &Env, size: u32) -> Map<u32, u32> {
+        let mut map = Map::new(env);
+        for i in 0..size {
+            map.set(i, i);
+        }
+        map
+    }
+}
 
 /// Benchmark contract fixture for measuring the gap between local budget estimates
 /// and live network simulation figures for repeated host-function calls.
@@ -67,7 +106,7 @@ impl HostFunctionBenchmark {
     /// Hashes a small input buffer with SHA-256 for `iterations` count and
     /// returns the number of iterations completed.
     ///
-    /// Each iteration allocates an 8-byte `Bytes` value and passes it through
+    /// Each iteration passes the same pre-built input through
     /// `env.crypto().sha256()`, exercising the cryptographic host function
     /// category. The return value prevents dead-code elimination while
     /// keeping the function free of storage side-effects.
@@ -102,11 +141,8 @@ impl HostFunctionBenchmark {
     /// arithmetic side-effects. The return value prevents dead-code
     /// elimination. `size` is the map size / insert count.
     pub fn map_insert(env: Env, size: u32) -> u32 {
-        let mut m: Map<u32, u32> = Map::new(&env);
-
-        for i in 0..size {
-            m.set(i, i);
-        }
+        // The seeding loop *is* the measurement; the map itself is discarded.
+        let _map = support::seed_identity_map(&env, size);
 
         size
     }
@@ -118,13 +154,10 @@ impl HostFunctionBenchmark {
     /// the same `size`, so the marginal cost of the get loop is obtained by
     /// subtracting `map_insert(size)`. This isolates the cost of Map lookups.
     pub fn map_get(env: Env, size: u32) -> u32 {
-        let mut m: Map<u32, u32> = Map::new(&env);
-        for i in 0..size {
-            m.set(i, i);
-        }
+        let map = support::seed_identity_map(&env, size);
 
         for i in 0..size {
-            let _v = m.get(i);
+            let _v = map.get(i);
         }
 
         size
@@ -137,13 +170,10 @@ impl HostFunctionBenchmark {
     /// the same `size`, so the marginal cost of the remove loop is obtained by
     /// subtracting `map_insert(size)`. This isolates the cost of Map removals.
     pub fn map_remove(env: Env, size: u32) -> u32 {
-        let mut m: Map<u32, u32> = Map::new(&env);
-        for i in 0..size {
-            m.set(i, i);
-        }
+        let mut map = support::seed_identity_map(&env, size);
 
         for i in 0..size {
-            let _ = m.remove(i);
+            let _ = map.remove(i);
         }
 
         size
@@ -156,14 +186,14 @@ impl HostFunctionBenchmark {
     /// the same `size`, so the marginal cost of the iteration is obtained by
     /// subtracting `map_insert(size)`. This isolates the cost of Map
     /// iteration.
+    ///
+    /// Because the map is seeded with identity entries, the returned sum is
+    /// well-defined for tests (`0 + 1 + … + (size - 1)`).
     pub fn map_iterate(env: Env, size: u32) -> u32 {
-        let mut m: Map<u32, u32> = Map::new(&env);
-        for i in 0..size {
-            m.set(i, i);
-        }
+        let map = support::seed_identity_map(&env, size);
 
         let mut sum: u32 = 0;
-        for (_k, v) in m.iter() {
+        for (_k, v) in map.iter() {
             sum = sum.wrapping_add(v);
         }
 
