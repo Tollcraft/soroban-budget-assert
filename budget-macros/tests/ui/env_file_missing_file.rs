@@ -1,11 +1,9 @@
+//! An env file path that does not exist must be rejected during expansion.
+
 use budget_macros::budget_cpu_lt;
 
-// A literal `env_file` path that does not resolve to a file must fail at
-// compile time, naming the path — not defer to a runtime panic and not
-// silently fall through to `u64::MAX`.
+// Keep the attribute on the documented line used by the compile-fail snapshot.
 #[budget_cpu_lt(env_file = "definitely/not/a/real/limits.env", env = "SOME_LIMIT")]
-fn test_missing_env_file() {
-    let env = ();
-}
+fn test_env_file_missing_file() {}
 
 fn main() {}
