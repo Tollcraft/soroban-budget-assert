@@ -17,7 +17,9 @@ pub const DEFAULT_RPC_URL: &str = "https://soroban-testnet.stellar.org:443";
 /// `--network <alias>`.
 #[derive(Debug, Clone)]
 pub struct NetworkOverride {
+    /// RPC endpoint used for simulation and Stellar CLI operations.
     pub rpc_url: String,
+    /// Network passphrase paired with [`Self::rpc_url`].
     pub network_passphrase: String,
 }
 
@@ -36,7 +38,76 @@ pub struct LiveTransport {
     net_override: Option<NetworkOverride>,
 }
 
+fn run_stellar_command(args: &[String], operation: &str) -> Result<String, crate::RetryFailure> {
+    let output = Command::new("stellar").args(args).output().map_err(|e| {
+        crate::RetryFailure::Permanent(format!(
+            "failed to execute stellar-cli {}: {}",
+            operation, e
+        ))
+    })?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    if crate::is_transient_error(&stderr) {
+        Err(crate::RetryFailure::Transient(stderr))
+    } else {
+        Err(crate::RetryFailure::Permanent(stderr))
+    }
+}
+
+fn run_simulation_request(endpoint: &str, payload: &Value) -> Result<Value, crate::RetryFailure> {
+    let mut curl = Command::new("curl")
+        .args([
+            "-s",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            "@-",
+            endpoint,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| crate::RetryFailure::Permanent(format!("failed to execute curl: {}", e)))?;
+
+    {
+        let stdin = curl
+            .stdin
+            .as_mut()
+            .ok_or_else(|| crate::RetryFailure::Permanent("Failed to open stdin".to_string()))?;
+        stdin
+            .write_all(payload.to_string().as_bytes())
+            .map_err(|e| {
+                crate::RetryFailure::Permanent(format!("failed to write to stdin: {}", e))
+            })?;
+    }
+
+    let output = curl.wait_with_output().map_err(|e| {
+        crate::RetryFailure::Permanent(format!("failed to read curl output: {}", e))
+    })?;
+
+    if !output.status.success() {
+        return Err(crate::RetryFailure::Transient(format!(
+            "curl exited with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| crate::RetryFailure::Transient(format!("Failed to parse RPC response: {}", e)))
+}
+
 impl LiveTransport {
+    /// Creates a live transport using the supplied retry and output settings.
+    ///
+    /// When `net_override` is `Some`, all network operations target that
+    /// endpoint and passphrase instead of a named Stellar network.
     pub fn new(
         retry_config: crate::RetryConfig,
         quiet: bool,
@@ -94,35 +165,19 @@ impl Transport for LiveTransport {
             self.quiet,
             "Deploy",
             || {
-                let mut cmd = Command::new("stellar");
-                cmd.args([
+                let args = [
                     "contract",
                     "deploy",
                     "--wasm",
                     &wasm_path_str,
                     "--source",
                     source,
-                ]);
-                cmd.args(&net_args);
-                let output = cmd.output().map_err(|e| {
-                    // A missing/unspawnable `stellar` binary is an
-                    // environment problem, not something retry fixes.
-                    crate::RetryFailure::Permanent(format!(
-                        "failed to execute stellar-cli deploy: {}",
-                        e
-                    ))
-                })?;
-
-                if output.status.success() {
-                    return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
-                }
-
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                if crate::is_transient_error(&stderr) {
-                    Err(crate::RetryFailure::Transient(stderr))
-                } else {
-                    Err(crate::RetryFailure::Permanent(stderr))
-                }
+                ]
+                .into_iter()
+                .map(String::from)
+                .chain(net_args.clone())
+                .collect::<Vec<_>>();
+                run_stellar_command(&args, "deploy")
             },
             |last_error| {
                 crate::Error::Message(format!("stellar contract deploy failed: {}", last_error))
@@ -157,28 +212,7 @@ impl Transport for LiveTransport {
             &self.retry_config,
             self.quiet,
             "Invoke build",
-            || {
-                let output = Command::new("stellar")
-                    .args(&invoke_args)
-                    .output()
-                    .map_err(|e| {
-                        crate::RetryFailure::Permanent(format!(
-                            "failed to execute stellar-cli invoke: {}",
-                            e
-                        ))
-                    })?;
-
-                if output.status.success() {
-                    return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
-                }
-
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                if crate::is_transient_error(&stderr) {
-                    Err(crate::RetryFailure::Transient(stderr))
-                } else {
-                    Err(crate::RetryFailure::Permanent(stderr))
-                }
-            },
+            || run_stellar_command(&invoke_args, "invoke"),
             |last_error| crate::Error::Message(format!("stellar invoke failed: {}", last_error)),
         )
         .map_err(anyhow::Error::from)
@@ -197,62 +231,7 @@ impl Transport for LiveTransport {
             &self.retry_config,
             self.quiet,
             "Simulate RPC request",
-            || {
-                let mut curl = Command::new("curl")
-                    .args([
-                        "-s",
-                        "-X",
-                        "POST",
-                        "-H",
-                        "Content-Type: application/json",
-                        "-d",
-                        "@-",
-                        endpoint.as_str(),
-                    ])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| {
-                        // A missing/unspawnable `curl` is an environment
-                        // problem, not something a retry can fix.
-                        crate::RetryFailure::Permanent(format!("failed to execute curl: {}", e))
-                    })?;
-
-                {
-                    let stdin = curl.stdin.as_mut().ok_or_else(|| {
-                        crate::RetryFailure::Permanent("Failed to open stdin".to_string())
-                    })?;
-                    stdin
-                        .write_all(rpc_payload.to_string().as_bytes())
-                        .map_err(|e| {
-                            crate::RetryFailure::Permanent(format!(
-                                "failed to write to stdin: {}",
-                                e
-                            ))
-                        })?;
-                }
-
-                let curl_output = curl.wait_with_output().map_err(|e| {
-                    crate::RetryFailure::Permanent(format!("failed to read curl output: {}", e))
-                })?;
-
-                if !curl_output.status.success() {
-                    // Connection refused, DNS failure, TLS errors,
-                    // HTTP-level failures surfaced by `curl -s`: all
-                    // plausibly transient.
-                    return Err(crate::RetryFailure::Transient(format!(
-                        "curl exited with status {}: {}",
-                        curl_output.status,
-                        String::from_utf8_lossy(&curl_output.stderr).trim()
-                    )));
-                }
-
-                serde_json::from_slice(&curl_output.stdout).map_err(|e| {
-                    // An empty or truncated body almost always means the
-                    // connection dropped mid-response; treat it as transient.
-                    crate::RetryFailure::Transient(format!("Failed to parse RPC response: {}", e))
-                })
-            },
+            || run_simulation_request(&endpoint, &rpc_payload),
             |last_error| {
                 crate::Error::Message(format!("simulateTransaction RPC failed: {}", last_error))
             },
