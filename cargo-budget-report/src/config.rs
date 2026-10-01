@@ -1,10 +1,18 @@
 #![allow(dead_code)]
 
+//! Global configuration settings for `cargo-budget-report` loaded from `budget.toml`.
+
+/// Global configuration options governing network interaction, signing account,
+/// timeouts, and retry behavior.
 #[derive(Debug, PartialEq)]
 pub struct Config {
+    /// The target network name (e.g. "testnet", "futurenet", or "local").
     pub network: String,
+    /// The account identifier or secret used for signing transactions.
     pub source: String,
+    /// Network request timeout in seconds.
     pub timeout_secs: u64,
+    /// Maximum number of retry attempts for transient network/RPC failures.
     pub retry_attempts: u32,
 }
 
@@ -19,6 +27,8 @@ impl Default for Config {
     }
 }
 
+/// Parses raw TOML content into a [`Config`] instance, falling back to default
+/// values for any missing or invalid fields.
 pub fn parse_config(content: &str) -> Config {
     let base = Config::default();
 
@@ -36,6 +46,7 @@ pub fn parse_config(content: &str) -> Config {
     }
 }
 
+/// Internal representation used for deserialising optional configuration fields from TOML.
 #[derive(serde::Deserialize)]
 struct PartialConfig {
     network: Option<String>,

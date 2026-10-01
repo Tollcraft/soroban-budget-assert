@@ -211,6 +211,130 @@ mod tests {
         );
     }
 
+    struct FailingMockTransport;
+
+    impl Transport for FailingMockTransport {
+        fn deploy_contract(
+            &mut self,
+            _wasm_path: &Path,
+            _source: &str,
+            _network: &str,
+            _package_name: &str,
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("deploy failed")
+        }
+
+        fn build_invoke_xdr(
+            &mut self,
+            _contract_id: &str,
+            _source: &str,
+            _network: &str,
+            _function: &str,
+            _func_args: &[String],
+            _package: &str,
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("build xdr failed")
+        }
+
+        fn simulate_transaction(
+            &mut self,
+            _b64_xdr: &str,
+            _package: &str,
+            _function: &str,
+        ) -> anyhow::Result<Value> {
+            anyhow::bail!("simulate failed")
+        }
+    }
+
+    #[test]
+    fn errors_are_not_recorded_leaving_entries_empty() {
+        let mut recording = RecordingTransport::new(FailingMockTransport);
+
+        assert!(recording
+            .deploy_contract(Path::new("c.wasm"), "alice", "testnet", "pkg")
+            .is_err());
+        assert!(recording
+            .build_invoke_xdr("C1", "alice", "testnet", "do_work", &[], "pkg")
+            .is_err());
+        assert!(recording
+            .simulate_transaction("XDR", "pkg", "do_work")
+            .is_err());
+
+        let fixture = recording.into_fixture();
+        assert!(fixture.entries.is_empty());
+    }
+
+    #[test]
+    fn last_write_wins_for_duplicate_keys() {
+        struct UpdatingMockTransport;
+        impl Transport for UpdatingMockTransport {
+            fn deploy_contract(
+                &mut self,
+                _wasm_path: &Path,
+                _source: &str,
+                _network: &str,
+                package_name: &str,
+            ) -> anyhow::Result<String> {
+                Ok(package_name.to_string())
+            }
+            fn build_invoke_xdr(
+                &mut self,
+                _contract_id: &str,
+                _source: &str,
+                _network: &str,
+                function: &str,
+                _func_args: &[String],
+                _package: &str,
+            ) -> anyhow::Result<String> {
+                Ok(function.to_string())
+            }
+            fn simulate_transaction(
+                &mut self,
+                _b64_xdr: &str,
+                _package: &str,
+                function: &str,
+            ) -> anyhow::Result<Value> {
+                Ok(json!({ "fn": function }))
+            }
+        }
+
+        let mut recording = RecordingTransport::new(UpdatingMockTransport);
+        let _ = recording
+            .deploy_contract(Path::new("c.wasm"), "alice", "testnet", "pkg1")
+            .unwrap();
+        let _ = recording
+            .deploy_contract(Path::new("c.wasm"), "alice", "testnet", "pkg2")
+            .unwrap();
+
+        let _ = recording
+            .build_invoke_xdr("C1", "alice", "testnet", "func1", &[], "pkg")
+            .unwrap();
+        let _ = recording
+            .build_invoke_xdr("C1", "alice", "testnet", "func2", &[], "pkg")
+            .unwrap();
+
+        let _ = recording
+            .simulate_transaction("XDR1", "pkg", "fn1")
+            .unwrap();
+        let _ = recording
+            .simulate_transaction("XDR2", "pkg", "fn1")
+            .unwrap();
+
+        let fixture = recording.into_fixture();
+        // deploy_key("pkg2") and deploy_key("pkg1") are different keys, so check last write for invoke/simulate sharing same key
+        let invoke_k = crate::transport::invoke_key("pkg", "func2");
+        assert_eq!(
+            fixture.entries.get(&invoke_k).unwrap().as_str().unwrap(),
+            "func2"
+        );
+
+        let sim_k = crate::transport::simulate_key("pkg", "fn1");
+        assert_eq!(
+            fixture.entries.get(&sim_k).unwrap()["fn"].as_str().unwrap(),
+            "fn1"
+        );
+    }
+
     #[test]
     fn replay_reports_missing_entry() {
         let mut replay = ReplayTransport::new(FixtureFile::new());

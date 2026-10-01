@@ -1,3 +1,16 @@
+//! Network transport boundary for a measurement run.
+//!
+//! The module is deliberately split so that the *policy* of a run (what to
+//! deploy, which function to call, how to report) is separable from the
+//! *I/O* (spawning the `stellar` CLI, POSTing to the RPC endpoint). The
+//! [`Transport`] trait is that seam: the live implementation talks to the
+//! network, while `fixture` (record/replay) implements the same trait to
+//! serve recorded responses with no network access at all.
+//!
+//! Key construction — the part record and replay must agree on exactly — is
+//! factored out of the trait into [`fixture_key`] and its three named
+//! wrappers below, each independently unit-tested.
+
 use anyhow::Result;
 use serde_json::Value;
 use std::path::Path;
@@ -93,5 +106,51 @@ mod tests {
     fn fixture_key_handles_zero_and_one_part() {
         assert_eq!(fixture_key(&[]), "");
         assert_eq!(fixture_key(&["only"]), "only");
+    }
+
+    #[test]
+    fn fixture_key_handles_a_single_empty_part() {
+        assert_eq!(fixture_key(&[""]), "");
+        assert_eq!(fixture_key(&["", ""]), ":");
+    }
+
+    #[test]
+    fn fixture_key_joins_many_parts_without_a_trailing_separator() {
+        assert_eq!(fixture_key(&["a", "b", "c", "d", "e"]), "a:b:c:d:e");
+    }
+
+    #[test]
+    fn fixture_key_many_parts_are_allocated_at_exact_capacity() {
+        let parts = ["alpha", "beta", "gamma", "delta", "epsilon"];
+        let key = fixture_key(&parts);
+        assert_eq!(key.capacity(), key.len());
+    }
+
+    #[test]
+    fn fixture_key_separator_is_ambiguous_when_a_part_contains_it() {
+        // Characterisation test: parts are joined with `:` and not escaped, so
+        // different part lists can produce the same key. Fixture keys are
+        // therefore only unambiguous for part values that cannot contain `:`
+        // (package and function names). Pinning this down keeps any future
+        // change to the key format visible.
+        assert_eq!(
+            fixture_key(&["a", "b:c"]),
+            fixture_key(&["a:b", "c"]),
+            "unescaped `:` in a part collides with the separator"
+        );
+    }
+
+    #[test]
+    fn deploy_and_simulate_keys_never_collide_for_the_same_pair() {
+        // The verb prefix is what keeps the three response kinds apart for one
+        // (package, function) pair.
+        let package = "my-contract";
+        let function = "do_work";
+        assert_ne!(deploy_key(package), invoke_key(package, function));
+        assert_ne!(
+            invoke_key(package, function),
+            simulate_key(package, function)
+        );
+        assert_ne!(deploy_key(package), simulate_key(package, function));
     }
 }

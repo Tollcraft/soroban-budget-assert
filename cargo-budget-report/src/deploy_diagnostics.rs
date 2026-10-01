@@ -65,9 +65,12 @@ impl DeployFailureClass {
     }
 }
 
-/// Classify a deploy failure from the last error string the transport
-/// surfaced. Order matters: the account-state checks come first because an
-/// unfunded account is the one class that waiting cannot fix.
+/// Classifies a deploy failure from the last error string the transport
+/// surfaced.
+///
+/// Account-state signals intentionally take precedence over retryable service
+/// signals. For example, an error containing both `underfunded` and `try
+/// again` should tell the user to fund the account, not to wait and retry.
 pub fn classify(last_error: &str) -> DeployFailureClass {
     let lowered = last_error.to_ascii_lowercase();
     let has = |needle: &str| lowered.contains(needle);
@@ -203,6 +206,11 @@ mod tests {
     }
 
     #[test]
+    fn empty_text_is_unknown() {
+        assert_eq!(classify(""), DeployFailureClass::Unknown);
+    }
+
+    #[test]
     fn rate_limit_guidance_says_how_long_to_wait() {
         let g = DeployFailureClass::RateLimited.guidance("alice", "testnet");
         assert!(
@@ -228,5 +236,10 @@ mod tests {
         let s = summarize(&long);
         assert!(s.chars().count() <= 141, "truncated: {}", s.chars().count());
         assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_empty_text_is_empty() {
+        assert_eq!(summarize("\n\t"), "");
     }
 }
