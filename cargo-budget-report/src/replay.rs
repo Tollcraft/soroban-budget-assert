@@ -111,10 +111,11 @@ mod tests {
     #[test]
     fn test_replay_transport_helpers() {
         let mut entries = HashMap::new();
-        entries.insert("test_key".to_string(), Value::String("test_val".to_string()));
-        let transport = ReplayTransport {
-            entries,
-        };
+        entries.insert(
+            "test_key".to_string(),
+            Value::String("test_val".to_string()),
+        );
+        let transport = ReplayTransport { entries };
         let val = transport.get_string_entry("test_key").unwrap();
         assert_eq!(val, "test_val");
     }
