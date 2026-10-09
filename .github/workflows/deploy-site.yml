@@ -5,10 +5,10 @@ on:
     branches: ["main"]
     paths:
       - "site/**"
-  pull_request:
-    branches: ["main"]
-    paths:
-      - "site/**"
+  # No pull_request trigger: `Soroban Budget Check`/budget-check and
+  # `Code Quality`/lint are the two required contexts, and a site PR should not
+  # add two more. `validate` therefore runs on the merge to `main` instead of
+  # on the PR; a broken site link is caught after merge, not before.
 
 permissions:
   contents: read
