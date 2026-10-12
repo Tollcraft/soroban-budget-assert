@@ -14,8 +14,10 @@ The repository is organized as a Cargo workspace publishing two crates to crates
 |---|---|---|---|
 | `budget-macros` | `budget-macros` | Procedural macro crate (`#[budget_cpu_lt]`, `#[budget_mem_lt]`) | Published to crates.io |
 | `cargo-budget-report` | `cargo-budget-report` | CLI tool and cargo subcommand for resource reporting | Published to crates.io + pre-compiled binaries on GitHub Releases |
-| `budget-core` | `soroban-budget-assert-core` | Internal core library (not published to crates.io, `publish = false`) | Workspace dependency |
+| `soroban-budget-assert-core` | `soroban-budget-assert-core` | Internal core library (workspace root `src/lib.rs`, not published to crates.io, `publish = false`) | Workspace root package |
 | `amm-pool-contract` | `amm-pool-contract` | Benchmark contract fixture (not published, `publish = false`) | Test fixture |
+| `host-function-contract` | `host-function-contract` | Benchmark contract fixture (not published, `publish = false`) | Test fixture |
+| `bloat-contract` | `bloat-contract` | Benchmark contract fixture (not published, `publish = false`) | Test fixture |
 
 ### Workspace Versioning
 
