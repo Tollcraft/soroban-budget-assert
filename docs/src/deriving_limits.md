@@ -79,6 +79,8 @@ cargo budget-report --json | cargo budget-report \
 cargo test --workspace
 ```
 
+`--derive-limits` cannot be combined with `--record-baseline` or `--check-baseline`; each flag selects a different mode, so the combination is rejected as an argument conflict.
+
 The CLI emits two companions next to `<OUT>`:
 
 - `<OUT>.provenance.md` — a Markdown table that pairs every Tier A limit

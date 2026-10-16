@@ -1592,10 +1592,43 @@ mod tests {
             ("csv", "json"),
             ("record", "replay"),
             ("check_baseline", "record_baseline"),
+            ("check_baseline", "derive_limits"),
+            ("derive_limits", "record_baseline"),
         ]
         .into_iter()
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(pairs, expected);
+    }
+
+    #[test]
+    fn test_derive_limits_conflicts_with_both_baseline_modes() {
+        // `--derive-limits` silently outranked the baseline flags in
+        // `Mode::from_args`; clap now rejects every pairing as a conflict.
+        for argv in [
+            vec![
+                "--derive-limits",
+                "out.env",
+                "--record-baseline",
+                "new.json",
+            ],
+            vec![
+                "--record-baseline",
+                "new.json",
+                "--derive-limits",
+                "out.env",
+            ],
+            vec!["--derive-limits", "out.env", "--check-baseline", "old.json"],
+            vec!["--check-baseline", "old.json", "--derive-limits", "out.env"],
+            vec![
+                "--record-baseline",
+                "new.json",
+                "--check-baseline",
+                "old.json",
+            ],
+        ] {
+            let err = parse_args(&argv).expect_err(format!("{argv:?} must conflict").as_str());
+            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "{argv:?}");
+        }
     }
 }

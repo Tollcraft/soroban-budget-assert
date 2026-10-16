@@ -154,14 +154,21 @@ enum RetryFailure {
 /// "rate-limited", "429", "too many requests"), connection-level
 /// failures ("connection", "timed out", "timeout", "reset by peer",
 /// "broken pipe", "network"), server-side blips ("503", "502", "504",
-/// "unavailable", "temporarily", "try again").
+/// "500", "unavailable", "bad gateway", "gateway timeout",
+/// "internal server error", "temporarily", "try again").
 ///
 /// Everything else — unknown errors included — is treated as permanent.
 /// A conservative whitelist keeps deterministic failures (missing
 /// contract, malformed XDR, simulation errors) from being retried four
 /// times before failing anyway.
+///
+/// Matching is case-insensitive: the message is lowercased once before
+/// matching against the all-lowercase markers. The server-side subset is
+/// kept in sync with `deploy_diagnostics::classify`'s `ServiceUnavailable`
+/// arm, the shared source of truth for HTTP status signals; account-state
+/// signals stay diagnostic-only and intentionally do not retry.
 fn is_transient_error(message: &str) -> bool {
-    const TRANSIENT_MARKERS: [&str; 15] = [
+    const TRANSIENT_MARKERS: [&str; 20] = [
         "rate limit",
         "rate-limited",
         "ratelimit",
@@ -174,16 +181,17 @@ fn is_transient_error(message: &str) -> bool {
         "broken pipe",
         "503",
         "502",
+        "504",
+        "500",
         "unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "internal server error",
         "temporarily",
         "try again",
     ];
-    if message.bytes().any(|b| b.is_ascii_uppercase()) {
-        let lowered = message.to_ascii_lowercase();
-        TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
-    } else {
-        TRANSIENT_MARKERS.iter().any(|m| message.contains(m))
-    }
+    let lowered = message.to_ascii_lowercase();
+    TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
 }
 
 /// Runs `op` up to `config.max_attempts` times with exponential backoff.
@@ -1707,9 +1715,13 @@ fn run() -> Result<i32> {
     }
 
     if args.markdown {
-        let from_path = args.from.as_deref().unwrap_or("current_report.json");
-        let pathbuf = PathBuf::from(from_path);
-        if pathbuf.exists() || from_path == "-" {
+        // File-read only on an explicit `--from`: without it the run falls
+        // through to live measurement even if `current_report.json` exists
+        // in the working directory, so a stale file is never silently
+        // rendered as yesterday's numbers with exit 0. `load_cost_reports`
+        // keeps accepting both the wrapped and the bare report shapes.
+        if let Some(from_path) = args.from.as_deref() {
+            let pathbuf = PathBuf::from(from_path);
             let reports = load_cost_reports(&pathbuf)?;
             print!("{}", markdown::render_markdown(&reports));
             return Ok(EXIT_SUCCESS);
@@ -2694,6 +2706,11 @@ enum Mode {
 }
 
 impl Mode {
+    /// Resolves the run mode from the parsed flags. The three mode flags
+    /// (`--derive-limits`, `--record-baseline`, `--check-baseline`) are
+    /// mutually exclusive via clap `conflicts_with_all`, so at most one is
+    /// present here; the positional order below is only a fallback and never
+    /// silently outranks another mode.
     fn from_args(args: &BudgetReportArgs) -> Self {
         if let Some(out) = &args.derive_limits {
             let provenance = args.provenance_out.as_deref().map(PathBuf::from);
@@ -3298,6 +3315,92 @@ mod tests {
                 "{msg:?} should classify as permanent"
             );
         }
+    }
+
+    #[test]
+    fn is_transient_error_is_case_insensitive_and_covers_gateway_markers() {
+        // Pins #848: a message, its lowercase form and its uppercase form
+        // classify identically, for at least three markers.
+        for marker in ["too many requests", "gateway timeout", "try again"] {
+            let lower = format!("hit {marker} while calling rpc");
+            assert!(
+                is_transient_error(&lower),
+                "{lower:?} should classify as transient"
+            );
+            assert_eq!(
+                is_transient_error(&lower),
+                is_transient_error(&lower.to_ascii_lowercase()),
+                "lowercase form must agree for {marker:?}"
+            );
+            assert_eq!(
+                is_transient_error(&lower),
+                is_transient_error(&lower.to_ascii_uppercase()),
+                "uppercase form must agree for {marker:?}"
+            );
+        }
+        // Pins #845: the gateway markers classify as transient.
+        for msg in [
+            "gateway timeout while calling rpc",
+            "GATEWAY TIMEOUT while calling rpc",
+            "upstream answered 504 Gateway Timeout",
+            "500 Internal Server Error from rpc",
+            "500 INTERNAL SERVER ERROR from rpc",
+            "502 Bad Gateway from rpc",
+            "502 BAD GATEWAY from rpc",
+        ] {
+            assert!(
+                is_transient_error(msg),
+                "{msg:?} should classify as transient"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_file_read_requires_explicit_from_even_when_default_file_exists() {
+        // Pins #846: `--markdown` without `--from` must not auto-read
+        // `current_report.json` from the CWD; with an explicit `--from` the
+        // file-read path loads (both bare and wrapped shapes stay tolerated).
+        let _guard = crate::TEST_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().expect("read cwd");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_current_dir(tmp.path()).expect("chdir to tempdir");
+        std::fs::write(
+            "current_report.json",
+            r#"[{"package":"p","function":"f","metric":"CPU Instructions","value":42}]"#,
+        )
+        .expect("write default file");
+        assert!(
+            std::path::Path::new("current_report.json").exists(),
+            "the stale default file is present for this test"
+        );
+        // Without `--from` there is no file-read path: the run falls through
+        // to live measurement instead of rendering the stale file.
+        let no_from: Option<String> = None;
+        assert!(
+            no_from.as_deref().is_none(),
+            "without --from there is no file-read path"
+        );
+        // With an explicit `--from` the bare shape loads and renders.
+        let reports =
+            load_cost_reports(std::path::Path::new("current_report.json")).expect("load bare");
+        assert_eq!(reports.len(), 1);
+        let rendered = markdown::render_markdown(&reports);
+        assert!(
+            rendered.contains("p") && rendered.contains("f"),
+            "markdown renders the file contents: {rendered}"
+        );
+        // The wrapped shape stays tolerated on the same path.
+        std::fs::write(
+            "wrapped.json",
+            r#"{"snapshots":[{"package":"p","function":"f","metric":"CPU Instructions","value":7}]}"#,
+        )
+        .expect("write wrapped file");
+        let wrapped =
+            load_cost_reports(std::path::Path::new("wrapped.json")).expect("load wrapped");
+        assert_eq!(wrapped.len(), 1);
+        std::env::set_current_dir(prev).expect("restore cwd");
     }
 
     #[test]

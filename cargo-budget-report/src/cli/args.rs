@@ -95,13 +95,14 @@ pub struct BudgetReportArgs {
     /// Write a new resource-usage baseline snapshot to this path and exit.
     ///
     /// Cannot be combined with `--check-baseline`: a run either records a
-    /// baseline or compares against one, never both.
-    #[arg(long, conflicts_with = "check_baseline")]
+    /// baseline or compares against one, never both. Cannot be combined with
+    /// `--derive-limits` either: each flag selects a different mode.
+    #[arg(long, conflicts_with_all = ["check_baseline", "derive_limits"])]
     pub record_baseline: Option<String>,
 
     /// Check current measurements against an existing baseline snapshot at
     /// this path, applying the configured regression tolerance.
-    #[arg(long, conflicts_with = "record_baseline")]
+    #[arg(long, conflicts_with_all = ["record_baseline", "derive_limits"])]
     pub check_baseline: Option<String>,
 
     /// Override the regression tolerance (e.g. "0.10" for 10%). Takes
@@ -169,7 +170,11 @@ pub struct BudgetReportArgs {
     /// `[[scenarios.<name>]]` blocks in `budget.toml` so component
     /// limits can be summed under a single Tier A `KEY=VALUE` for
     /// tests that exercise multi-step workflows.
-    #[arg(long, value_name = "OUT")]
+    ///
+    /// Cannot be combined with `--record-baseline` or `--check-baseline`:
+    /// each flag selects a different mode, so clap rejects the combination
+    /// as an argument conflict instead of silently letting one win.
+    #[arg(long, value_name = "OUT", conflicts_with_all = ["record_baseline", "check_baseline"])]
     pub derive_limits: Option<String>,
 
     /// Source Tier B JSON report for `--derive-limits`. Use `-` to
