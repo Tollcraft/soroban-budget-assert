@@ -138,7 +138,8 @@ pub struct BudgetReportArgs {
     /// non-zero status when mismatches are found.
     ///
     /// Validation is skipped (not failed) when the Stellar CLI or the `xdr decode`
-    /// subcommand is unavailable.
+    /// subcommand is unavailable. Validation is also skipped when `--replay`
+    /// is used, since replay mode runs offline without the Stellar CLI.
     #[arg(long, default_value_t = false)]
     pub validate: bool,
 
@@ -166,7 +167,7 @@ pub struct BudgetReportArgs {
     /// Tier A test limits.
     ///
     /// The function-to-scenario mapping is recorded under
-    /// `[[scenarios.<name>]]` blocks in `budget.toml` so component
+    /// `[scenarios.<name>]` blocks in `budget.toml` so component
     /// limits can be summed under a single Tier A `KEY=VALUE` for
     /// tests that exercise multi-step workflows.
     #[arg(long, value_name = "OUT")]

@@ -1423,6 +1423,69 @@ fn deploy_contract_with_retry(
     }
 }
 
+/// Resolve the `--derive-limits` margin from CLI flags or `budget.toml` (#862).
+///
+/// CLI overrides win over `budget.toml`: when any `--margin-*` flag is
+/// present, all four must be (a partial set errors naming the missing
+/// flags) instead of falling through to the toml fallback. With no CLI
+/// flags, a complete `[margin]` table is used; an absent or incomplete
+/// table is the `no margin supplied` error. Pure over its inputs so each
+/// failure branch is unit-testable without running a derivation.
+pub(crate) fn resolve_derive_margin(
+    cli_cpu: Option<&str>,
+    cli_memory: Option<&str>,
+    cli_read: Option<&str>,
+    cli_write: Option<&str>,
+    toml_margin: Option<MarginToml>,
+) -> Result<Margin> {
+    fn parse_cli_margin(field: &str, raw: Option<&str>) -> Result<Option<f64>> {
+        match raw {
+            None => Ok(None),
+            Some(text) => text
+                .trim()
+                .parse::<f64>()
+                .map(Some)
+                .map_err(|e| Error::Message(format!("invalid --margin-{field} `{text}`: {e}"))),
+        }
+    }
+    let cli_parts = [
+        ("cpu", parse_cli_margin("cpu", cli_cpu)?),
+        ("memory", parse_cli_margin("memory", cli_memory)?),
+        ("read", parse_cli_margin("read", cli_read)?),
+        ("write", parse_cli_margin("write", cli_write)?),
+    ];
+    let cli_any = cli_parts.iter().any(|(_, v)| v.is_some());
+
+    if cli_any {
+        let missing: Vec<&str> = cli_parts
+            .iter()
+            .filter_map(|(name, v)| if v.is_none() { Some(*name) } else { None })
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::Message(format!(
+                "CLI margin is partially set; supply all four \
+                 --margin-{{cpu,memory,read,write}} flags or none of them \
+                 (missing: {missing:?})"
+            )));
+        }
+        let cpu = cli_parts[0].1.unwrap();
+        let memory = cli_parts[1].1.unwrap();
+        let read = cli_parts[2].1.unwrap();
+        let write = cli_parts[3].1.unwrap();
+        Margin::new(cpu, memory, read, write)
+    } else {
+        match toml_margin.filter(|m| m.is_complete()) {
+            Some(m) => m.into_margin(),
+            None => Err(Error::Message(
+                "no margin supplied; pass --margin-cpu / --margin-memory / \
+                 --margin-read / --margin-write, or add a complete [margin] \
+                 section to budget.toml"
+                    .into(),
+            )),
+        }
+    }
+}
+
 fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<()> {
     let Mode::Derive(out_env, out_provenance) = Mode::from_args(args) else {
         return Err(Error::Message(
@@ -1444,60 +1507,13 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
     //    Detect missing-vs-present on the CLI side first so a partial
     //    CLI override errors out instead of falling through to the
     //    toml fallback (which would silently change behaviour).
-    fn parse_cli_margin(field: &str, raw: Option<&String>) -> Result<Option<f64>> {
-        match raw {
-            None => Ok(None),
-            Some(text) => text
-                .trim()
-                .parse::<f64>()
-                .map(Some)
-                .map_err(|e| Error::Message(format!("invalid --margin-{field} `{text}`: {e}"))),
-        }
-    }
-    let cli_parts = [
-        ("cpu", parse_cli_margin("cpu", args.margin_cpu.as_ref())?),
-        (
-            "memory",
-            parse_cli_margin("memory", args.margin_memory.as_ref())?,
-        ),
-        ("read", parse_cli_margin("read", args.margin_read.as_ref())?),
-        (
-            "write",
-            parse_cli_margin("write", args.margin_write.as_ref())?,
-        ),
-    ];
-    let cli_any = cli_parts.iter().any(|(_, v)| v.is_some());
-
-    let margin = if cli_any {
-        let missing: Vec<&str> = cli_parts
-            .iter()
-            .filter_map(|(name, v)| if v.is_none() { Some(*name) } else { None })
-            .collect();
-        if !missing.is_empty() {
-            return Err(Error::Message(format!(
-                "CLI margin is partially set; supply all four \
-                 --margin-{{cpu,memory,read,write}} flags or none of them \
-                 (missing: {missing:?})"
-            )));
-        }
-        let cpu = cli_parts[0].1.unwrap();
-        let memory = cli_parts[1].1.unwrap();
-        let read = cli_parts[2].1.unwrap();
-        let write = cli_parts[3].1.unwrap();
-        Margin::new(cpu, memory, read, write)?
-    } else {
-        match toml_config.margin.filter(|m| m.is_complete()) {
-            Some(m) => m.into_margin()?,
-            None => {
-                return Err(Error::Message(
-                    "no margin supplied; pass --margin-cpu / --margin-memory / \
-                     --margin-read / --margin-write, or add a complete [margin] \
-                     section to budget.toml"
-                        .into(),
-                ));
-            }
-        }
-    };
+    let margin = resolve_derive_margin(
+        args.margin_cpu.as_deref(),
+        args.margin_memory.as_deref(),
+        args.margin_read.as_deref(),
+        args.margin_write.as_deref(),
+        toml_config.margin,
+    )?;
 
     // 3) Lift budget.toml scenarios into the derivation config.
     let scenarios: BTreeMap<String, Vec<String>> = toml_config
@@ -1712,6 +1728,26 @@ fn normalized_argv() -> Vec<std::ffi::OsString> {
         argv.insert(1, std::ffi::OsString::from("budget-report"));
     }
     argv
+}
+
+/// Effective simulation worker count for one contract's task list (#863).
+///
+/// `--concurrency 0` parses successfully (see
+/// `test_concurrency_zero_is_accepted_at_parse_time`) and is clamped to a
+/// single sequential worker here; a value above the task count clamps down
+/// to the number of tasks so no idle worker is spawned. Never returns 0.
+pub(crate) fn worker_count(concurrency: usize, n_tasks: usize) -> usize {
+    concurrency.max(1).min(n_tasks.max(1))
+}
+
+/// Whether `--validate` runs for a simulated function (#861).
+///
+/// Replay mode serves every response from a fixture and cannot assume the
+/// `stellar xdr decode` subcommand exists, so validation is silently
+/// skipped there even when the flag is present. Pure so the run-mode
+/// branch is unit-testable without hitting the network.
+pub(crate) fn should_validate(validate: bool, replay: &Option<String>) -> bool {
+    validate && replay.is_none()
 }
 
 fn run() -> Result<i32> {
@@ -2123,7 +2159,7 @@ fn run() -> Result<i32> {
         }
 
         let concurrency = args.concurrency.max(1);
-        let workers = concurrency.min(tasks.len()).max(1);
+        let workers = worker_count(args.concurrency, tasks.len());
         if !args.quiet && !tasks.is_empty() && workers > 1 {
             eprintln!(
                 "Simulating {} functions concurrently (max {})...",
@@ -2271,7 +2307,7 @@ fn run() -> Result<i32> {
                     // -- Optional Stellar CLI validation --
                     // `--validate` shells out to `stellar xdr decode`, which
                     // replay mode cannot assume exists; skip it there.
-                    if args.validate && args.replay.is_none() {
+                    if should_validate(args.validate, &args.replay) {
                         let v_result = validate::validate_metrics(
                             &transaction_data_xdr,
                             instructions,
@@ -4256,5 +4292,197 @@ write_limit = 1000
                 "1"
             ]
         );
+    }
+}
+
+/// Regression tests for issue #860: the `--derive-limits` help must spell
+/// the function-to-scenario mapping as `[scenarios.<name>]` (table of
+/// tables, matching `BudgetToml.scenarios: HashMap<_, _>`), not
+/// `[[scenarios.<name>]]` (array of tables, which fails deserialization).
+#[cfg(test)]
+mod derive_limits_help_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn derive_limits_help_uses_table_of_tables_syntax() {
+        let help = crate::cli::args::BudgetReportArgs::command()
+            .render_long_help()
+            .to_string();
+        assert!(
+            help.contains("[scenarios.<name>]"),
+            "help should document the [scenarios.<name>] syntax, got:\n{help}"
+        );
+        assert!(
+            !help.contains("[[scenarios."),
+            "help must not document the [[scenarios.]] array syntax, got:\n{help}"
+        );
+    }
+
+    #[test]
+    fn scenarios_table_of_tables_syntax_parses_into_budget_toml() {
+        // The exact shape the corrected help text describes: a
+        // `[scenarios.<name>]` table with package + functions. A user who
+        // copies it must not hit a serde error (the old `[[...]]` spelling
+        // exits with CONFIG_ERROR before any measurement).
+        let config: BudgetToml = toml::from_str(
+            "[scenarios.full_workflow]\n\
+             package = \"amm-pool-contract\"\n\
+             functions = [\"deposit\", \"swap\", \"withdraw\"]\n",
+        )
+        .expect("the documented [scenarios.<name>] syntax must parse");
+        let scenario = config
+            .scenarios
+            .get("full_workflow")
+            .expect("scenario should be present");
+        assert_eq!(scenario.package.as_deref(), Some("amm-pool-contract"));
+        assert_eq!(scenario.functions, vec!["deposit", "swap", "withdraw"]);
+    }
+}
+
+/// Regression tests for issue #861: `--replay` silently drops `--validate`.
+#[cfg(test)]
+mod validate_replay_tests {
+    use super::*;
+
+    #[test]
+    fn validate_runs_without_replay() {
+        assert!(should_validate(true, &None));
+    }
+
+    #[test]
+    fn replay_skips_validate_even_when_flag_is_present() {
+        assert!(!should_validate(true, &Some("fixture.json".to_string())));
+    }
+
+    #[test]
+    fn no_validate_flag_means_no_validation_regardless_of_replay() {
+        assert!(!should_validate(false, &None));
+        assert!(!should_validate(false, &Some("fixture.json".to_string())));
+    }
+}
+
+/// Regression tests for issue #862: `run_derive_mode` margin-resolution
+/// error branches.
+#[cfg(test)]
+mod derive_margin_tests {
+    use super::*;
+
+    fn full_cli() -> [Option<&'static str>; 4] {
+        [Some("1.5"), Some("1.5"), Some("1.5"), Some("1.5")]
+    }
+
+    #[test]
+    fn malformed_cli_margin_value_is_a_parse_error() {
+        let err = resolve_derive_margin(
+            Some("not-a-number"),
+            Some("1.5"),
+            Some("1.5"),
+            Some("1.5"),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("invalid --margin-cpu"),
+            "should name the offending flag, got: {err}"
+        );
+    }
+
+    #[test]
+    fn partial_cli_margin_set_names_the_missing_flags() {
+        let err = resolve_derive_margin(Some("1.5"), Some("1.5"), None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("CLI margin is partially set"), "got: {err}");
+        assert!(
+            err.contains("read") && err.contains("write"),
+            "should name the missing flags, got: {err}"
+        );
+        assert!(
+            !err.contains("\"cpu\"") && !err.contains("\"memory\""),
+            "supplied flags must not be listed as missing, got: {err}"
+        );
+    }
+
+    #[test]
+    fn no_margin_at_all_is_an_error() {
+        let err = resolve_derive_margin(None, None, None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no margin supplied"), "got: {err}");
+    }
+
+    #[test]
+    fn incomplete_toml_margin_without_cli_flags_is_an_error() {
+        let toml_margin = Some(MarginToml {
+            cpu_margin: Some(1.5),
+            memory_margin: None,
+            read_margin: None,
+            write_margin: None,
+        });
+        let err = resolve_derive_margin(None, None, None, None, toml_margin)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no margin supplied"),
+            "an incomplete [margin] table is the same error as no table, got: {err}"
+        );
+    }
+
+    #[test]
+    fn complete_cli_margin_set_resolves() {
+        let [cpu, memory, read, write] = full_cli();
+        let margin = resolve_derive_margin(cpu, memory, read, write, None)
+            .expect("a complete CLI set must resolve");
+        assert!((margin.cpu - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn complete_toml_margin_resolves_without_cli_flags() {
+        let toml_margin = Some(MarginToml {
+            cpu_margin: Some(1.25),
+            memory_margin: Some(1.5),
+            read_margin: Some(2.0),
+            write_margin: Some(1.1),
+        });
+        let margin = resolve_derive_margin(None, None, None, None, toml_margin)
+            .expect("a complete [margin] table must resolve");
+        assert!((margin.cpu - 1.25).abs() < f64::EPSILON);
+        assert!((margin.memory - 1.5).abs() < f64::EPSILON);
+    }
+}
+
+/// Regression tests for issue #863: the `--concurrency 0` runtime clamp.
+#[cfg(test)]
+mod worker_count_tests {
+    use super::*;
+
+    #[test]
+    fn zero_concurrency_clamps_to_one_worker() {
+        assert_eq!(worker_count(0, 5), 1);
+    }
+
+    #[test]
+    fn one_concurrency_stays_sequential() {
+        assert_eq!(worker_count(1, 5), 1);
+    }
+
+    #[test]
+    fn workers_never_exceed_the_task_count() {
+        assert_eq!(worker_count(8, 3), 3);
+        assert_eq!(worker_count(64, 2), 2);
+    }
+
+    #[test]
+    fn workers_match_concurrency_within_bounds() {
+        assert_eq!(worker_count(4, 4), 4);
+        assert_eq!(worker_count(2, 5), 2);
+    }
+
+    #[test]
+    fn worker_count_is_never_zero() {
+        assert_eq!(worker_count(0, 0), 1);
+        assert_eq!(worker_count(3, 0), 1);
     }
 }
