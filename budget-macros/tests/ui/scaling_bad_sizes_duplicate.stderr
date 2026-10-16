@@ -1,0 +1,5 @@
+error: `sizes` must be strictly ascending with distinct values, got 10 after 10
+ --> tests/ui/scaling_bad_sizes_duplicate.rs:5:31
+  |
+5 | #[budget_scaling(sizes = [10, 10], model = linear, tolerance = 0.3)]
+  |                               ^^

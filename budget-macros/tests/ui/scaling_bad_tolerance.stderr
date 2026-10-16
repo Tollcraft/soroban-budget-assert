@@ -1,0 +1,5 @@
+error: `tolerance` must be a finite value greater than or equal to zero, got -0.5
+ --> tests/ui/scaling_bad_tolerance.rs:5:66
+  |
+5 | #[budget_scaling(sizes = [10, 100], model = linear, tolerance = -0.5)]
+  |                                                                  ^^^

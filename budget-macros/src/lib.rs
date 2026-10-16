@@ -1078,6 +1078,7 @@ fn instrument_exit_paths(
                 #(#stmts)*
 
                 let __budget_value = #tail;
+                #[allow(unreachable_code)]
                 #assertion
                 __budget_value
             }
@@ -1088,6 +1089,7 @@ fn instrument_exit_paths(
 
                 #(#stmts)*
 
+                #[allow(unreachable_code)]
                 #assertion
             }
         },
@@ -1097,11 +1099,11 @@ fn instrument_exit_paths(
         Ok(block) => block,
         Err(e) => return Some(TokenStream::from(e.into_compile_error())),
     };
-    // A body ending in `return`/`panic!` makes the trailing assertion unreachable;
-    // the paths that do reach an exit already asserted.
-    input_fn
-        .attrs
-        .push(syn::parse_quote!(#[allow(unreachable_code)]));
+    // A body ending in `return`/`panic!` makes the trailing assertion
+    // unreachable, so the `#[allow(unreachable_code)]` above sits on that
+    // trailing assertion block only. The exit paths rewritten by
+    // `ReturnRewriter` already asserted, and genuine dead code in the user
+    // body still warns.
 
     None
 }
@@ -1656,7 +1658,6 @@ pub fn budget_ledger_entries_lt(attr: TokenStream, item: TokenStream) -> TokenSt
 /// #[test]
 /// #[budget_mem_lt(env = "MAX_MEMORY_BYTES")]
 /// fn test_memory_budget_dynamic() {
-/// fn test_mem_budget_dynamic() {
 ///     let env = Env::default();
 ///     // ... setup contract client and invoke contract function ...
 /// }
@@ -1771,9 +1772,9 @@ struct ScalingConfig {
 
 impl Parse for ScalingConfig {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut sizes: Option<Vec<u32>> = None;
+        let mut sizes: Option<(Vec<(u32, Span)>, Span)> = None;
         let mut model: Option<GrowthModel> = None;
-        let mut tolerance: Option<f64> = None;
+        let mut tolerance: Option<(f64, Span)> = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -1781,24 +1782,35 @@ impl Parse for ScalingConfig {
 
             match ident.to_string().as_str() {
                 "sizes" => {
+                    // Span of the `[` token, so length errors point at the
+                    // sizes list instead of the whole attribute.
+                    let bracket_span = input.span();
                     let content;
                     syn::bracketed!(content in input);
                     let mut values = Vec::new();
                     while !content.is_empty() {
                         let lit: LitInt = content.parse()?;
-                        values.push(lit.base10_parse()?);
+                        let span = lit.span();
+                        let value: u32 = lit.base10_parse()?;
+                        values.push((value, span));
                         if !content.is_empty() {
                             let _ = content.parse::<Token![,]>();
                         }
                     }
-                    sizes = Some(values);
+                    sizes = Some((values, bracket_span));
                 }
                 "model" => {
                     model = Some(input.parse()?);
                 }
                 "tolerance" => {
+                    // Accept an optional leading `-` so a negative tolerance
+                    // reaches the range check below (with the literal's span)
+                    // instead of failing as "expected floating point literal".
+                    let neg: Option<Token![-]> = input.parse()?;
                     let lit: LitFloat = input.parse()?;
-                    tolerance = Some(lit.base10_parse()?);
+                    let span = lit.span();
+                    let value: f64 = lit.base10_parse()?;
+                    tolerance = Some((if neg.is_some() { -value } else { value }, span));
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -1816,18 +1828,50 @@ impl Parse for ScalingConfig {
             }
         }
 
-        let sizes = sizes.ok_or_else(|| input.error("missing required field `sizes`"))?;
+        let (sizes, sizes_span) =
+            sizes.ok_or_else(|| input.error("missing required field `sizes`"))?;
         if sizes.len() < 2 {
             return Err(syn::Error::new(
-                Span::call_site(),
+                sizes_span,
                 "`sizes` must contain at least two elements for ratio comparison",
+            ));
+        }
+        for (value, span) in &sizes {
+            if *value == 0 {
+                return Err(syn::Error::new(
+                    *span,
+                    "`sizes` must contain only strictly positive values, got 0",
+                ));
+            }
+        }
+        for window in sizes.windows(2) {
+            if window[1].0 <= window[0].0 {
+                return Err(syn::Error::new(
+                    window[1].1,
+                    format!(
+                        "`sizes` must be strictly ascending with distinct values, \
+                         got {} after {}",
+                        window[1].0, window[0].0
+                    ),
+                ));
+            }
+        }
+        let sizes: Vec<u32> = sizes.into_iter().map(|(value, _)| value).collect();
+        let (tolerance, tolerance_span) =
+            tolerance.ok_or_else(|| input.error("missing required field `tolerance`"))?;
+        if !(tolerance.is_finite() && tolerance >= 0.0) {
+            return Err(syn::Error::new(
+                tolerance_span,
+                format!(
+                    "`tolerance` must be a finite value greater than or equal to \
+                     zero, got {tolerance}"
+                ),
             ));
         }
         Ok(ScalingConfig {
             sizes,
             model: model.ok_or_else(|| input.error("missing required field `model`"))?,
-            tolerance: tolerance
-                .ok_or_else(|| input.error("missing required field `tolerance`"))?,
+            tolerance,
         })
     }
 }
@@ -1836,13 +1880,14 @@ fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStre
     let name = &input_fn.sig.ident;
     let body = &input_fn.block;
     let vis = &input_fn.vis;
+    let inputs = &input_fn.sig.inputs;
+    let output = &input_fn.sig.output;
 
-    // Preserve user attributes (e.g. #[should_panic]) and add #[test] if needed.
-    let mut attrs: Vec<Attribute> = input_fn.attrs.clone();
-    let has_test = attrs.iter().any(|a| a.path().is_ident("test"));
-    if !has_test {
-        attrs.push(parse_quote!(#[test]));
-    }
+    // Preserve user attributes (e.g. #[should_panic]). Do not automatically add
+    // #[test] - the user should add it if they want the function to run as a test.
+    // This allows the macro to work in both test and non-test contexts (e.g. pass
+    // fixtures that run as binaries).
+    let attrs: Vec<Attribute> = input_fn.attrs.clone();
 
     let sizes_values = &config.sizes;
     let tolerance = config.tolerance;
@@ -1873,7 +1918,7 @@ fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStre
 
     TokenStream::from(quote! {
         #(#attrs)*
-        #vis fn #name() {
+        #vis fn #name(#inputs) #output {
             const __SIZES: &[u32] = &[#(#sizes_values),*];
             const __TOLERANCE: f64 = #tolerance;
 
@@ -1884,6 +1929,7 @@ fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStre
                 let env = soroban_sdk::Env::default();
                 env.cost_estimate().budget().reset_unlimited();
 
+                let size = size;
                 #body
 
                 let __cost = env.cost_estimate().budget()
@@ -1930,6 +1976,7 @@ fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStre
 /// # Attribute syntax
 ///
 /// ```rust,ignore
+/// #[test]
 /// #[budget_scaling(
 ///     sizes = [10, 100, 1000],
 ///     model = linear,
@@ -1946,10 +1993,12 @@ fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStre
 /// | `model`     | `linear` / `quadratic` | Expected growth model. |
 /// | `tolerance` | `f64`             | Allowed relative deviation from expected ratio (e.g. `0.3` = 30 %). |
 ///
-/// The annotated function becomes a `#[test]` function.  The macro:
+/// The annotated function should be marked with `#[test]` by the user if they
+/// want it to run as a test. The macro:
 ///
 /// 1. Creates a fresh `Env` for each size.
-/// 2. Resets the budget and runs the function body.
+/// 2. Resets the budget and runs the function body (with `size` bound to the
+///    current iteration value).
 /// 3. Records `cpu_instruction_cost()`.
 /// 4. Compares consecutive (size, cost) pairs against the model.
 ///

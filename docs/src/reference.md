@@ -287,9 +287,9 @@ fn operation_scales_linearly(env: Env, size: u32) {
 
 | Field       | Type              | Description |
 |-------------|-------------------|-------------|
-| `sizes`     | `[u32; N]` (N≥2) | Input sizes to measure. |
+| `sizes`     | `[u32; N]` (N≥2, distinct, strictly positive, ascending) | Input sizes to measure. |
 | `model`     | `linear` / `quadratic` | Expected growth model. |
-| `tolerance` | `f64`             | Max allowed relative deviation (e.g. `0.3` = 30%). |
+| `tolerance` | `f64` (finite, ≥ 0; `0.0` means the observed ratio must match exactly) | Max allowed relative deviation (e.g. `0.3` = 30%). |
 
 **How it works:**
 

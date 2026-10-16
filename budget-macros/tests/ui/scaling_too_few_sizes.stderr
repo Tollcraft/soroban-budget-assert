@@ -1,0 +1,5 @@
+error: `sizes` must contain at least two elements for ratio comparison
+ --> tests/ui/scaling_too_few_sizes.rs:6:26
+  |
+6 | #[budget_scaling(sizes = [10], model = linear, tolerance = 0.3)]
+  |                          ^

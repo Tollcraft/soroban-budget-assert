@@ -1,0 +1,5 @@
+error: `sizes` must contain only strictly positive values, got 0
+ --> tests/ui/scaling_bad_sizes_zero.rs:5:27
+  |
+5 | #[budget_scaling(sizes = [0, 10], model = linear, tolerance = 0.3)]
+  |                           ^

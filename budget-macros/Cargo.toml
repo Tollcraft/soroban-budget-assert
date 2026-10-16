@@ -28,3 +28,4 @@ trybuild = "1.0"
 # file, which the issue asks for: a shrunk counterexample stays tested after
 # the run that found it.
 proptest = "1.5"
+soroban-sdk = { version = "27.0.3", features = ["testutils"] }
