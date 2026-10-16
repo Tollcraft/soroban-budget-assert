@@ -105,6 +105,18 @@ fn event_floor() -> u64 {
     1
 }
 
+/// Path resolved at runtime against the crate's working directory, which is
+/// `budget-macros/` when trybuild runs these pass tests.
+const PCT_ENV_FILE: &str = "tests/ui/support/pass_env_file.env";
+
+/// A percentage event limit resolves against the network reference:
+/// `PCT_TEST_CPU_NETWORK` is 10_000, so `pct = 25` resolves to 2_500 events.
+/// A count above the resolved limit must fail and name the percentage.
+#[budget_events_lt(pct = 25, of = env_file = PCT_ENV_FILE, env = "PCT_TEST_CPU_NETWORK")]
+fn pct_events_fails_when_over() {
+    let env = Env::new_full(0, 0, 2_600, 0, 0);
+}
+
 /// Assert that an event-budget failure contains the expected diagnostic text.
 fn assert_event_failure<F, R>(case: &str, expected: &str, f: F)
 where
@@ -157,6 +169,21 @@ fn run_failing_cases() {
         "baseline strict boundary",
         "Event count 2 exceeded limit 2 (marginal: 3 measured - 1 baseline)",
         baseline_at_limit_panics,
+    );
+    let pct_message = budget_panic(pct_events_fails_when_over).unwrap_or_else(|| {
+        panic!("percentage event limit: the event budget assertion should have failed")
+    });
+    assert!(
+        pct_message.contains("25%"),
+        "percentage event limit: failure message must contain the percentage: {pct_message}"
+    );
+    assert!(
+        pct_message.contains("2500"),
+        "percentage event limit: failure message must contain the resolved limit: {pct_message}"
+    );
+    assert!(
+        pct_message.contains("Event count 2600 exceeded limit 2500"),
+        "percentage event limit: unexpected panic message: {pct_message}"
     );
 }
 

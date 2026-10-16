@@ -1,0 +1,5 @@
+error: `env` names a limit source, not a property — use `cpu = env = …` or `mem = env = …`
+ --> tests/ui/budget_lt_env_source.rs:5:13
+  |
+5 | #[budget_lt(env = "MAX_CPU_INSTRUCTIONS")]
+  |             ^^^

@@ -156,6 +156,13 @@ fn resolve_env_file_at_expansion(path: &str) -> Option<PathBuf> {
     None
 }
 
+/// True for the four `BudgetLimit` *source* keys (`env`, `env_file`,
+/// `config`, `pct`). Shared by [`peeks_limit_source_key`] and the
+/// `BudgetSpec` unknown-key diagnostic so the two cannot drift apart.
+fn is_limit_source_key(name: &str) -> bool {
+    matches!(name, "env" | "env_file" | "config" | "pct")
+}
+
 /// True when the next tokens (optionally after a leading comma) name one of
 /// the `BudgetLimit` *source* keys.
 ///
@@ -169,12 +176,7 @@ fn peeks_limit_source_key(input: ParseStream) -> bool {
     }
     ahead
         .parse::<Ident>()
-        .map(|i| {
-            matches!(
-                i.to_string().as_str(),
-                "env" | "env_file" | "config" | "pct"
-            )
-        })
+        .map(|i| is_limit_source_key(&i.to_string()))
         .unwrap_or(false)
 }
 
@@ -479,6 +481,14 @@ impl Parse for BudgetSpec {
             } else if ident_str == "mem_baseline" {
                 mem_baseline_span = Some(ident.span());
                 spec.mem_baseline = Some(input.parse()?);
+            } else if is_limit_source_key(&ident_str) {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!(
+                        "`{ident_str}` names a limit source, not a property \
+                         — use `cpu = {ident_str} = …` or `mem = {ident_str} = …`"
+                    ),
+                ));
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -521,7 +531,7 @@ impl Parse for BudgetSpec {
 fn validate_env_vars(limit: &BudgetLimit) -> syn::Result<()> {
     match limit {
         BudgetLimit::EnvVar(var) => match std::env::var(var) {
-            Ok(value) if value.parse::<u64>().is_ok() => Ok(()),
+            Ok(value) if value.trim().parse::<u64>().is_ok() => Ok(()),
             Ok(value) => Err(syn::Error::new(
                 Span::call_site(),
                 format!("env var `{var}` has value {value:?}, which is not a valid u64"),
@@ -541,7 +551,7 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
         BudgetLimit::Int(n) => quote! { #n },
         BudgetLimit::EnvVar(var) => quote! {
             budget_env_resolve(#var)
-                .map(|s| s.parse::<u64>().unwrap_or_else(|_| {
+                .map(|s| s.trim().parse::<u64>().unwrap_or_else(|_| {
                     panic!(
                         "{}: env var {}={:?} is not a valid u64",
                         #metric_label,
@@ -1287,6 +1297,9 @@ fn generate_budget_assert(spec: BudgetSpec, mut input_fn: ItemFn, fn_label: &str
 ///   naming the variable; it never becomes an implicit "no limit".
 /// - If the environment variable is set to a string that **cannot be parsed as a `u64`**,
 ///   compilation fails with an error naming the variable and invalid value.
+///   Surrounding whitespace is trimmed before parsing, matching the `env_file`
+///   arm; other unparsable values (for example `"1000 Mbps"` or `"1_000"`)
+///   are rejected, never silently treated as "no limit".
 ///
 /// ## Limit from a `.env` File (`env_file = "PATH"` + `env = "VAR_NAME"`)
 ///
@@ -1525,13 +1538,19 @@ pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
     let cost_ident = proc_macro2::Ident::new("event_count", proc_macro2::Span::call_site());
+    let (plain, marginal) = assert_messages(
+        "Event count",
+        "local estimate, real network event counts may differ",
+        &spec.limit,
+        "",
+    );
     let assert_tokens = generate_metric_assert(
         &cost_ident,
         quote! { #env_ident.events().all().events().len() as u64 },
         &limit_expr,
         spec.baseline.as_ref(),
-        "Event count {} exceeded limit {} - local estimate, real network event counts may differ",
-        "Event count {} exceeded limit {} (marginal: {} measured - {} baseline) - local estimate, real network event counts may differ",
+        &plain,
+        &marginal,
     );
 
     let prelude = generate_prelude();
@@ -2512,6 +2531,72 @@ mod tests {
         assert!(
             err.contains("unknown property"),
             "diagnostic {err:?} should report the unknown property first"
+        );
+    }
+
+    // ── nested `pct` inside `#[budget_lt(...)]` (#869) ─────────────────────
+    //
+    // `BudgetLimit::parse` stops after `pct = N, of = …` and hands the
+    // sibling `, mem = …` back to `BudgetSpec::parse`. This pins that
+    // hand-off: a `cpu` percentage plus a literal `mem` limit in one spec.
+
+    #[test]
+    fn a_nested_pct_cpu_limit_parses_alongside_a_literal_mem_limit() {
+        let spec = parse_str::<BudgetSpec>(
+            "cpu = pct = 25, of = env_file = \"tests/ui/support/pass_env_file.env\", \
+             env = \"PCT_TEST_CPU_NETWORK\", mem = 500",
+        )
+        .expect("a nested pct cpu limit with a sibling mem limit parses");
+        assert!(
+            matches!(spec.cpu, Some(BudgetLimit::Percentage { pct: 25, .. })),
+            "cpu should be a 25% percentage limit"
+        );
+        assert!(
+            matches!(spec.mem, Some(BudgetLimit::Int(500))),
+            "mem should stay a literal limit"
+        );
+    }
+
+    // ── spec-level limit-source keys (#868) ─────────────────────────────────
+    //
+    // `env`, `env_file`, `config` and `pct` are legal one level down, so a
+    // bare `#[budget_lt(env = …)]` gets a diagnostic naming the source key
+    // and the `cpu = …` / `mem = …` form instead of the generic
+    // "unknown property".
+
+    #[test]
+    fn spec_level_limit_sources_suggest_the_metric_form() {
+        for source in [
+            "env = \"X\"",
+            "env_file = \"f\", env = \"X\"",
+            "config = \"k\"",
+            "pct = 50, of = env_file = \"f\", env = \"X\"",
+        ] {
+            let err = parse_str::<BudgetSpec>(source)
+                .err()
+                .expect("a spec-level limit source must be rejected")
+                .to_string();
+            let key = source.split_whitespace().next().expect("source has a key");
+            assert!(
+                err.contains(key),
+                "diagnostic {err:?} should name the offending key `{key}`"
+            );
+            assert!(
+                err.contains("cpu ="),
+                "diagnostic {err:?} should show the `cpu = …` form"
+            );
+        }
+    }
+
+    #[test]
+    fn a_genuinely_unknown_spec_key_still_reports_unknown_property() {
+        let err = parse_str::<BudgetSpec>("unknown_prop = 1000")
+            .err()
+            .expect("an unknown key must be rejected")
+            .to_string();
+        assert!(
+            err.contains("unknown property"),
+            "diagnostic {err:?} should keep the generic wording"
         );
     }
 }
