@@ -1,0 +1,5 @@
+error: unknown scaling property `steps`, expected `sizes`, `model`, or `tolerance`
+ --> tests/ui/scaling_unknown_property.rs:6:70
+  |
+6 | #[budget_scaling(sizes = [10, 100], model = linear, tolerance = 0.3, steps = 4)]
+  |                                                                      ^^^^^

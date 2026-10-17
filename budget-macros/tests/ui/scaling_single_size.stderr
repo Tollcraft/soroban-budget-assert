@@ -1,0 +1,7 @@
+error: `sizes` must contain at least two elements for ratio comparison
+ --> tests/ui/scaling_single_size.rs:6:1
+  |
+6 | #[budget_scaling(sizes = [10], model = linear, tolerance = 0.3)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_scaling` (in Nightly builds, run with -Z macro-backtrace for more info)
