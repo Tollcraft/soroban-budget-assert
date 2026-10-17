@@ -549,15 +549,6 @@ This is a real functional gap, not just missing prose — no flag or `budget.tom
 ### Keeping this page current
 
 The real failure mode here is drift, not the one-time gap this page used to have: a flag added to `cli/args.rs` in a future PR with no corresponding row here. [`scripts/check-cli-docs.sh`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/scripts/check-cli-docs.sh) is a CI-enforced drift check (wired into `quality.yml`) that derives every `--kebab-case` flag name from `cli/args.rs`'s `#[arg(...)]`-decorated fields and fails the build if any of them is not at least mentioned somewhere in this file. It catches a flag being completely undocumented; it cannot catch prose that is present but wrong, incomplete, or stale relative to the flag's actual behavior — that still needs human review, ideally by running the flag rather than trusting its `--help` text (see the `--color` and `--csv`/`--json`/`--html` findings above, both of which the flags' own help text does not mention).
-| Flag | Required | Meaning |
-|---|---|---|
-| `--network` | yes (flag or `budget.toml`) | Network to deploy and simulate against, e.g. `testnet` |
-| `--source` | yes (flag or `budget.toml`) | Funded identity used for deploy fees and as the simulation source |
-| `--json` | no | Emit the report as pretty-printed JSON instead of a table |
-| `--html` | no | Emit the report as a single self-contained HTML page — no external CSS, scripts, or fonts, so it renders from a `file://` URL and from a downloaded CI artifact. Rows mirror the JSON output; with `--check` each row also shows its limit and pass/fail status |
-| `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
-| `--record <PATH>` | no | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` reproduce the same report offline. Mutually exclusive with `--replay` |
-| `--replay <PATH>` | no | Replay a run from a fixture written by `--record`. The whole pipeline runs offline — no `stellar` CLI, no `curl`, no network access — and the report is byte-identical to the recorded run. Mutually exclusive with `--record` |
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
