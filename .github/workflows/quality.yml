@@ -37,6 +37,8 @@ jobs:
         # clippy/tests report success on them by never looking at them
         # (issue #451).
         run: scripts/check-module-reachability.sh
+      - name: Check CLI documentation
+        run: bash scripts/check-cli-docs.sh
       - name: Check documented compatibility pins
         run: .github/scripts/check-compatibility-docs.sh
       - name: Check for unused dependencies
