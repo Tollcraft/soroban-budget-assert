@@ -105,7 +105,7 @@ fn shell_scripts_avoid_bash_4_only_constructs() {
 }
 
 /// Lays out a scratch workspace containing one crate whose module tree is
-/// `main.rs -> used.rs`, plus a copy of the real
+/// `main.rs -> used.rs` and `src/bin/tool.rs -> src/bin/helpers/mod.rs`, plus a copy of the real
 /// `check-module-reachability.sh` at the path it expects (`scripts/`
 /// directly under the tree root).
 fn setup_scratch_tree(dir: &Path) {
@@ -113,6 +113,12 @@ fn setup_scratch_tree(dir: &Path) {
     fs::create_dir_all(&src).unwrap();
     fs::write(src.join("main.rs"), "mod used;\n\nfn main() {}\n").unwrap();
     fs::write(src.join("used.rs"), "pub fn used() {}\n").unwrap();
+
+    let bin = src.join("bin");
+    let bin_helpers = bin.join("helpers");
+    fs::create_dir_all(&bin_helpers).unwrap();
+    fs::write(bin.join("tool.rs"), "mod helpers;\n\nfn main() {}\n").unwrap();
+    fs::write(bin_helpers.join("mod.rs"), "pub fn used() {}\n").unwrap();
 
     let scratch_scripts = dir.join("scripts");
     fs::create_dir_all(&scratch_scripts).unwrap();
@@ -179,5 +185,34 @@ fn reachability_check_names_the_orphaned_module() {
     assert!(
         !stdout.contains("used.rs"),
         "a declared module must not be reported as orphaned, got: {stdout}"
+    );
+}
+
+#[test]
+fn reachability_check_names_an_orphan_under_a_bin_root() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let dir = tmp.path();
+    setup_scratch_tree(dir);
+
+    fs::write(
+        dir.join("scratch-crate")
+            .join("src")
+            .join("bin")
+            .join("helpers")
+            .join("orphan.rs"),
+        "pub fn orphan() {}\n",
+    )
+    .unwrap();
+
+    let output = run_reachability_check(dir);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        !output.status.success(),
+        "an orphan under a binary crate root should fail the check.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("orphaned: ./scratch-crate/src/bin/helpers/orphan.rs"),
+        "expected the bin submodule orphan to be named, got: {stdout}"
     );
 }

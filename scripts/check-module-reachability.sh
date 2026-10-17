@@ -79,7 +79,8 @@ declared_modules() {
         | sort -u
 }
 
-# All crate roots across the workspace: `src/main.rs` or `src/lib.rs`.
+# All crate roots across the workspace: `src/main.rs`, `src/lib.rs`, or each
+# top-level `src/bin/*.rs` binary.
 # Collected with a `read` loop rather than `mapfile`, which is a bash 4
 # builtin: macOS still ships bash 3.2 as `/bin/bash`, and CONTRIBUTING.md
 # expects this script to run there too.
@@ -88,15 +89,25 @@ while IFS= read -r crate_root; do
     [ -z "$crate_root" ] && continue
     crate_roots+=("$crate_root")
 done < <(
-    find . -type f \( -name 'main.rs' -o -name 'lib.rs' \) -path '*/src/*' \
+    find . -type f \( \
+        -name 'main.rs' -o -name 'lib.rs' -o \
+        \( -name '*.rs' -path '*/src/bin/*' -not -path '*/src/bin/*/*' \) \
+    \) -path '*/src/*' \
         -not -path './target/*' -not -path './node_modules/*' | sort
 )
 
-# Files that exist because they are separate crate roots (or independent
-# binaries) rather than modules of the root crate.
+# Files that exist because they are separate crate roots rather than modules
+# of another root crate.
 is_crate_root_file() {
     case "$1" in
-        */src/main.rs | */src/lib.rs | */src/bin/*) return 0 ;;
+        */src/main.rs | */src/lib.rs) return 0 ;;
+        */src/bin/*)
+            case "$1" in
+                */src/bin/*/*) return 1 ;;
+                *.rs) return 0 ;;
+            esac
+            return 1
+            ;;
         *) return 1 ;;
     esac
 }
