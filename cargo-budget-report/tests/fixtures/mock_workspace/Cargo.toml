@@ -6,3 +6,6 @@ members = [
     "mock_contract_renamed",
     "mock_callee",
 ]
+
+[profile.release-opt]
+inherits = "release"
