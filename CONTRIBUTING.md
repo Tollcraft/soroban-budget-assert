@@ -204,15 +204,14 @@ Please follow the styling and architectural patterns already used in the codebas
 ## Repository configuration
 
 Repository topics and branch protection are tracked in [`.github/settings.yml`](.github/settings.yml).
-The configuration uses the Probot Settings application to apply repository settings from this
-file. A repository administrator must install and authorize the Settings application for this
-repository with permission to administer repository settings, then apply the configuration from
-the default branch.
+The configuration is applied manually by a repository administrator with the Probot Settings
+application after changes are merged to `main`. The administrator must first install and authorize
+the application for this repository with permission to administer repository settings.
 
 The configuration maintains the following topics: `soroban`, `stellar`, `rust`, `blockchain`,
-`github-actions`, and `developer-tools`. The `main` branch requires the `Quality Checks` status
-check, one approving review, linear history, and resolved conversations. Force-pushes and branch
-deletions are disabled.
+`github-actions`, and `developer-tools`. The `main` branch requires the `lint` and `budget-check`
+status checks, one approving review, linear history, and resolved conversations. Force-pushes and
+branch deletions are disabled.
 
 To verify the protection settings, open a test pull request targeting `main` after applying the
 configuration. Confirm that the `Quality Checks` check is required and that merging is blocked
