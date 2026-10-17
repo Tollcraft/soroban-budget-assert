@@ -55,6 +55,14 @@ jobs:
       - name: Build
         run: cargo build -p cargo-budget-report --release --target ${{ matrix.target }}
 
+      - name: Run Platform-Sensitive Tests
+        run: |
+          # Note: Contract WASM builds and network Tier B tests require specific Linux toolchains/network sandboxing
+          # and are therefore excluded on non-Linux runners; only cargo-budget-report --lib and budget-macros
+          # are portable across all four OS targets.
+          cargo test -p cargo-budget-report --lib
+          cargo test -p budget-macros
+
       - name: Rename Artifact
         shell: bash
         run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.name }}
