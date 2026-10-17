@@ -198,15 +198,13 @@ write_limit = 1000
 ```
 
 ```bash
-# Plain text report + per-check pass/fail:
+# Plain text report + per-check pass/fail. Collects every result and exits
+# non-zero if any configured limit is breached:
 cargo budget-report --check
 
 # Same, with machine-readable JSON entries that include `limit` and `pass`
 # fields per configured function+metric:
 cargo budget-report --check --json
-
-# Exit on the first violation instead of collecting all results:
-cargo budget-report --check --fail-fast
 ```
 
 **Exit codes:**
