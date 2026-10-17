@@ -22,6 +22,8 @@ For setup on Windows (PowerShell or Git Bash), including prerequisite links, WAS
 | `budget-macros` | Proc-macro crate. `budget_cpu_lt` / `budget_mem_lt` / `budget_lt` / `budget_write_bytes_lt` rewrite a test function's block so a budget assertion against its `env` variable runs on every exit path. They all go through `instrument_exit_paths()`; `ReturnRewriter` handles the `return` cases. |
 | `cargo-budget-report` | The CLI (`cargo budget-report` subcommand). Uses `cargo_metadata` for workspace discovery, `wasmparser` for export scanning, shells out to `stellar` for deploy/invoke/XDR decode, and `tabled`/`serde_json` for output. |
 | `amm-pool-contract` | Reference contract (`do_expensive_work`) plus the integration tests that double as the research measurements. |
+| `host-function-contract` | Contract built around host-function invocations for measuring host-side costs. |
+| `bloat-contract` | Contract with intentionally bloated code paths for measuring worst-case scenarios. |
 
 `budget.toml` at the root configures the CLI for the example contract, and `.github/workflows/budget.yml` runs the Tier A tests in CI.
 
@@ -34,18 +36,23 @@ cargo build -p amm-pool-contract --release --target wasm32v1-none
 cargo test
 ```
 
-`amm-pool-contract/tests/budget_test.rs` covers the macros against the real SDK `Env` (32 `#[test]` functions total):
+`amm-pool-contract/tests/budget_test.rs` covers the macros against the real SDK `Env` (51 `#[test]` functions total):
 
-- `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics); `test_budget_wasm` asserts a 5,000,000 CPU limit via `#[budget_cpu_lt(5000000)]`.
-- `test_budget_macro_gated` — a passing assertion at the 3,500,000 CPU limit (`#[budget_cpu_lt(3500000)]`).
-- `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (1,000,000) and expects the macro's panic (`#[budget_cpu_lt(1000000)]` with `#[should_panic]`).
-- `test_budget_macro_dynamic_env` — asserts a CPU limit read from the `TEST_MAX_CPU` environment variable (`#[budget_cpu_lt(env = "TEST_MAX_CPU")]`).
-- `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` and the assertion passes unconditionally (`#[budget_cpu_lt(env = "TEST_MAX_CPU_FALLBACK")]`).
+- `test_budget_raw_rust` / `test_budget_wasm` — print raw-Rust vs. WASM local cost estimates (the source of the measured-gap figures in Mechanics); `test_budget_wasm` asserts a CPU limit read from the env-file ceiling `TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU` via `#[budget_cpu_lt(env_file = TIER_A_LIMITS_FILE, env = "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU", baseline = baseline_cpu())]`.
+- `test_budget_macro_gated` — a passing assertion at the env-file ceiling `TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU` (`#[budget_cpu_lt(env_file = TIER_A_LIMITS_FILE, env = "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU", baseline = baseline_cpu())]`).
+- `test_budget_macro_deliberate_regression` — asserts an intentionally low limit (1) and expects the macro's panic (`#[budget_cpu_lt(1)]` with `#[should_panic]`; the prior 1,000,000 ceiling stopped firing under soroban-sdk 27 so the limit was lowered, per the code comment in budget_test.rs:287-289).
+- `test_budget_macro_dynamic_env` — asserts a CPU limit of 3,000,000 with baseline subtraction (`#[budget_cpu_lt(3_000_000, baseline = baseline_cpu())]`).
+- `test_budget_macro_dynamic_env_fallback` — verifies the fallback behaviour: when the env var is unset, the limit defaults to `u64::MAX` (`18446744073709551615`) and the assertion passes unconditionally (`#[budget_cpu_lt(18446744073709551615)]`). Note: this test does not actually read an env var; it uses the literal u64::MAX to test the macro's handling of a very large limit.
 - `test_budget_macro_json_config_*` (6 tests) — the `config = "key"` limit form read from `budget.json`.
 - `test_budget_require_auth_*` (7 tests) — CPU and memory budget assertions for `require_auth` calls covering isolated calls, deposit/swap/withdraw operations, and deliberate-regression cases.
 - `test_budget_extend_ttl_*` (4 tests) — CPU and memory budget assertions for `extend_instance_ttl` calls with passing and deliberate-regression variants.
 - `test_read_bytes_budget_*` / `test_write_bytes_*` (5 tests) — ledger read-bytes budget enforcement, write-bytes budget via `#[budget_write_bytes_lt]`, and deliberate-regression fixtures.
 - `test_budget_macro_result_returning` / `test_budget_macro_result_returning_regression` / `test_budget_macro_early_return_still_asserts` — the `Result`-returning and early-`return` body shapes.
+- Macro hygiene tests (`test_macro_hygiene_*`, 3 tests) — verify the macros don't leak injected temporaries into the user's namespace.
+- Negative-control tests (`test_negative_control_*`, 4 tests) — verify the budget assertion macros fire correctly when limits are deliberately exceeded.
+- Storage read measurement (`test_storage_read_wasm_local`) — measures local WASM read-bytes cost for the storage-read gap analysis.
+- Tier A report export (`test_export_tier_a_budget_report`) — measures local Tier A WASM budget metrics and exports `current_report.json`.
+- Read-bytes budget tests (`test_read_bytes_budget_*`, 2 tests) — fixture for within-limit and deliberate-regression read-bytes budget enforcement.
 
 `budget-macros/tests/ui.rs` is a `trybuild` suite that needs no WASM and no SDK. `tests/ui/*.rs` must fail to compile, with the diagnostic pinned in the matching `.stderr` — regenerate those with `TRYBUILD=overwrite cargo test -p budget-macros`. `tests/ui/pass/*.rs` must compile *and run*: each one exercises a test-body shape against the mock `env` in `tests/ui/support/mock_env.rs` (fixed costs) and asserts which cost and limit the injected check reports, so a body shape that silently stops being checked fails there.
 
