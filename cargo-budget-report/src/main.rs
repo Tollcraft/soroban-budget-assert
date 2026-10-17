@@ -723,9 +723,17 @@ pub(crate) fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Op
     }
 }
 
-/// Emit one stub `CostReport` per metric (`CPU Instructions`, `Read Bytes`,
-/// `Write Bytes`) so that the `--check` JSON output and check summary make
-/// the failure visible per metric.
+/// The resource metrics reported for a function, including WASM size, which
+/// has no configurable `budget.toml` limit.
+const CHECK_FAILURE_METRICS: [&str; 4] = [
+    "CPU Instructions",
+    "Read Bytes",
+    "Write Bytes",
+    "WASM Bytes",
+];
+
+/// Emit one stub `CostReport` per reported metric so that a failed simulation
+/// has the same row set as a successful function in `--check` JSON output.
 ///
 /// * Metrics with a configured `*_limit` get `value: None, limit: Some(n),
 ///   pass: Some(false)` — the consumer can read the breached limit.
@@ -743,7 +751,7 @@ pub(crate) fn emit_check_failure_entries(
     function: &str,
     func_config: &FunctionConfig,
 ) {
-    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
+    for metric in CHECK_FAILURE_METRICS {
         let limit = limit_for_metric(func_config, metric);
         reports.push(CostReport {
             package: package_name.to_string(),
@@ -2828,6 +2836,28 @@ mod tests {
     use stellar_xdr::WriteXdr;
 
     const SHARED_BUDGET_TOML: &str = include_str!("../fixtures/shared_budget.toml");
+
+    #[test]
+    fn check_failure_rows_include_the_wasm_metric() {
+        let config = FunctionConfig {
+            cpu_limit: Some(100),
+            read_limit: Some(200),
+            write_limit: Some(300),
+            ..FunctionConfig::default()
+        };
+        let mut reports = Vec::new();
+
+        emit_check_failure_entries(&mut reports, "pool", "swap", &config);
+
+        let metrics: Vec<_> = reports.iter().map(|report| report.metric).collect();
+        assert_eq!(metrics.as_slice(), &CHECK_FAILURE_METRICS);
+        assert!(reports.iter().all(|report| report.value.is_none()));
+        assert!(reports.iter().all(|report| report.pass == Some(false)));
+        assert_eq!(reports[0].limit, Some(100));
+        assert_eq!(reports[1].limit, Some(200));
+        assert_eq!(reports[2].limit, Some(300));
+        assert_eq!(reports[3].limit, None);
+    }
 
     fn unique_test_path() -> PathBuf {
         let mut path = std::env::temp_dir();
