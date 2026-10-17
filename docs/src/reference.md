@@ -1,5 +1,17 @@
 # Tool Reference
 
+## Mainnet Guard
+
+The `--allow-mainnet` guard prevents accidental deployment against Stellar Mainnet. Implemented in `cargo-budget-report/src/network_guard.rs` and enforced in `src/main.rs`, the tool classifies the resolved network passphrase and refuses execution unless explicitly allowed.
+
+## Baseline Comparison Output
+
+When running with `--check-baseline`, the tool compares current network-simulated costs against the recorded snapshot and outputs regression or improvement metrics as detailed in `cargo-budget-report/src/compare.rs`.
+
+## Marginal-Cost Baseline Subtraction
+
+Marginal-cost baseline subtraction is handled directly in `budget-macros` baseline subtraction logic, subtracting recorded baseline costs to isolate incremental resource usage.
+
 ## Macros: `budget_macros`
 
 The budget macros are attribute macros that inject budget-measurement assertions
