@@ -90,6 +90,15 @@ impl Parse for StandaloneSpec {
         }
 
         input.parse::<Token![,]>()?;
+
+        // If nothing after the comma, treat as limit-only (no baseline).
+        if input.is_empty() {
+            return Ok(StandaloneSpec {
+                limit,
+                baseline: None,
+            });
+        }
+
         let ident: Ident = input.parse()?;
         if ident != "baseline" {
             return Err(syn::Error::new(
@@ -99,6 +108,10 @@ impl Parse for StandaloneSpec {
         }
         input.parse::<Token![=]>()?;
         let baseline: Expr = input.parse()?;
+
+        // Allow optional trailing comma after `baseline = …`.
+        // Consume a comma if present; ignore if absent.
+        let _ = input.parse::<Token![,]>();
 
         if !input.is_empty() {
             return Err(syn::Error::new(
@@ -338,29 +351,48 @@ impl Parse for BudgetLimit {
 
                 // Reject trailing `env` or `config` keys — they provide an
                 // absolute value and are meaningless alongside `pct`.
+                // However, if a second `pct` follows the potential `env`/`config`,
+                // do not reject it here — the duplicate pct check (either immediately
+                // above, or on a subsequent loop iteration) will catch it instead.
                 if input.peek(Token![,]) {
                     let ahead = input.fork();
                     let _ = ahead.parse::<Token![,]>();
                     if ahead.peek(Ident) {
                         let ahead_key: Ident = ahead.parse().unwrap();
                         let key_name = ahead_key.to_string();
-                        if matches!(key_name.as_str(), "env" | "config") {
-                            return Err(syn::Error::new(
-                                ahead_key.span(),
-                                format!(
-                                    "`pct` cannot be combined with `{}` \
-                             — use `pct = N, of = env_file = \"...\", env = \"...\"` instead",
-                                    key_name
-                                ),
-                            ));
+                        // If the key is `env` or `config`, check whether a second
+                        // `pct` follows it. If so, skip the rejection so the duplicate
+                        // pct check can catch it later.
+                        if key_name.as_str() == "env" || key_name.as_str() == "config" {
+                            let second_pct_ahead = ahead.fork();
+                            // Skip the comma we already consumed, then look for `pct`
+                            let _ = second_pct_ahead.parse::<Token![,]>();
+                            // Suppress clippy warning: comparing Ident to string is unavoidable here.
+                            #[allow(clippy::cmp_owned)]
+                            if second_pct_ahead.peek(Ident)
+                                && second_pct_ahead.parse::<Ident>().unwrap().to_string() == "pct"
+                            {
+                                // Second `pct` follows `env`/`config` — skip rejection
+                                // so the duplicate check below can catch it.
+                            } else {
+                                return Err(syn::Error::new(
+                                    ahead_key.span(),
+                                    format!(
+                                        "`pct` cannot be combined with `{}` \
+                                 — use `pct = N, of = env_file = \"...\", env = \"...\"` instead",
+                                        key_name
+                                    ),
+                                ));
+                            }
                         }
+                        // If the key is NOT `env` or `config`, do nothing — the
+                        // key is handled by the outer parser, not the pct rejection.
                     }
                 }
 
-                // After parsing pct (+ optional of), stop: remaining tokens
-                // belong to the caller (a sibling `baseline = …`, or the
-                // enclosing spec).
-                break;
+                // After parsing pct (+ optional of), the loop continues so that
+                // a second `pct` can be detected via the duplicate check above.
+                // Do NOT break here: let the while loop iterate again.
             } else {
                 let lit: LitStr = input.parse()?;
                 match ident_str.as_str() {
@@ -1919,6 +1951,19 @@ fn generate_scaling_assert(config: ScalingConfig, input_fn: ItemFn) -> TokenStre
                 __measurements.push((size, __cost));
             }
 
+            // Guard: ensure the body executed once per size. If the body contains
+            // `return`, `break`, or `continue` that exits the measurement loop
+            // early, `__measurements.len()` will be less than `__SIZES.len()` and
+            // the ratio checks below would have an empty range and silently pass.
+            assert!(
+                __measurements.len() == __SIZES.len(),
+                "not all sizes were measured - the body may contain `return`, `break`, \
+                 or `continue` that exits the measurement loop early; expected \
+                 {} measurements, got {}",
+                __SIZES.len(),
+                __measurements.len(),
+            );
+
             for i in 1..__measurements.len() {
                 let (__prev_s, __prev_c) = __measurements[i - 1];
                 let (__curr_s, __curr_c) = __measurements[i];
@@ -2354,6 +2399,22 @@ mod tests {
     fn a_standalone_spec_without_a_trailing_key_keeps_no_baseline() {
         let spec = parse_str::<StandaloneSpec>("1000").expect("a bare limit parses");
         assert!(spec.baseline.is_none());
+    }
+
+    #[test]
+    fn a_standalone_spec_accepts_a_trailing_comma() {
+        // A bare limit with a trailing comma should parse as limit-only.
+        let spec = parse_str::<StandaloneSpec>("1000,")
+            .expect("a limit with trailing comma parses as limit-only");
+        assert!(spec.baseline.is_none());
+    }
+
+    #[test]
+    fn a_standalone_spec_accepts_baseline_with_trailing_comma() {
+        // A limit with baseline and a trailing comma should parse successfully.
+        let spec = parse_str::<StandaloneSpec>("1000, baseline = 100,")
+            .expect("limit with baseline and trailing comma parses");
+        assert!(spec.baseline.is_some());
     }
 
     #[test]

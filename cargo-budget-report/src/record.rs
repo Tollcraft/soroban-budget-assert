@@ -25,8 +25,9 @@ use std::path::Path;
 /// Wraps any [`Transport`] and captures every response so the run can be
 /// turned into a replayable fixture with [`RecordingTransport::into_fixture`].
 ///
-/// Wired for tests today; a CLI flag to record a real run is the follow-up
-/// that makes this the production record path.
+/// Wired through `TransportKind::Recording` when `--record` is passed (see
+/// `cargo-budget-report/src/main.rs:1823`). The fixture can be replayed offline
+/// via `RecordingTransport::into_fixture()`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct RecordingTransport<T: Transport> {
     /// The transport that actually does the work; every call is forwarded.
