@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fake `cargo` binary for offline integration tests of cargo-budget-report.
+#
+# Intercepts two invocations:
+#   1. `cargo metadata --no-deps --format-version 1`
+#      -> emits canned JSON describing the mock workspace (4 cdylib packages).
+#   2. `cargo build -p <pkg> --target wasm32v1-none --profile <profile>`
+#      -> appends the full argv to `.mock_cargo_build_argv.txt` in the cwd,
+#         then copies the checked-in `exports_min.wasm` fixture into
+#         `<target_dir>/<target>/<profile>/<wasm_name>.wasm` so the real
+#         WASM-read/export-scan path in main.rs succeeds.
+
+# Determine the directory this script lives in, to locate the wasm fixture.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WASM_FIXTURE="$SCRIPT_DIR/../exports_min.wasm"
+
+# Helper: find the value of a flag that takes a single following argument.
+flag_value() {
+    local flag="$1"; shift
+    local i
+    for ((i=0; i<$#; i++)); do
+        if [[ "${!i}" == "$flag" ]]; then
+            local j=$((i + 1))
+            echo "${!j}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Helper: extract package name after `-p`.
+pkg_name() {
+    flag_value "-p" "$@"
+}
+
+if [[ " $* " == *" metadata "* ]]; then
+    # Compact single-line JSON, matching real `cargo metadata --format-version 1`.
+    cat <<'JSON'
+{"packages":[{"name":"mock-contract-a","version":"0.1.0","id":"mock-contract-a 0.1.0 (path+file:///mock/mock-contract-a)","manifest_path":"/mock/mock-contract-a/Cargo.toml","features":{},"targets":[{"name":"mock_contract_a","kind":["lib"],"crate_types":["cdylib"],"src_path":"/mock/mock-contract-a/src/lib.rs"}],"dependencies":[]},{"name":"mock-contract-b","version":"0.1.0","id":"mock-contract-b 0.1.0 (path+file:///mock/mock-contract-b)","manifest_path":"/mock/mock-contract-b/Cargo.toml","features":{},"targets":[{"name":"mock_contract_b","kind":["lib"],"crate_types":["cdylib"],"src_path":"/mock/mock-contract-b/src/lib.rs"}],"dependencies":[]},{"name":"mock-contract-renamed","version":"0.1.0","id":"mock-contract-renamed 0.1.0 (path+file:///mock/mock-contract-renamed)","manifest_path":"/mock/mock-contract-renamed/Cargo.toml","features":{},"targets":[{"name":"custom_lib_name","kind":["lib"],"crate_types":["cdylib"],"src_path":"/mock/mock-contract-renamed/src/lib.rs"}],"dependencies":[]},{"name":"mock-callee","version":"0.1.0","id":"mock-callee 0.1.0 (path+file:///mock/mock-callee)","manifest_path":"/mock/mock-callee/Cargo.toml","features":{},"targets":[{"name":"mock_callee","kind":["lib"],"crate_types":["cdylib"],"src_path":"/mock/mock-callee/src/lib.rs"}],"dependencies":[]}],"workspace_members":[],"workspace_root":".","target_directory":"target","version":1}
+JSON
+    exit 0
+fi
+
+if [[ " $* " == *" build "* ]]; then
+    # Capture full build argv for assertions (one line per invocation).
+    printf '%s\n' "$*" >> ".mock_cargo_build_argv.txt"
+
+    # Delegate to the real cargo (found on PATH excluding this directory)
+    # so the actual contract source is compiled, producing wasm with the
+    # expected export names (ping, pong, greet, do_cross_contract_work).
+    REAL_PATH="$(echo "${PATH}" | tr ':' '\n' | grep -vx "$SCRIPT_DIR" | tr '\n' ':' | sed 's/:$//')"
+    PATH="$REAL_PATH" cargo "$@"
+    exit $?
+fi
+
+echo "mock cargo: unsupported invocation: $*" >&2
+exit 1

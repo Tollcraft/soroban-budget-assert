@@ -851,4 +851,66 @@ mod tests {
             assert_eq!(m.for_metric(label), Some(expected));
         }
     }
+
+    // -- build_profile rendering in env file and provenance markdown ------
+
+    fn derivation() -> Derivation {
+        Derivation::default()
+    }
+
+    #[test]
+    fn render_env_file_emits_profile_line_for_some_profile() {
+        let out = derivation().render_env_file(
+            "test-source.json",
+            &margin(),
+            Some("release-opt"),
+            "2026-01-01T00:00:00Z",
+        );
+        assert!(
+            out.contains("Build profile of source WASM: release-opt"),
+            "env file should include profile line for Some(profile), got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_env_file_omits_profile_line_for_none() {
+        let out = derivation().render_env_file(
+            "test-source.json",
+            &margin(),
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        assert!(
+            !out.contains("Build profile of source WASM"),
+            "env file must not include profile line for None, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_provenance_markdown_emits_profile_line_for_some_profile() {
+        let out = derivation().render_provenance_markdown(
+            "test-source.json",
+            &margin(),
+            Some("release-opt"),
+            "2026-01-01T00:00:00Z",
+        );
+        assert!(
+            out.contains("- Build profile of source WASM: `release-opt`"),
+            "provenance markdown should include profile line for Some(profile), got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_provenance_markdown_omits_profile_line_for_none() {
+        let out = derivation().render_provenance_markdown(
+            "test-source.json",
+            &margin(),
+            None,
+            "2026-01-01T00:00:00Z",
+        );
+        assert!(
+            !out.contains("Build profile of source WASM"),
+            "provenance markdown must not include profile line for None, got:\n{out}"
+        );
+    }
 }
