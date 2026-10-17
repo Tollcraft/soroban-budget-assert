@@ -29,7 +29,12 @@ functions = ["deposit", "swap", "withdraw"]
 # the only function that can be invoked via `cargo budget-report` on testnet without
 # additional token contract deployments.
 #
-# Per-function limits below are enforced by `cargo budget-report --check` in CI.
+# Per-function limits below are applied when `cargo budget-report --check` is
+# run explicitly. CI does not run that mode because it simulates against a
+# network and requires a funded identity. The offline CI budget gate is the
+# Tier A macro suite in `amm-pool-contract/tests/budget_test.rs`, which reads
+# its local limits from `tier-a-limits.env`; those assertions are separate from
+# the Tier B limits below.
 # A missing `*_limit` field means that metric is reported but not enforced.
 # On a regression, the offending metric is printed as `FAIL` and the process
 # exits non-zero.
