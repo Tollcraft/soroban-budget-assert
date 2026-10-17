@@ -1033,20 +1033,45 @@ fn test_negative_control_combined_budget_mem_fires() {
 /// Negative control: Validates that disabling a test confirms the assertion
 /// machinery was the cause of failure, not an unrelated panic.
 ///
-/// This test is identical to test_negative_control_cpu_budget_assertion_fires
-/// but without #[should_panic]. It should FAIL when run, proving the budget
-/// assertion is what fires in the corresponding negative-control test.
-///
-/// Run this manually to confirm: `cargo test test_negative_control_disabled_cpu_fails -- --ignored`
-/// Expected: test FAILS with budget assertion panic (not passes).
+/// This test drives the inner body of the CPU budget assertion inside
+/// `std::panic::catch_unwind`, asserting that a panic occurred and that
+/// its payload names the CPU limit (or budget violation), running by
+/// default as a non-ignored test.
 #[test]
-#[ignore]
-#[budget_cpu_lt(500)]
 fn test_negative_control_disabled_cpu_fails() {
-    let env = Env::default();
-    let (client, user) = setup_wasm(&env);
+    use std::panic::AssertUnwindSafe;
 
-    client.require_auth_only(&user);
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        #[budget_cpu_lt(500)]
+        fn run_with_tight_limit() {
+            let env = Env::default();
+            let (client, user) = setup_wasm(&env);
+            client.require_auth_only(&user);
+        }
+        run_with_tight_limit();
+    }));
+
+    assert!(
+        result.is_err(),
+        "negative control must fail when #[should_panic] is omitted"
+    );
+
+    let err = result.unwrap_err();
+    let msg = if let Some(s) = err.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        panic!("unknown panic payload type");
+    };
+
+    assert!(
+        msg.contains(
+            "local estimate, real network cost may differ significantly in either direction"
+        ),
+        "panic message {:?} must name the budget/CPU limit violation",
+        msg
+    );
 }
 
 // ---------------------------------------------------------------------------
