@@ -883,7 +883,7 @@ Where a value can come from more than one place, this is the exact order the res
 1. The per-function override is the one place where file configuration outranks a command-line flag: during `--check-baseline`, a function's own `tolerance` beats even `--tolerance`.
 2. Margin flags are all-or-nothing: supplying any subset of the four flags is an error listing the missing ones; there is never a mix of CLI and file margins.
 
-`cargo budget-report` reads **no environment variables** as configuration input. Environment variables appear on the output side only: `--derive-limits` writes `KEY=VALUE` pairs into `tier-a-limits.env` for the Tier A test macros to consume at test time.
+`cargo budget-report` reads **no environment variables** as configuration input, with one exception: `STELLAR_SECRET_KEY` is read when the `--source-secret` flag is omitted (the value is never echoed in output). Environment variables otherwise appear on the output side only: `--derive-limits` writes `KEY=VALUE` pairs into `tier-a-limits.env` for the Tier A test macros to consume at test time.
 
 ### `functions.<name>`: per-function configuration
 
