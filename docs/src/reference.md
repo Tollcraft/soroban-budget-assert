@@ -101,7 +101,7 @@ The macro reads `budget.json` from the current working directory and looks up th
 ```
 {% endcode %}
 
-If the file does not exist, the key is missing, or the value is not a valid `u64`, the macro prints a warning and falls back to `u64::MAX` (effectively disabling the assertion). This preserves backwards compatibility — existing tests without a `budget.json` file are unaffected.
+If the file does not exist, it falls back silently to `u64::MAX` (effectively disabling the assertion) with no warning, preserving backwards compatibility for existing tests without a `budget.json` file. If the file exists but the key is missing or not a valid `u64`, the macro panics at test runtime quoting the key name.
 
 On failure the test panics with:
 ```
