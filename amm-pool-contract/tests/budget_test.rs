@@ -403,9 +403,7 @@ fn test_budget_macro_json_config_missing_key_empty_config() {
 }
 
 #[test]
-#[should_panic(
-    expected = "config key 'cpu_instructions' in budget.json must be a non-negative integer"
-)]
+#[should_panic(expected = "key 'cpu_instructions' not found in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_invalid_json() {
     let _guard = BudgetJsonGuard::create(r#"this is not valid json at all"#);
