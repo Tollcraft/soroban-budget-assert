@@ -187,11 +187,15 @@ This workspace configures both `clippy.toml` and `rustfmt.toml` at the repositor
 Most Rust-enabled editors (such as VS Code with `rust-analyzer`) automatically detect `rustfmt.toml` and `clippy.toml` at the workspace root when formatting on save. If your editor formats using a different style, ensure rust-analyzer is configured to use cargo/workspace commands (`"rust-analyzer.rustfmt.overrideCommand": ["cargo", "fmt", "--", "--config-path", "rustfmt.toml"]`).
 
 ### Pre-Push Verification Checklist
-Before submitting a pull request, run the following commands locally from the workspace root to ensure all quality gates pass:
+Before submitting a pull request, run the following commands locally from the workspace root to ensure all quality gates pass — together they reproduce every check the `Code Quality` workflow (`.github/workflows/quality.yml`) enforces on a pull request:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+scripts/check-module-reachability.sh
+.github/scripts/check-compatibility-docs.sh
+cargo install cargo-machete --version 0.6.2 --locked
+cargo machete
 ```
 
 `cargo test --workspace` works on a clean checkout: the WASM-dependent tests
