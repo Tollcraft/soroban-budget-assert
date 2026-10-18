@@ -23,8 +23,8 @@ fn repo_root() -> PathBuf {
 /// ignored). Returns key -> value.
 fn env_entries() -> Vec<(String, i64)> {
     let path = repo_root().join("tier-a-limits.env");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let text =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     let mut entries = Vec::new();
     for line in text.lines() {
         let line = line.trim();
@@ -83,7 +83,10 @@ fn documented_keys_exist_in_tier_a_env() {
         !documented.is_empty(),
         "no TIER_A__*/NETWORK__* keys found in the docs - the scanner broke"
     );
-    let missing: Vec<&String> = documented.iter().filter(|k| !shipped.contains(*k)).collect();
+    let missing: Vec<&String> = documented
+        .iter()
+        .filter(|k| !shipped.contains(*k))
+        .collect();
     assert!(
         missing.is_empty(),
         "keys named in README.md / docs/src/deriving_limits.md but absent from \
@@ -129,8 +132,8 @@ fn network_limits_are_documented_and_shipped() {
 #[test]
 fn provenance_table_matches_env_in_both_directions() {
     let path = repo_root().join("tier-a-limits.provenance.md");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let text =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
     let mut rows: BTreeSet<String> = BTreeSet::new();
     let shipped: BTreeSet<String> = env_keys()
