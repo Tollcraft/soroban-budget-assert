@@ -321,12 +321,14 @@ pub struct BudgetReportArgs {
     #[arg(long, default_value_t = false)]
     pub no_deploy_cache: bool,
 
-    /// Secret seed (`S...`) of the source account, for native deploy/submit
-    /// without the `stellar` CLI key store (#123).
+    /// Secret seed (`S...`) of the source account. The value is validated at
+    /// preflight only: native deploy/invoke that actually sign with it are not
+    /// implemented yet (tracking issue #123), and today deploy and invoke still
+    /// go through the `stellar` CLI, which must be installed.
     ///
-    /// Falls back to the `STELLAR_SECRET_KEY` environment variable. When
-    /// neither is set, deploy and invoke still go through the `stellar` CLI,
-    /// which must be installed (checked at preflight).
+    /// Falls back to the `STELLAR_SECRET_KEY` environment variable. Whether or
+    /// not the seed is provided, deploy and invoke still go through the `stellar`
+    /// CLI, which must be installed (checked at preflight).
     /// This is a secret: prefer the `STELLAR_SECRET_KEY` environment variable
     /// over the flag, which leaves the seed in shell history and in the
     /// process list. The parsed value is never echoed back in output.
