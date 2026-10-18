@@ -671,7 +671,7 @@ For a function declared in `budget.toml` whose simulation fails, an entry still 
 
 ## Configuration: `budget.toml`
 
-The CLI walks upward from the current directory looking for `budget.toml`. When the file is present at the workspace root, running `cargo budget-report` from any subdirectory (e.g. inside a member crate) still finds it. If no `budget.toml` is found in any ancestor directory the CLI falls back to its defaults (network and source must be supplied via flags).
+The CLI reads `budget.toml` relative to the current working directory. Running `cargo budget-report` from a member-crate subdirectory therefore does not find a file located only at the workspace root and uses the default configuration; provide the required network and source via flags or run the command from the directory containing `budget.toml`.
 
 {% code title="budget.toml" %}
 ```toml
