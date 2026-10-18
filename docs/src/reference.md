@@ -1127,7 +1127,7 @@ fn test_generic_with_env() {
 
 ```rust
 #[test]
-#[budget_lt(env_file = "../tier-a-limits.env", env = "TIER_A__GENERIC__LIMIT")]
+#[budget_lt(env_file = "../tier-a-limits.env", env = "TIER_A__AMM_POOL_CONTRACT__SWAP__CPU")]
 fn test_generic_from_file() {
     let env = Env::default();
     // ...
