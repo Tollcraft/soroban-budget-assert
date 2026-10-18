@@ -290,7 +290,7 @@ mod off_by_one_and_zero_length_tests {
         let long_fn = "b".repeat(256);
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, &long_pkg, &long_fn, &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         for r in &reports {
             assert_eq!(r.package.len(), 256);
             assert_eq!(r.function.len(), 256);
@@ -302,7 +302,7 @@ mod off_by_one_and_zero_length_tests {
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "päckäge", "fünctiön", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         for r in &reports {
             assert_eq!(r.package, "päckäge");
             assert_eq!(r.function, "fünctiön");
