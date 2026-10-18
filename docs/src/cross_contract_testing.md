@@ -79,7 +79,7 @@ fn test_cross_contract_raw_rust() {
 
 ### Test: WASM Mode With Budget Assertion
 
-Run the compiled WASM through `env.register_contract_wasm()` and gate with `#[budget_cpu_lt]`. The macro checks the **total** cost — including the helper contract's execution — after the call returns.
+Run the compiled WASM through `env.register()` and gate with `#[budget_cpu_lt]`. The macro checks the **total** cost — including the helper contract's execution — after the call returns.
 
 ```rust
 use budget_macros::budget_cpu_lt;
@@ -94,10 +94,8 @@ fn test_cross_contract_macro_gated() {
         "../target/wasm32v1-none/release/my_contract.wasm",
     ).expect("build the WASM first");
 
-    #[allow(deprecated)]
-    let helper_address: Address = env.register_contract_wasm(None, wasm.as_slice());
-    #[allow(deprecated)]
-    let contract_address: Address = env.register_contract_wasm(None, wasm.as_slice());
+    let helper_address: Address = env.register(wasm.as_slice(), ());
+    let contract_address: Address = env.register(wasm.as_slice(), ());
     let client = ConstantProductPoolClient::new(&env, &contract_address);
 
     env.cost_estimate().budget().reset_unlimited();
@@ -120,10 +118,8 @@ let caller_wasm = std::fs::read(
     "../target/wasm32v1-none/release/caller_contract.wasm",
 ).expect("build the caller WASM first");
 
-#[allow(deprecated)]
-let helper_address: Address = env.register_contract_wasm(None, helper_wasm.as_slice());
-#[allow(deprecated)]
-let caller_address: Address = env.register_contract_wasm(None, caller_wasm.as_slice());
+let helper_address: Address = env.register(helper_wasm.as_slice(), ());
+let caller_address: Address = env.register(caller_wasm.as_slice(), ());
 ```
 
 ## Key points
@@ -131,7 +127,7 @@ let caller_address: Address = env.register_contract_wasm(None, caller_wasm.as_sl
 {% hint style="warning" %}
 - **The budget is cumulative.** The cost measured by `env.cost_estimate().budget()` after a cross-contract call includes all sub-invocations. The macro limit must cover the **entire** call chain.
 - **`reset_unlimited()` before the call.** The default test budget caps measurement; without resetting, the assertion limit and the actual cost may not match.
-- **Use the `Address` returned by `env.register()` or `env.register_contract_wasm()` directly.** In Soroban SDK 22+, these methods return `Address` instead of `BytesN<32>`.
+- **Use the `Address` returned by `env.register()` directly.** In Soroban SDK 22+, `env.register()` returns `Address` instead of `BytesN<32>`.
 - **Both contracts must be registered.** A cross-contract call from an unregistered contract panics at test time.
 - **Set limits based on local WASM measurements.** Run the test once unlimited to see the cross-contract cost, then pin the limit ~5% above that number. See the [End-User Guide](./user_guide.md) for the full workflow.
 {% endhint %}
