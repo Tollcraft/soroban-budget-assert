@@ -188,6 +188,65 @@ fn test_write_bytes_budget() {
 }
 ```
 
+**Dynamic limit from environment variable:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(env = "MAX_WRITE_BYTES")]
+fn test_write_bytes_with_env() {
+    std::env::set_var("MAX_WRITE_BYTES", "4096");
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from `.env` file:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(
+    env_file = "../tier-a-limits.env",
+    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__WRITE"
+)]
+fn test_write_bytes_from_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limit from `budget.json`:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(config = "write_bytes")]
+fn test_write_bytes_from_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+measurement before comparison, so the *marginal* write-bytes cost is asserted.
+The subtraction saturates at 0.
+
+```rust
+#[test]
+#[budget_write_bytes_lt(4096, baseline = instantiation_floor_write_bytes())]
+fn test_marginal_write_bytes() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Failure message format:
+```
+Write bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, underestimates real network cost
+```
+and with a baseline:
+```
+Write bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
+```
+
 ### `#[budget_read_bytes_lt(N)]`
 
 Asserts that the ledger read bytes used by `env` are strictly less than `N`.
@@ -1109,162 +1168,8 @@ CPU failure is reported. The macro supports the same attribute forms as
 `env_file = "PATH"`, `config = "key"`, and `baseline = <expr>`.
 
 
-### `#[budget_write_bytes_lt(N)]` — write-bytes assertion
-
-Asserts that the ledger write bytes used by `env` are strictly less than `N`.
-Write bytes represent the total bytes written to ledger storage during contract
-execution. This macro measures the local `memory_bytes_cost` as a proxy, which
-correlates with storage serialization overhead even though the exact on-network
-write-bytes figure is only available via RPC simulation.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_write_bytes_lt;
-
-#[test]
-#[budget_write_bytes_lt(4096)]
-fn test_write_bytes_budget() {
-    let env = Env::default();
-    // ... register contract as WASM, invoke client ...
-}
-```
-
-**Dynamic limit from environment variable:**
-
-```rust
-#[test]
-#[budget_write_bytes_lt(env = "MAX_WRITE_BYTES")]
-fn test_write_bytes_with_env() {
-    std::env::set_var("MAX_WRITE_BYTES", "4096");
-    let env = Env::default();
-    // ...
-}
-```
-
-**Limit from `.env` file:**
-
-```rust
-#[test]
-#[budget_write_bytes_lt(
-    env_file = "../tier-a-limits.env",
-    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__WRITE"
-)]
-fn test_write_bytes_from_file() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Config-driven limit from `budget.json`:**
-
-```rust
-#[test]
-#[budget_write_bytes_lt(config = "write_bytes")]
-fn test_write_bytes_from_config() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
-measurement before comparison, so the *marginal* write-bytes cost is asserted.
-The subtraction saturates at 0.
-
-```rust
-#[test]
-#[budget_write_bytes_lt(4096, baseline = instantiation_floor_write_bytes())]
-fn test_marginal_write_bytes() {
-    let env = Env::default();
-    // ...
-}
-```
-
-Failure message format:
-```
-Write bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, underestimates real network cost
-```
-and with a baseline:
-```
-Write bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
-```
-
-### `#[budget_read_bytes_lt(N)]` — read-bytes assertion
-
-Asserts that the ledger read bytes used by `env` are strictly less than `N`.
-Read bytes represent the total bytes read from ledger storage during contract
-execution. This macro measures the local `memory_bytes_cost` as a proxy, which
-correlates with storage access overhead even though the exact on-network
-read-bytes figure is only available via RPC simulation.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_read_bytes_lt;
-
-#[test]
-#[budget_read_bytes_lt(4096)]
-fn test_read_bytes_budget() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Dynamic limit:**
-
-```rust
-#[test]
-#[budget_read_bytes_lt(env = "MAX_READ_BYTES")]
-fn test_read_bytes_with_env_limit() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Limit from a `.env` file:**
-
-```rust
-#[test]
-#[budget_read_bytes_lt(
-    env_file = "../tier-a-limits.env",
-    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__READ"
-)]
-fn test_read_bytes_from_file() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Config-driven limit:**
-
-```rust
-#[test]
-#[budget_read_bytes_lt(config = "read_bytes")]
-fn test_read_bytes_from_config() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Baseline subtraction** — same semantics as `budget_write_bytes_lt`:
-
-```rust
-#[test]
-#[budget_read_bytes_lt(4096, baseline = instantiation_floor_read_bytes())]
-fn test_marginal_read_bytes() {
-    let env = Env::default();
-    // ...
-}
-```
-
-Failure message format:
-```
-Read bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, underestimates real network cost
-```
-and with a baseline:
-```
-Read bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
-```
+The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are documented in the
+[Macros chapter](#macros-budget_macros) above and are not repeated in this chapter.
 
 ### Complete macro quick-reference
 
