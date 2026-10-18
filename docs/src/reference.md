@@ -903,9 +903,7 @@ The section key `<name>` must match the **exported WASM function name exactly** 
 - **Unknown keys inside a `[functions.*]` block produce a parse error** (e.g. a typo like `cpu_lmit` fails the run instead of silently doing nothing).
 - Under `--check`, a configured function whose *simulation fails* counts as a check failure even when none of its limits are set, so a broken invocation cannot masquerade as a pass.
 
-{% hint style="warning" %}
-A `[functions.<name>]` entry whose name does not match any exported function of any workspace package is **silently ignored** — no warning, no error, nothing measured. This is the file's main trap: a typo in a function name looks identical to a function you chose not to configure. Cross-check names against the export list (e.g. `stellar contract invoke --help` output or a passing report row) when limits mysteriously fail to apply.
-{% endhint %}
+A `[functions.<name>]` entry whose name does not match any exported function of any workspace package aborts the run during `budget.toml` validation (see [budget.toml schema validation](#budgettoml-schema-validation)), with a closest-match suggestion like `budget.toml validation failed: function \`do_expensive_wrk\` is configured in budget.toml but does not exist in the workspace (did you mean \`do_expensive_work\`?).`
 
 ### What happens when a listed function or package does not exist
 
@@ -914,7 +912,7 @@ Simulation is driven by what the workspace *exports*, not by what the file decla
 1. Every workspace package with a `cdylib` target is built for `wasm32` and deployed.
 2. Every exported function (excluding names starting with `_` and the `memory` export) is simulated — with its `[functions.*]` entry if one exists, without arguments otherwise.
 3. Config entries are then looked up by name. Consequences:
-   - An entry for a function absent from every package's exports is **ignored silently** (see the warning above).
+   - An entry for a function absent from every package's exports aborts the run during validation with a `did you mean` suggestion (see [budget.toml schema validation](#budgettoml-schema-validation)).
    - A package cannot be "listed" in `budget.toml` at all — there is no per-package section. Packages are discovered from `cargo metadata`, and removing or renaming a package needs no config change; renaming an exported *function*, however, orphans its entry silently.
    - Because entries are keyed by bare function name, one entry fans out to every package exporting that name.
 
