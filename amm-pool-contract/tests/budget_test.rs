@@ -361,7 +361,7 @@ fn test_budget_macro_json_config_mem_valid() {
 }
 
 #[test]
-#[should_panic(expected = "key 'non_existent_key' not found or invalid in budget.json")]
+#[should_panic(expected = "key 'non_existent_key' not found in budget.json")]
 #[budget_cpu_lt(config = "non_existent_key")]
 fn test_budget_macro_json_config_missing_key() {
     let _guard = BudgetJsonGuard::create(r#"{"some_other_key": 100}"#);
@@ -389,7 +389,7 @@ fn test_budget_macro_json_config_deliberate_regression() {
 }
 
 #[test]
-#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[should_panic(expected = "key 'cpu_instructions' not found in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_missing_key_empty_config() {
     // Empty JSON object -> requested key won't be found -> macro panics.
@@ -403,7 +403,7 @@ fn test_budget_macro_json_config_missing_key_empty_config() {
 }
 
 #[test]
-#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[should_panic(expected = "key 'cpu_instructions' not found in budget.json")]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_invalid_json() {
     let _guard = BudgetJsonGuard::create(r#"this is not valid json at all"#);
@@ -1033,20 +1033,45 @@ fn test_negative_control_combined_budget_mem_fires() {
 /// Negative control: Validates that disabling a test confirms the assertion
 /// machinery was the cause of failure, not an unrelated panic.
 ///
-/// This test is identical to test_negative_control_cpu_budget_assertion_fires
-/// but without #[should_panic]. It should FAIL when run, proving the budget
-/// assertion is what fires in the corresponding negative-control test.
-///
-/// Run this manually to confirm: `cargo test test_negative_control_disabled_cpu_fails -- --ignored`
-/// Expected: test FAILS with budget assertion panic (not passes).
+/// This test drives the inner body of the CPU budget assertion inside
+/// `std::panic::catch_unwind`, asserting that a panic occurred and that
+/// its payload names the CPU limit (or budget violation), running by
+/// default as a non-ignored test.
 #[test]
-#[ignore]
-#[budget_cpu_lt(500)]
 fn test_negative_control_disabled_cpu_fails() {
-    let env = Env::default();
-    let (client, user) = setup_wasm(&env);
+    use std::panic::AssertUnwindSafe;
 
-    client.require_auth_only(&user);
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        #[budget_cpu_lt(500)]
+        fn run_with_tight_limit() {
+            let env = Env::default();
+            let (client, user) = setup_wasm(&env);
+            client.require_auth_only(&user);
+        }
+        run_with_tight_limit();
+    }));
+
+    assert!(
+        result.is_err(),
+        "negative control must fail when #[should_panic] is omitted"
+    );
+
+    let err = result.unwrap_err();
+    let msg = if let Some(s) = err.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        panic!("unknown panic payload type");
+    };
+
+    assert!(
+        msg.contains(
+            "local estimate, real network cost may differ significantly in either direction"
+        ),
+        "panic message {:?} must name the budget/CPU limit violation",
+        msg
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,7 +1099,9 @@ fn test_budget_json_guard_drop_removes_file() {
 /// is treated as missing/invalid — macros must not silently accept a
 /// non-numeric limit.
 #[test]
-#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[should_panic(
+    expected = "config key 'cpu_instructions' in budget.json must be a non-negative integer"
+)]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_string_value_rejected() {
     // The value is a JSON string, not a number — must be rejected.
@@ -1088,7 +1115,9 @@ fn test_budget_macro_json_config_string_value_rejected() {
 /// Verifies that a `budget.json` with a null value for the requested key
 /// is treated as missing/invalid.
 #[test]
-#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[should_panic(
+    expected = "config key 'cpu_instructions' in budget.json must be a non-negative integer"
+)]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_null_value_rejected() {
     let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": null}"#);
@@ -1159,7 +1188,9 @@ fn test_baseline_helpers_match_tuple() {
 /// Verifies that a `budget.json` containing a JSON array at the requested key
 /// is rejected as invalid.
 #[test]
-#[should_panic(expected = "key 'cpu_instructions' not found or invalid in budget.json")]
+#[should_panic(
+    expected = "config key 'cpu_instructions' in budget.json must be a non-negative integer"
+)]
 #[budget_cpu_lt(config = "cpu_instructions")]
 fn test_budget_macro_json_config_array_value_rejected() {
     let _guard = BudgetJsonGuard::create(r#"{"cpu_instructions": [1, 2, 3]}"#);

@@ -318,3 +318,66 @@ fn exit_code_regression_when_baseline_is_exceeded() {
         "regression should not be reported as a generic error: {stderr}"
     );
 }
+
+// ── Issue: --profile must reach the cargo build argv ────────────────────────
+
+/// The `--profile` flag is spliced straight into the child `cargo build`
+/// argv at `src/main.rs:1990-1999`. This test asserts it actually arrives
+/// there, using the existing fake-binary / mock-workspace harness. If the
+/// `"--profile", build_profile` args are ever dropped from the build
+/// command, this test fails.
+fn read_captured_build_argv(workspace: &tempfile::TempDir) -> Vec<String> {
+    let path = workspace.path().join(".mock_cargo_build_argv.txt");
+    let content = fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "cargo build argv capture file not found at {}",
+            path.display()
+        )
+    });
+    content.lines().map(|l| l.to_string()).collect()
+}
+
+#[test]
+fn build_argv_carries_profile_when_flag_given() {
+    let workspace = setup_mock_workspace();
+
+    budget_report_cmd(workspace.path())
+        .args(BASE_ARGS)
+        .args(["--profile", "release-opt"])
+        .assert()
+        .success();
+
+    let argv = read_captured_build_argv(&workspace);
+    assert!(
+        argv.iter()
+            .any(|line| line.contains("--profile") && line.contains("release-opt")),
+        "expected at least one cargo build argv line with --profile release-opt, got: {argv:?}"
+    );
+    // Every --profile entry must be the explicit value, not the default.
+    assert!(
+        argv.iter()
+            .all(|line| !line.contains("--profile") || line.contains("release-opt")),
+        "unexpected default profile line alongside explicit profile: {argv:?}"
+    );
+}
+
+#[test]
+fn build_argv_carries_default_profile_when_flag_absent() {
+    let workspace = setup_mock_workspace();
+
+    budget_report_cmd(workspace.path())
+        .args(BASE_ARGS)
+        .assert()
+        .success();
+
+    let argv = read_captured_build_argv(&workspace);
+    assert!(
+        argv.iter()
+            .any(|line| line.contains("--profile") && line.contains("release")),
+        "expected at least one cargo build argv line with default --profile release, got: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|line| line.contains("release-opt")),
+        "release-opt should not appear when --profile was not given: {argv:?}"
+    );
+}

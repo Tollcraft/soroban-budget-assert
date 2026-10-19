@@ -389,6 +389,10 @@ pub trait CostReportable {
     /// {"function":"swap","metric":"CPU Instructions","value":250000}
     /// ```
     ///
+    /// The default implementation escapes function and metric names as JSON
+    /// strings; custom implementations are responsible for escaping their own
+    /// output.
+    ///
     /// Implementors may override this method to include additional fields
     /// such as limit and pass/fail status.
     fn to_json(&self) -> String {
@@ -397,9 +401,32 @@ pub trait CostReportable {
         let val = self.metric_value().to_string();
         let mut s = String::with_capacity(35 + func.len() + metric.len() + val.len());
         s.push_str(r#"{"function":""#);
-        s.push_str(func);
+        fn push_escaped_string(output: &mut String, value: &str) {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+
+            for character in value.chars() {
+                match character {
+                    '"' => output.push_str(r#"\""#),
+                    '\\' => output.push_str(r#"\\"#),
+                    '\u{08}' => output.push_str(r#"\b"#),
+                    '\u{0c}' => output.push_str(r#"\f"#),
+                    '\n' => output.push_str(r#"\n"#),
+                    '\r' => output.push_str(r#"\r"#),
+                    '\t' => output.push_str(r#"\t"#),
+                    control if control <= '\u{1f}' => {
+                        let code = control as u8;
+                        output.push_str(r#"\u00"#);
+                        output.push(HEX[(code >> 4) as usize] as char);
+                        output.push(HEX[(code & 0x0f) as usize] as char);
+                    }
+                    character => output.push(character),
+                }
+            }
+        }
+
+        push_escaped_string(&mut s, func);
         s.push_str(r#"","metric":""#);
-        s.push_str(metric);
+        push_escaped_string(&mut s, metric);
         s.push_str(r#"","value":"#);
         s.push_str(&val);
         s.push('}');
@@ -588,6 +615,10 @@ mod tests {
             value: 250_000,
         };
         let json = r.to_json();
+        assert_eq!(
+            json,
+            r#"{"function":"swap","metric":"CPU Instructions","value":250000}"#
+        );
         assert!(json.contains(r#""function":"swap""#));
         assert!(json.contains(r#""metric":"CPU Instructions""#));
         assert!(json.contains(r#""value":250000"#));
@@ -642,5 +673,37 @@ mod tests {
         assert!(json.contains(r#""value":2048"#));
         assert!(json.contains(r#""limit":5000"#));
         assert!(json.contains(r#""pass":true"#));
+    }
+
+    #[test]
+    fn cost_reportable_default_to_json_escapes_names() {
+        struct Row {
+            function: String,
+            metric: String,
+        }
+        impl CostReportable for Row {
+            fn function_name(&self) -> &str {
+                &self.function
+            }
+            fn metric_name(&self) -> &str {
+                &self.metric
+            }
+            fn metric_value(&self) -> u64 {
+                7
+            }
+        }
+
+        let function = "swap\"fast\\path\n\u{0001}花🌷";
+        let metric = "CPU\\Instructions\"quoted\t";
+        let row = Row {
+            function: function.into(),
+            metric: metric.into(),
+        };
+        let json = row.to_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["function"], function);
+        assert_eq!(parsed["metric"], metric);
+        assert_eq!(parsed["value"], 7);
     }
 }

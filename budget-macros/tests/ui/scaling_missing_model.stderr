@@ -1,4 +1,4 @@
-error: unexpected end of input, missing required field `model`
+error: unexpected end of input, missing required field `tolerance`
  --> tests/ui/scaling_missing_model.rs:6:1
   |
 6 | #[budget_scaling(sizes = [10, 100], tolerance = 0.3)]

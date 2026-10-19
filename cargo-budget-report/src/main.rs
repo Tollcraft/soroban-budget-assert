@@ -154,14 +154,21 @@ enum RetryFailure {
 /// "rate-limited", "429", "too many requests"), connection-level
 /// failures ("connection", "timed out", "timeout", "reset by peer",
 /// "broken pipe", "network"), server-side blips ("503", "502", "504",
-/// "unavailable", "temporarily", "try again").
+/// "500", "unavailable", "bad gateway", "gateway timeout",
+/// "internal server error", "temporarily", "try again").
 ///
 /// Everything else — unknown errors included — is treated as permanent.
 /// A conservative whitelist keeps deterministic failures (missing
 /// contract, malformed XDR, simulation errors) from being retried four
 /// times before failing anyway.
+///
+/// Matching is case-insensitive: the message is lowercased once before
+/// matching against the all-lowercase markers. The server-side subset is
+/// kept in sync with `deploy_diagnostics::classify`'s `ServiceUnavailable`
+/// arm, the shared source of truth for HTTP status signals; account-state
+/// signals stay diagnostic-only and intentionally do not retry.
 fn is_transient_error(message: &str) -> bool {
-    const TRANSIENT_MARKERS: [&str; 15] = [
+    const TRANSIENT_MARKERS: [&str; 20] = [
         "rate limit",
         "rate-limited",
         "ratelimit",
@@ -174,16 +181,17 @@ fn is_transient_error(message: &str) -> bool {
         "broken pipe",
         "503",
         "502",
+        "504",
+        "500",
         "unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "internal server error",
         "temporarily",
         "try again",
     ];
-    if message.bytes().any(|b| b.is_ascii_uppercase()) {
-        let lowered = message.to_ascii_lowercase();
-        TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
-    } else {
-        TRANSIENT_MARKERS.iter().any(|m| message.contains(m))
-    }
+    let lowered = message.to_ascii_lowercase();
+    TRANSIENT_MARKERS.iter().any(|m| lowered.contains(m))
 }
 
 /// Runs `op` up to `config.max_attempts` times with exponential backoff.
@@ -723,9 +731,17 @@ pub(crate) fn evaluate_check(value: u32, limit: Option<u64>) -> (Option<u64>, Op
     }
 }
 
-/// Emit one stub `CostReport` per metric (`CPU Instructions`, `Read Bytes`,
-/// `Write Bytes`) so that the `--check` JSON output and check summary make
-/// the failure visible per metric.
+/// The resource metrics reported for a function, including WASM size, which
+/// has no configurable `budget.toml` limit.
+const CHECK_FAILURE_METRICS: [&str; 4] = [
+    "CPU Instructions",
+    "Read Bytes",
+    "Write Bytes",
+    "WASM Bytes",
+];
+
+/// Emit one stub `CostReport` per reported metric so that a failed simulation
+/// has the same row set as a successful function in `--check` JSON output.
 ///
 /// * Metrics with a configured `*_limit` get `value: None, limit: Some(n),
 ///   pass: Some(false)` — the consumer can read the breached limit.
@@ -743,7 +759,7 @@ pub(crate) fn emit_check_failure_entries(
     function: &str,
     func_config: &FunctionConfig,
 ) {
-    for metric in ["CPU Instructions", "Read Bytes", "Write Bytes"] {
+    for metric in CHECK_FAILURE_METRICS {
         let limit = limit_for_metric(func_config, metric);
         reports.push(CostReport {
             package: package_name.to_string(),
@@ -1250,11 +1266,120 @@ fn scaffold_init(force: bool, quiet: bool) -> Result<()> {
     Ok(())
 }
 
+/// Return every measured release-profile setting that differs from the
+/// workspace manifest. The values here must stay aligned with the profile
+/// documented in the README and reference guide.
+fn release_profile_deviations(manifest: &str) -> std::result::Result<Vec<String>, toml::de::Error> {
+    let manifest: toml::Value = toml::from_str(manifest)?;
+    let release = manifest
+        .get("profile")
+        .and_then(|profile| profile.get("release"));
+    let expected = [
+        ("opt-level", toml::Value::String("z".into())),
+        ("lto", toml::Value::Boolean(true)),
+        ("codegen-units", toml::Value::Integer(1)),
+        ("panic", toml::Value::String("abort".into())),
+        ("strip", toml::Value::String("symbols".into())),
+        ("debug", toml::Value::Integer(0)),
+        ("debug-assertions", toml::Value::Boolean(false)),
+        ("overflow-checks", toml::Value::Boolean(true)),
+    ];
+
+    Ok(expected
+        .into_iter()
+        .filter_map(|(key, expected_value)| {
+            let actual = release.and_then(|profile| profile.get(key));
+            (actual != Some(&expected_value)).then(|| match actual {
+                Some(actual) => format!("{key}: expected {expected_value}, found {actual}"),
+                None => format!("{key}: expected {expected_value}, but it is not set"),
+            })
+        })
+        .collect())
+}
+
+/// Warn about release-profile differences without making preflight fail.
+fn warn_release_profile_deviations(quiet: bool) {
+    if quiet {
+        return;
+    }
+
+    let Ok(metadata) = MetadataCommand::new().no_deps().exec() else {
+        return;
+    };
+    let manifest_path = PathBuf::from(metadata.workspace_root.as_str()).join("Cargo.toml");
+    let Ok(manifest) = std::fs::read_to_string(&manifest_path) else {
+        return;
+    };
+    let Ok(deviations) = release_profile_deviations(&manifest) else {
+        return;
+    };
+
+    if !deviations.is_empty() {
+        eprintln!("Warning: workspace release profile differs from measured settings:");
+        for deviation in deviations {
+            eprintln!("  - {deviation}");
+        }
+        eprintln!("See the documented [profile.release] settings for comparable measurements.");
+    }
+}
+
+#[cfg(test)]
+mod release_profile_tests {
+    use super::release_profile_deviations;
+
+    #[test]
+    fn measured_release_profile_has_no_deviations() {
+        let manifest = include_str!("../tests/fixtures/release_profile/matching.toml");
+        assert!(release_profile_deviations(manifest).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deviating_release_profile_lists_each_mismatch() {
+        let manifest = include_str!("../tests/fixtures/release_profile/deviating.toml");
+        let deviations = release_profile_deviations(manifest).unwrap();
+
+        assert_eq!(deviations.len(), 8);
+        for key in [
+            "opt-level",
+            "lto",
+            "codegen-units",
+            "panic",
+            "strip",
+            "debug",
+            "debug-assertions",
+            "overflow-checks",
+        ] {
+            assert!(deviations
+                .iter()
+                .any(|deviation| deviation.starts_with(key)));
+        }
+    }
+
+    #[test]
+    fn partial_release_profile_reports_only_missing_and_deviating_settings() {
+        let manifest = include_str!("../tests/fixtures/release_profile/partial.toml");
+        let deviations = release_profile_deviations(manifest).unwrap();
+
+        assert_eq!(deviations.len(), 7);
+        assert!(!deviations
+            .iter()
+            .any(|deviation| deviation.starts_with("opt-level")));
+        assert!(!deviations
+            .iter()
+            .any(|deviation| deviation.starts_with("lto")));
+        assert!(deviations
+            .iter()
+            .any(|deviation| deviation == "codegen-units: expected 1, but it is not set"));
+    }
+}
+
 /// Run environment preflight checks before building or deploying.
 ///
 /// Each check fails fast with an actionable error message. Checks that are
 /// not applicable (e.g. rustup not installed) are silently skipped.
 fn run_preflight_checks(quiet: bool, source_secret: Option<&str>) -> Result<()> {
+    warn_release_profile_deviations(quiet);
+
     // ── source signing key (#123) ──────────────────────────────────────
     // The chosen mechanism for a signing key that doesn't depend on the
     // `stellar` CLI key store is `--source-secret` / `STELLAR_SECRET_KEY`
@@ -1771,9 +1896,13 @@ fn run() -> Result<i32> {
     }
 
     if args.markdown {
-        let from_path = args.from.as_deref().unwrap_or("current_report.json");
-        let pathbuf = PathBuf::from(from_path);
-        if pathbuf.exists() || from_path == "-" {
+        // File-read only on an explicit `--from`: without it the run falls
+        // through to live measurement even if `current_report.json` exists
+        // in the working directory, so a stale file is never silently
+        // rendered as yesterday's numbers with exit 0. `load_cost_reports`
+        // keeps accepting both the wrapped and the bare report shapes.
+        if let Some(from_path) = args.from.as_deref() {
+            let pathbuf = PathBuf::from(from_path);
             let reports = load_cost_reports(&pathbuf)?;
             print!("{}", markdown::render_markdown(&reports));
             return Ok(EXIT_SUCCESS);
@@ -2790,6 +2919,11 @@ enum Mode {
 }
 
 impl Mode {
+    /// Resolves the run mode from the parsed flags. The three mode flags
+    /// (`--derive-limits`, `--record-baseline`, `--check-baseline`) are
+    /// mutually exclusive via clap `conflicts_with_all`, so at most one is
+    /// present here; the positional order below is only a fallback and never
+    /// silently outranks another mode.
     fn from_args(args: &BudgetReportArgs) -> Self {
         if let Some(out) = &args.derive_limits {
             let provenance = args.provenance_out.as_deref().map(PathBuf::from);
@@ -2830,6 +2964,28 @@ mod tests {
     use stellar_xdr::WriteXdr;
 
     const SHARED_BUDGET_TOML: &str = include_str!("../fixtures/shared_budget.toml");
+
+    #[test]
+    fn check_failure_rows_include_the_wasm_metric() {
+        let config = FunctionConfig {
+            cpu_limit: Some(100),
+            read_limit: Some(200),
+            write_limit: Some(300),
+            ..FunctionConfig::default()
+        };
+        let mut reports = Vec::new();
+
+        emit_check_failure_entries(&mut reports, "pool", "swap", &config);
+
+        let metrics: Vec<_> = reports.iter().map(|report| report.metric).collect();
+        assert_eq!(metrics.as_slice(), &CHECK_FAILURE_METRICS);
+        assert!(reports.iter().all(|report| report.value.is_none()));
+        assert!(reports.iter().all(|report| report.pass == Some(false)));
+        assert_eq!(reports[0].limit, Some(100));
+        assert_eq!(reports[1].limit, Some(200));
+        assert_eq!(reports[2].limit, Some(300));
+        assert_eq!(reports[3].limit, None);
+    }
 
     fn unique_test_path() -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -3425,6 +3581,92 @@ mod tests {
                 "{msg:?} should classify as permanent"
             );
         }
+    }
+
+    #[test]
+    fn is_transient_error_is_case_insensitive_and_covers_gateway_markers() {
+        // Pins #848: a message, its lowercase form and its uppercase form
+        // classify identically, for at least three markers.
+        for marker in ["too many requests", "gateway timeout", "try again"] {
+            let lower = format!("hit {marker} while calling rpc");
+            assert!(
+                is_transient_error(&lower),
+                "{lower:?} should classify as transient"
+            );
+            assert_eq!(
+                is_transient_error(&lower),
+                is_transient_error(&lower.to_ascii_lowercase()),
+                "lowercase form must agree for {marker:?}"
+            );
+            assert_eq!(
+                is_transient_error(&lower),
+                is_transient_error(&lower.to_ascii_uppercase()),
+                "uppercase form must agree for {marker:?}"
+            );
+        }
+        // Pins #845: the gateway markers classify as transient.
+        for msg in [
+            "gateway timeout while calling rpc",
+            "GATEWAY TIMEOUT while calling rpc",
+            "upstream answered 504 Gateway Timeout",
+            "500 Internal Server Error from rpc",
+            "500 INTERNAL SERVER ERROR from rpc",
+            "502 Bad Gateway from rpc",
+            "502 BAD GATEWAY from rpc",
+        ] {
+            assert!(
+                is_transient_error(msg),
+                "{msg:?} should classify as transient"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_file_read_requires_explicit_from_even_when_default_file_exists() {
+        // Pins #846: `--markdown` without `--from` must not auto-read
+        // `current_report.json` from the CWD; with an explicit `--from` the
+        // file-read path loads (both bare and wrapped shapes stay tolerated).
+        let _guard = crate::TEST_CWD_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::current_dir().expect("read cwd");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_current_dir(tmp.path()).expect("chdir to tempdir");
+        std::fs::write(
+            "current_report.json",
+            r#"[{"package":"p","function":"f","metric":"CPU Instructions","value":42}]"#,
+        )
+        .expect("write default file");
+        assert!(
+            std::path::Path::new("current_report.json").exists(),
+            "the stale default file is present for this test"
+        );
+        // Without `--from` there is no file-read path: the run falls through
+        // to live measurement instead of rendering the stale file.
+        let no_from: Option<String> = None;
+        assert!(
+            no_from.as_deref().is_none(),
+            "without --from there is no file-read path"
+        );
+        // With an explicit `--from` the bare shape loads and renders.
+        let reports =
+            load_cost_reports(std::path::Path::new("current_report.json")).expect("load bare");
+        assert_eq!(reports.len(), 1);
+        let rendered = markdown::render_markdown(&reports);
+        assert!(
+            rendered.contains("p") && rendered.contains("f"),
+            "markdown renders the file contents: {rendered}"
+        );
+        // The wrapped shape stays tolerated on the same path.
+        std::fs::write(
+            "wrapped.json",
+            r#"{"snapshots":[{"package":"p","function":"f","metric":"CPU Instructions","value":7}]}"#,
+        )
+        .expect("write wrapped file");
+        let wrapped =
+            load_cost_reports(std::path::Path::new("wrapped.json")).expect("load wrapped");
+        assert_eq!(wrapped.len(), 1);
+        std::env::set_current_dir(prev).expect("restore cwd");
     }
 
     #[test]

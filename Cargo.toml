@@ -26,6 +26,9 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[dev-dependencies]
+serde_json = "1.0"
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true

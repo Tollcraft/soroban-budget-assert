@@ -12,3 +12,5 @@ site/dist
 current_report.json
 .soroban/
 test_snapshots/
+pr_body.md
+failed_log.txt

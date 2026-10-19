@@ -174,7 +174,7 @@ lto = true
 
 These settings are measurement inputs, not cosmetic preferences. `opt-level = "z"` and `lto = true` optimize the generated WASM for size and cross-crate inlining; `codegen-units = 1` gives LLVM a whole-program optimization view; `panic = "abort"` removes unwinding code; `strip = "symbols"` and `debug = 0` remove symbol/debug payload from the artifact; `debug-assertions = false` matches production release behavior; and `overflow-checks = true` keeps arithmetic checks explicit when the release build is measured. Changing any of them can change CPU instructions, memory usage, read/write bytes, or WASM size.
 
-Figures produced under a different release profile are different builds and are not comparable to this project's published cost figures. In the existing fixture, `do_expensive_work(10_000)` measured 901,816 local WASM CPU instructions and 756,678 testnet instructions with the size-optimized profile, but 767,049 local WASM CPU instructions and 832,006 testnet instructions with Cargo's default release profile. A follow-up worth considering is a tool warning when `cargo budget-report` runs in a workspace that lacks these settings.
+Figures produced under a different release profile are different builds and are not comparable to this project's published cost figures. In the existing fixture, `do_expensive_work(10_000)` measured 901,816 local WASM CPU instructions and 756,678 testnet instructions with the size-optimized profile, but 767,049 local WASM CPU instructions and 832,006 testnet instructions with Cargo's default release profile. Before building or measuring, `cargo budget-report` warns on stderr about every missing or different setting; `--quiet` suppresses the warning.
 
 **Enforce Regression Limits (`--check`):**
 
@@ -198,15 +198,13 @@ write_limit = 1000
 ```
 
 ```bash
-# Plain text report + per-check pass/fail:
+# Plain text report + per-check pass/fail. Collects every result and exits
+# non-zero if any configured limit is breached:
 cargo budget-report --check
 
 # Same, with machine-readable JSON entries that include `limit` and `pass`
 # fields per configured function+metric:
 cargo budget-report --check --json
-
-# Exit on the first violation instead of collecting all results:
-cargo budget-report --check --fail-fast
 ```
 
 **Exit codes:**
@@ -329,4 +327,3 @@ cargo run -p cargo-budget-report --bin generate-manpage -- cargo-budget-report.1
 ```
 
 This writes the rendered `cargo-budget-report` man page to the chosen output path.
-// Stellar Wave #494

@@ -51,7 +51,7 @@ The first block defines the vocabulary this project itself coined — tiers, mar
 - **Origin**: coined by this project
 - **Where you'll see it**: `--record-baseline` / `--check-baseline`, `budget-baseline.toml`; and the `baseline = …` argument on the budget macros
 - **What it is**: Two related but distinct things in this project:
-  - **Regression snapshot** — a TOML file of network-simulated costs per function, recorded with `cargo budget-report --record-baseline` and enforced on later runs by `--check-baseline` within a configured tolerance; a metric exceeding its allowed budget exits non-zero.
+  - **Regression snapshot** — a TOML file of network-simulated costs per function, recorded with `cargo budget-report --record-baseline` and checked via marginal-cost baseline subtraction (see [Marginal-Cost Baseline Subtraction](reference.md#marginal-cost-baseline-subtraction)) and enforced on later runs by `--check-baseline` within a configured tolerance; a metric exceeding its allowed budget exits non-zero.
   - **Marginal-cost probe** — a measurement of a deliberately minimal call (such as the example contract's `noop`), passed via the macros' `baseline` argument and subtracted from a raw local measurement so only the *marginal* cost is asserted against the limit.
   
   The snapshot pins what the network charged; the probe removes what the local VM charges before your contract logic runs.

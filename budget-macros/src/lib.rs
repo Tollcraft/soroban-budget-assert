@@ -290,6 +290,12 @@ impl Parse for BudgetLimit {
             input.parse::<Token![=]>()?;
             let ident_str = ident.to_string();
             if ident_str == "env_file" {
+                if env_file.is_some() {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "`env_file` cannot be specified more than once",
+                    ));
+                }
                 env_file_span = Some(ident.span());
                 // Accept either a string literal or an identifier/const path
                 // for env_file, so callers can write `env_file = "path"` or
@@ -397,10 +403,22 @@ impl Parse for BudgetLimit {
                 let lit: LitStr = input.parse()?;
                 match ident_str.as_str() {
                     "env" => {
+                        if env_var.is_some() {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                "`env` cannot be specified more than once",
+                            ));
+                        }
                         env_span = Some(ident.span());
                         env_var = Some(lit.value())
                     }
                     "config" => {
+                        if config_key.is_some() {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                "`config` cannot be specified more than once",
+                            ));
+                        }
                         config_span = Some(ident.span());
                         config_key = Some(lit.value())
                     }
@@ -603,9 +621,9 @@ fn generate_limit_expr(limit: &BudgetLimit, metric_label: &str) -> proc_macro2::
             std::fs::read_to_string(std::path::Path::new("budget.json"))
                 .ok()
                 .map(|content| {
-                    parse_config_value(&content, #key).unwrap_or_else(|| {
+                    parse_config_value(&content, #key, #metric_label).unwrap_or_else(|| {
                         panic!(
-                            "{}: key '{}' not found or invalid in budget.json",
+                            "{}: key '{}' not found in budget.json",
                             #metric_label,
                             #key,
                         )
@@ -1158,21 +1176,47 @@ fn generate_prelude() -> proc_macro2::TokenStream {
         };
 
         #[allow(unused_variables)]
-        let parse_config_value = |content: &str, key: &str| -> Option<u64> {
+        let parse_config_value = |content: &str, key: &str, metric_label: &str| -> Option<u64> {
             let key_pattern = format!("\"{}\"", key);
             let key_start = content.find(&key_pattern)?;
             let after_key = &content[key_start + key_pattern.len()..];
             let colon_pos = after_key.find(':')?;
-            let after_colon = after_key[colon_pos + 1..].trim();
-            let num_end = after_colon
-                .find(|c: char| !c.is_ascii_digit() && c != ',' && c != '}')
-                .unwrap_or(after_colon.len());
-            let num_str = after_colon[..num_end]
-                .trim()
-                .trim_end_matches(',')
-                .trim_end_matches('}')
-                .trim_matches('"');
-            num_str.parse().ok()
+            let raw_value = after_key[colon_pos + 1..].trim_start();
+            let value_end = if raw_value.starts_with('"') {
+                // A quoted value is invalid as a limit, but scan its complete
+                // contents so the diagnostic reports the raw JSON value.
+                let mut escaped = false;
+                raw_value
+                    .char_indices()
+                    .skip(1)
+                    .find_map(|(index, ch)| {
+                        if escaped {
+                            escaped = false;
+                        } else if ch == '\\' {
+                            escaped = true;
+                        } else if ch == '"' {
+                            return Some(index + ch.len_utf8());
+                        }
+                        None
+                    })
+                    .unwrap_or(raw_value.len())
+            } else {
+                raw_value
+                    .find(|ch: char| matches!(ch, ',' | '}' | ']'))
+                    .unwrap_or(raw_value.len())
+            };
+            let raw_value = raw_value[..value_end].trim();
+            if !raw_value.is_empty() && raw_value.bytes().all(|byte| byte.is_ascii_digit()) {
+                if let Ok(value) = raw_value.parse::<u64>() {
+                    return Some(value);
+                }
+            }
+            panic!(
+                "{}: config key '{}' in budget.json must be a non-negative integer; got {:?}",
+                metric_label,
+                key,
+                raw_value
+            );
         };
 
         #[allow(unused_variables)]
@@ -1182,7 +1226,9 @@ fn generate_prelude() -> proc_macro2::TokenStream {
                 if trimmed.is_empty() || trimmed.starts_with('#') {
                     continue;
                 }
-                let (lhs, rhs) = trimmed.split_once('=')?;
+                let Some((lhs, rhs)) = trimmed.split_once('=') else {
+                    continue;
+                };
                 if lhs.trim() == key {
                     let raw = rhs.trim();
                     // Strip inline comments ("  # provenance") that
@@ -1917,6 +1963,10 @@ impl Parse for ScalingConfig {
             }
         }
         let sizes: Vec<u32> = sizes.into_iter().map(|(value, _)| value).collect();
+        // Check `model` before `tolerance` so an attribute missing both names
+        // `model` first — the precedence pinned by the
+        // `scaling_missing_model` UI snapshot since #354.
+        let model = model.ok_or_else(|| input.error("missing required field `model`"))?;
         let (tolerance, tolerance_span) =
             tolerance.ok_or_else(|| input.error("missing required field `tolerance`"))?;
         if !(tolerance.is_finite() && tolerance >= 0.0) {
@@ -1930,7 +1980,7 @@ impl Parse for ScalingConfig {
         }
         Ok(ScalingConfig {
             sizes,
-            model: model.ok_or_else(|| input.error("missing required field `model`"))?,
+            model,
             tolerance,
         })
     }

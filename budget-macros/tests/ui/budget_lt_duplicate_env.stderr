@@ -1,0 +1,5 @@
+error: `env` cannot be specified more than once
+ --> tests/ui/budget_lt_duplicate_env.rs:3:30
+  |
+3 | #[budget_cpu_lt(env = "ONE", env = "TWO")]
+  |                              ^^^

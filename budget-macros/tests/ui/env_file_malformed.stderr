@@ -1,0 +1,7 @@
+error: failed to read env file `tests/ui/env_file_malformed.env`: invalid key-value pair
+ --> tests/ui/env_file_malformed.rs:9:1
+  |
+9 | #[budget_cpu_lt(env_file = "tests/ui/env_file_malformed.env", env = "TARGET_CPU_LIMIT")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `budget_cpu_lt` (in Nightly builds, run with -Z macro-backtrace for more info)

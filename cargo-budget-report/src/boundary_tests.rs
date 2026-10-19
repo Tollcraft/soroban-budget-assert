@@ -274,7 +274,7 @@ mod off_by_one_and_zero_length_tests {
     //
     // When a function declared in `budget.toml` fails to simulate, `--check`
     // still needs a row per metric so the failure is visible. The helper
-    // appends three stubs (CPU, Read, Write — in that order) with no measured
+    // appends four stubs (CPU, Read, Write, WASM — in that order) with no measured
     // value, each carrying its configured limit and `pass = Some(false)`.
 
     #[test]
@@ -288,7 +288,7 @@ mod off_by_one_and_zero_length_tests {
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "", "", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].package, "");
         assert_eq!(reports[0].function, "");
         assert_eq!(reports[0].limit, Some(0));
@@ -308,8 +308,8 @@ mod off_by_one_and_zero_length_tests {
         }];
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "failed_fn", &config);
-        // 1 existing + 3 failure stubs
-        assert_eq!(reports.len(), 4);
+        // 1 existing + 4 failure stubs
+        assert_eq!(reports.len(), 5);
         assert_eq!(reports[0].package, "existing");
         assert_eq!(reports[1].function, "failed_fn");
         assert_eq!(reports[2].function, "failed_fn");
@@ -333,6 +333,8 @@ mod off_by_one_and_zero_length_tests {
         assert_eq!(reports[1].limit, Some(2));
         assert_eq!(reports[2].metric, "Write Bytes");
         assert_eq!(reports[2].limit, Some(3));
+        assert_eq!(reports[3].metric, "WASM Bytes");
+        assert_eq!(reports[3].limit, None);
     }
 
     // ── scaffold_init edge case tests ──────────────────────────────────

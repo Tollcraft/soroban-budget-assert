@@ -185,3 +185,95 @@ pub fn update_balances_and_reserves_after_swap(
         .instance()
         .set(&RESERVE_B, &(reserve_b + in_b - out_b));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_shares_first_deposit_geometric_mean_floor_isqrt() {
+        // first deposit (total_shares == 0) mints floor-of-isqrt of amount_a * amount_b
+        let shares = calculate_shares(100, 400, 0, 0, 0);
+        assert_eq!(shares, 200);
+
+        // Non-exact square root tests floor truncation
+        let shares_trunc = calculate_shares(10, 10, 0, 0, 0);
+        assert_eq!(shares_trunc, 10);
+
+        let shares_non_exact = calculate_shares(10, 15, 0, 0, 0);
+        // sqrt(150) = 12.247 -> 12
+        assert_eq!(shares_non_exact, 12);
+    }
+
+    #[test]
+    fn test_calculate_shares_skewed_deposit_min_ratio() {
+        // Later deposits mint the smaller of the two proportional ratios
+        // reserve_a = 1000, reserve_b = 2000, total_shares = 500
+        // from_a = 200 * 500 / 1000 = 100
+        // from_b = 600 * 500 / 2000 = 150
+        let shares = calculate_shares(200, 600, 500, 1000, 2000);
+        assert_eq!(shares, 100);
+
+        // Skewed the other way: from_b is smaller
+        // from_a = 400 * 500 / 1000 = 200
+        // from_b = 200 * 500 / 2000 = 50
+        let shares_b_smaller = calculate_shares(400, 200, 500, 1000, 2000);
+        assert_eq!(shares_b_smaller, 50);
+    }
+
+    #[test]
+    fn type_test_calculate_shares_zero_amounts() {
+        let shares = calculate_shares(0, 0, 0, 0, 0);
+        assert_eq!(shares, 0);
+    }
+
+    #[test]
+    fn test_calculate_amount_out_fee_application_and_truncation() {
+        // out_reserve = 1000, amount_in = 100, in_reserve = 1000
+        // formula: out_reserve * amount_in / (in_reserve + amount_in)
+        // 1000 * 100 / (1000 + 100) = 100000 / 1100 = 90.9090...
+        // truncation toward zero gives 90
+        let out = calculate_amount_out(1000, 100, 1000);
+        assert_eq!(out, 90);
+
+        let out_zero = calculate_amount_out(1000, 0, 1000);
+        assert_eq!(out_zero, 0);
+    }
+
+    #[test]
+    fn test_check_slippage_passing_and_failing() {
+        assert!(check_slippage(100, 90).is_ok());
+        assert!(check_slippage(100, 100).is_ok());
+
+        let err = check_slippage(99, 100);
+        assert_eq!(err, Err(Error::SlippageExceeded));
+    }
+
+    #[test]
+    fn test_calculate_withdraw_amounts_pro_rata() {
+        // reserve_a = 1000, reserve_b = 2000, shares = 100, total_shares = 1000
+        // amount_a = 1000 * 100 / 1000 = 100
+        // amount_b = 2000 * 100 / 1000 = 200
+        let (a, b) = calculate_withdraw_amounts(1000, 2000, 100, 1000);
+        assert_eq!(a, 100);
+        assert_eq!(b, 200);
+    }
+
+    #[test]
+    fn test_check_slippage_withdraw_passing_and_failing() {
+        assert!(check_slippage_withdraw(100, 90, 200, 190).is_ok());
+        assert!(check_slippage_withdraw(100, 100, 200, 200).is_ok());
+
+        // Fails when a is below min_a
+        assert_eq!(
+            check_slippage_withdraw(99, 100, 200, 190),
+            Err(Error::SlippageExceeded)
+        );
+
+        // Fails when b is below min_b
+        assert_eq!(
+            check_slippage_withdraw(100, 90, 189, 190),
+            Err(Error::SlippageExceeded)
+        );
+    }
+}

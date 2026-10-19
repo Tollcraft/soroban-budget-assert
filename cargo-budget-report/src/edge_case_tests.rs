@@ -307,7 +307,7 @@ mod off_by_one_and_zero_length_tests {
     // ── emit_check_failure_entries edge case tests ─────────────────────
 
     #[test]
-    fn emit_check_failure_entries_emits_three_entries() {
+    fn emit_check_failure_entries_emits_all_four_metrics() {
         let mut reports = Vec::new();
         let config = FunctionConfig {
             args: vec![],
@@ -317,7 +317,7 @@ mod off_by_one_and_zero_length_tests {
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "my-pkg", "do_work", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod off_by_one_and_zero_length_tests {
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].function, "");
     }
 
@@ -353,7 +353,7 @@ mod off_by_one_and_zero_length_tests {
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "", "do_work", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         assert_eq!(reports[0].package, "");
     }
 
@@ -771,14 +771,16 @@ write_limit = 0
             tolerance: None,
         };
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
-        assert_eq!(reports.len(), 3);
-        // Must be emitted in order: CPU, Read, Write.
+        assert_eq!(reports.len(), 4);
+        // Must be emitted in order: CPU, Read, Write, WASM.
         assert_eq!(reports[0].metric, "CPU Instructions");
         assert_eq!(reports[0].limit, Some(5_000_000));
         assert_eq!(reports[1].metric, "Read Bytes");
         assert_eq!(reports[1].limit, None);
         assert_eq!(reports[2].metric, "Write Bytes");
         assert_eq!(reports[2].limit, Some(500));
+        assert_eq!(reports[3].metric, "WASM Bytes");
+        assert_eq!(reports[3].limit, None);
         // All should have pass = false.
         for r in &reports {
             assert_eq!(r.pass, Some(false));
@@ -790,7 +792,7 @@ write_limit = 0
         let mut reports = Vec::new();
         let config = FunctionConfig::default();
         emit_check_failure_entries(&mut reports, "pkg", "fn", &config);
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 4);
         for r in &reports {
             assert_eq!(r.limit, None);
             assert_eq!(r.pass, Some(false));
