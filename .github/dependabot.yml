@@ -38,6 +38,11 @@ updates:
       # group. They are deliberately NOT ignored: nothing has shown them to be
       # breaking yet. If one turns out to be, give it its own issue and its own
       # entry rather than widening this list pre-emptively.
+      #
+      # `serde` (0.1 -> 1.0) and `tabwriter` (0.6 -> 0.17) are also majors in
+      # this group. They are deliberately NOT ignored: nothing has shown them to
+      # be breaking yet. If one turns out to be, give it its own issue and its
+      # own entry rather than widening this list pre-emptively.
       - dependency-name: "wasmparser"
 
   - package-ecosystem: "github-actions"
