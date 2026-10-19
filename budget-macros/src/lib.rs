@@ -1917,6 +1917,10 @@ impl Parse for ScalingConfig {
             }
         }
         let sizes: Vec<u32> = sizes.into_iter().map(|(value, _)| value).collect();
+        // Check `model` before `tolerance` so an attribute missing both names
+        // `model` first — the precedence pinned by the
+        // `scaling_missing_model` UI snapshot since #354.
+        let model = model.ok_or_else(|| input.error("missing required field `model`"))?;
         let (tolerance, tolerance_span) =
             tolerance.ok_or_else(|| input.error("missing required field `tolerance`"))?;
         if !(tolerance.is_finite() && tolerance >= 0.0) {
@@ -1930,7 +1934,7 @@ impl Parse for ScalingConfig {
         }
         Ok(ScalingConfig {
             sizes,
-            model: model.ok_or_else(|| input.error("missing required field `model`"))?,
+            model,
             tolerance,
         })
     }
