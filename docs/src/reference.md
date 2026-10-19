@@ -200,162 +200,7 @@ fn test_write_bytes_budget() {
 }
 ```
 
-### `#[budget_events_lt(N)]`
-
-Asserts that the event count emitted by the test's `env` is strictly less than `N`.
-
-Events represent the count of contract events published during execution. This macro measures local event emission as a local proxy.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_events_lt;
-
-#[test]
-#[budget_events_lt(10)]
-fn test_events_budget() {
-    let env = Env::default();
-    // ... emit events via contract ...
-}
-```
-
-**Dynamic limit from environment variable:**
-
-```rust
-#[test]
-#[budget_events_lt(env = "MAX_EVENTS")]
-fn test_events_with_env() {
-    std::env::set_var("MAX_EVENTS", "10");
-    let env = Env::default();
-    // ...
-}
-```
-
-**Limit from `.env` file:**
-
-```rust
-#[test]
-#[budget_events_lt(
-    env_file = "../tier-a-limits.env",
-    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__EVENTS"
-)]
-fn test_events_from_file() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Config-driven limit from `budget.json`:**
-
-```rust
-#[test]
-#[budget_events_lt(config = "events")]
-fn test_events_from_config() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
-measurement before comparison, so the *marginal* events cost is asserted.
-The subtraction saturates at 0.
-
-```rust
-#[test]
-#[budget_events_lt(10, baseline = instantiation_floor_events())]
-fn test_marginal_events() {
-    let env = Env::default();
-    // ...
-}
-```
-
-Failure message format:
-```
-Event count {actual} exceeded limit {N}
-```
-and with a baseline:
-```
-Event count {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline)
-```
-
-### `#[budget_ledger_entries_lt(N)]`
-
-Asserts that the ledger entry cost count triple (read, write, total) used by `env` is strictly less than `N`.
-
-Ledger entry counts track the volume of ledger entries accessed and modified. This macro measures local tracking data as a proxy.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_ledger_entries_lt;
-
-#[test]
-#[budget_ledger_entries_lt(50)]
-fn test_ledger_entries_budget() {
-    let env = Env::default();
-    // ... access ledger entries via contract ...
-}
-```
-
-**Dynamic limit from environment variable:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(env = "MAX_LEDGER_ENTRIES")]
-fn test_ledger_entries_with_env() {
-    std::env::set_var("MAX_LEDGER_ENTRIES", "50");
-    let env = Env::default();
-    // ...
-}
-```
-
-**Limit from `.env` file:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(
-    env_file = "../tier-a-limits.env",
-    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__LEDGER_ENTRIES"
-)]
-fn test_ledger_entries_from_file() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Config-driven limit from `budget.json`:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(config = "ledger_entries")]
-fn test_ledger_entries_from_config() {
-    let env = Env::default();
-    // ...
-}
-```
-
-**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
-measurement before comparison, so the *marginal* ledger entries cost is asserted.
-The subtraction saturates at 0.
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(50, baseline = instantiation_floor_ledger_entries())]
-fn test_marginal_ledger_entries() {
-    let env = Env::default();
-    // ...
-}
-```
-
-Failure message format:
-```
-Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {N}
-```
-and with a baseline:
-```
-Ledger entry count (marginal) exceeded limit {N} (marginal: {measured} measured - {baseline} baseline)
 ### `#[budget_read_bytes_lt(N)]`
-
 Asserts that the ledger read bytes used by `env` are strictly less than `N`.
 
 Read bytes represent the total bytes read from ledger storage during contract execution. This macro measures the local `memory_bytes_cost` as a proxy, which correlates with storage access overhead even though the exact on-network read-bytes figure is only available via RPC simulation.
@@ -427,6 +272,36 @@ Read bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, und
 and with a baseline:
 ```
 Read bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
+```
+
+### `#[budget_events_lt(N)]`
+
+Asserts that the number of events emitted by `env` is strictly less than `N`.
+
+```rust
+use budget_macros::budget_events_lt;
+
+#[test]
+#[budget_events_lt(10)]
+fn test_events_budget() {
+    let env = Env::default();
+    // ...
+}
+```
+
+### `#[budget_ledger_entries_lt(N)]`
+
+Asserts that the total ledger entries read and written by `env` are strictly less than `N`.
+
+```rust
+use budget_macros::budget_ledger_entries_lt;
+
+#[test]
+#[budget_ledger_entries_lt(5)]
+fn test_ledger_entries_budget() {
+    let env = Env::default();
+    // ...
+}
 ```
 
 ### `#[budget_scaling(…)]` — growth-model assertion
@@ -732,8 +607,6 @@ The real failure mode here is drift, not the one-time gap this page used to have
 | `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
 | `--record <PATH>` | no | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` reproduce the same report offline. Mutually exclusive with `--replay` |
 | `--replay <PATH>` | no | Replay a run from a fixture written by `--record`. The whole pipeline runs offline — no `stellar` CLI, no `curl`, no network access — and the report is byte-identical to the recorded run. Mutually exclusive with `--record` |
-| `budget_events_lt` | `N`, `env`, `config`, `env_file` | Assert that the emitted event count is strictly less than `N` |
-| `budget_ledger_entries_lt` | `N`, `env`, `config`, `env_file` | Assert that the ledger entry access count triple is strictly less than `N` |
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
@@ -1302,3 +1175,137 @@ The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are do
 All macros accept the same limit sources: integer literal, `env = "VAR"`,
 `env_file = "PATH", env = "VAR"`, or `config = "key"`. The `baseline` parameter
 is available on all macros except `budget_scaling`.
+
+### `#[budget_events_lt(N)]`
+
+Asserts that the event count emitted by the test's `env` is strictly less than `N`.
+
+Events represent the count of contract events published during execution. This macro measures local event emission as a local proxy.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_events_lt;
+
+#[test]
+#[budget_events_lt(10)]
+fn test_events_budget() {
+    let env = Env::default();
+    // ... emit events via contract ...
+}
+
+**Dynamic limit from environment variable:**
+
+```rust
+#[test]
+#[budget_events_lt(env = "MAX_EVENTS")]
+fn test_events_with_env() {
+    std::env::set_var("MAX_EVENTS", "10");
+    let env = Env::default();
+    // ...
+}
+
+**Limit from `.env` file:**
+
+```rust
+#[test]
+#[budget_events_lt(
+    env_file = "../tier-a-limits.env",
+    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__EVENTS"
+)]
+fn test_events_from_file() {
+    let env = Env::default();
+    // ...
+}
+
+**Config-driven limit from `budget.json`:**
+
+```rust
+#[test]
+#[budget_events_lt(config = "events")]
+fn test_events_from_config() {
+    let env = Env::default();
+    // ...
+}
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+measurement before comparison, so the *marginal* events cost is asserted.
+The subtraction saturates at 0.
+
+```rust
+#[test]
+#[budget_events_lt(10, baseline = instantiation_floor_events())]
+fn test_marginal_events() {
+    let env = Env::default();
+    // ...
+}
+
+Event count {actual} exceeded limit {N}
+Event count {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline)
+
+### `#[budget_ledger_entries_lt(N)]`
+
+Asserts that the ledger entry cost count triple (read, write, total) used by `env` is strictly less than `N`.
+
+Ledger entry counts track the volume of ledger entries accessed and modified. This macro measures local tracking data as a proxy.
+
+**Static limit:**
+
+```rust
+use budget_macros::budget_ledger_entries_lt;
+
+#[test]
+#[budget_ledger_entries_lt(50)]
+fn test_ledger_entries_budget() {
+    let env = Env::default();
+    // ... access ledger entries via contract ...
+}
+
+**Dynamic limit from environment variable:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(env = "MAX_LEDGER_ENTRIES")]
+fn test_ledger_entries_with_env() {
+    std::env::set_var("MAX_LEDGER_ENTRIES", "50");
+    let env = Env::default();
+    // ...
+}
+
+**Limit from `.env` file:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(
+    env_file = "../tier-a-limits.env",
+    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__LEDGER_ENTRIES"
+)]
+fn test_ledger_entries_from_file() {
+    let env = Env::default();
+    // ...
+}
+
+**Config-driven limit from `budget.json`:**
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(config = "ledger_entries")]
+fn test_ledger_entries_from_config() {
+    let env = Env::default();
+    // ...
+}
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+measurement before comparison, so the *marginal* ledger entries cost is asserted.
+The subtraction saturates at 0.
+
+```rust
+#[test]
+#[budget_ledger_entries_lt(50, baseline = instantiation_floor_ledger_entries())]
+fn test_marginal_ledger_entries() {
+    let env = Env::default();
+    // ...
+}
+
+| `#[budget_events_lt(N)]` | Events emitted | `Event count` | Yes |
+| `#[budget_ledger_entries_lt(N)]` | Ledger entries (reads + writes) | `Ledger entry count` | Yes |
