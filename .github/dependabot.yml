@@ -9,39 +9,35 @@ updates:
         patterns:
           - "*"
     ignore:
-      # These four are migrations tracked as their own issues, not routine bumps.
-      # Grouping them in with everything else is what left PR #375 unmergeable, and
-      # then reproduced the same failure in PR #385: one grouped PR carrying a
-      # five-major-version `soroban-sdk` jump, a `stellar-xdr` jump that removes the
+      # The one crate below is a migration tracked as its own issue, not a routine
+      # bump. Grouping it in with everything else is what left PR #375 unmergeable,
+      # and then reproduced the same failure in PR #385: one grouped PR carrying a
+      # five-major-version `soroban-sdk` jump, a `stellar-xdr` jump that removed the
       # `curr` module `cargo-budget-report` depends on, and a `wasmparser` jump of
       # well over a hundred minor versions across which the parsing API changed.
       # When they land together a failure in any one of them cannot be attributed.
       #
-      # Bump these manually, one migration per PR, via their issues:
-      #   #382 — soroban-sdk / stellar-xdr
-      #   #383 — wasmparser
-      #
-      # REMOVE EACH ENTRY as its issue lands, so routine updates resume. While an
-      # entry is here that crate gets no automated updates at all. Security
+      # Bump manually, one migration per PR, via the issue cited on the entry,
+      # and REMOVE THE ENTRY as its issue lands, so routine updates resume. While
+      # an entry is here that crate gets no automated updates at all. Security
       # advisories ARE covered by the cargo-deny workflow (.github/workflows/
       # security.yml) which runs weekly and on every push/PR — see deny.toml.
       #
-      # `cargo_metadata` (0.18 -> 0.23) landed in #469 and was removed from this
-      # list so routine updates resume.
+      # `soroban-sdk` / `stellar-xdr` (#382) and `cargo_metadata` (0.18 -> 0.23,
+      # #469) have landed and their entries were removed, so routine updates
+      # resume for them: every workspace manifest is already on the migrated
+      # versions (`soroban-sdk` 27.0.3 in amm-pool-contract, host-function-contract
+      # and bloat-contract; `stellar-xdr` 27.0.0; `cargo_metadata` 0.23).
       #
-      # `wasmparser` (0.116 -> 0.254) landed in #383 and was removed from this
-      # list so routine updates resume. Only cargo-budget-report's direct copy
-      # moved; soroban-env-host still pins =0.116.1 transitively.
-      #
-      # `cargo_metadata` (0.18 -> 0.23) landed in #469 and was removed from this
-      # list so routine updates resume.
+      # `wasmparser` (0.116 -> 0.254) has NOT landed: cargo-budget-report's
+      # Cargo.toml still pins wasmparser = "0.116.1" and Cargo.lock resolves that
+      # single version. #383 tracks the migration; its entry stays below until
+      # that PR lands the bump, at which point the entry is removed with it.
       #
       # `toml` (0.8 -> 1.1) and `tabled` (0.14 -> 0.21) are also majors in this
       # group. They are deliberately NOT ignored: nothing has shown them to be
       # breaking yet. If one turns out to be, give it its own issue and its own
       # entry rather than widening this list pre-emptively.
-      - dependency-name: "soroban-sdk"
-      - dependency-name: "stellar-xdr"
       - dependency-name: "wasmparser"
 
   - package-ecosystem: "github-actions"
