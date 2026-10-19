@@ -200,7 +200,67 @@ fn test_write_bytes_budget() {
 }
 ```
 
+**Dynamic limit from environment variable:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(env = "MAX_WRITE_BYTES")]
+fn test_write_bytes_with_env() {
+    std::env::set_var("MAX_WRITE_BYTES", "4096");
+    let env = Env::default();
+    // ...
+}
+```
+
+**Limit from `.env` file:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(
+    env_file = "../tier-a-limits.env",
+    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__WRITE"
+)]
+fn test_write_bytes_from_file() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Config-driven limit from `budget.json`:**
+
+```rust
+#[test]
+#[budget_write_bytes_lt(config = "write_bytes")]
+fn test_write_bytes_from_config() {
+    let env = Env::default();
+    // ...
+}
+```
+
+**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
+measurement before comparison, so the *marginal* write-bytes cost is asserted.
+The subtraction saturates at 0.
+
+```rust
+#[test]
+#[budget_write_bytes_lt(4096, baseline = instantiation_floor_write_bytes())]
+fn test_marginal_write_bytes() {
+    let env = Env::default();
+    // ...
+}
+```
+
+Failure message format:
+```
+Write bytes cost (memory proxy) {actual} exceeded limit {N} - local estimate, underestimates real network cost
+```
+and with a baseline:
+```
+Write bytes cost (memory proxy) {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline) - local estimate, underestimates real network cost
+```
+
 ### `#[budget_read_bytes_lt(N)]`
+
 Asserts that the ledger read bytes used by `env` are strictly less than `N`.
 
 Read bytes represent the total bytes read from ledger storage during contract execution. This macro measures the local `memory_bytes_cost` as a proxy, which correlates with storage access overhead even though the exact on-network read-bytes figure is only available via RPC simulation.
@@ -597,16 +657,6 @@ This is a real functional gap, not just missing prose — no flag or `budget.tom
 ### Keeping this page current
 
 The real failure mode here is drift, not the one-time gap this page used to have: a flag added to `cli/args.rs` in a future PR with no corresponding row here. [`scripts/check-cli-docs.sh`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/scripts/check-cli-docs.sh) is a CI-enforced drift check (wired into `quality.yml`) that derives every `--kebab-case` flag name from `cli/args.rs`'s `#[arg(...)]`-decorated fields and fails the build if any of them is not at least mentioned somewhere in this file. It catches a flag being completely undocumented; it cannot catch prose that is present but wrong, incomplete, or stale relative to the flag's actual behavior — that still needs human review, ideally by running the flag rather than trusting its `--help` text (see the `--color` and `--csv`/`--json`/`--html` findings above, both of which the flags' own help text does not mention).
-| Flag | Required | Meaning |
-|---|---|---|
-| `--network` | yes (flag or `budget.toml`) | Network to deploy and simulate against, e.g. `testnet` |
-| `--source` | yes (flag or `budget.toml`) | Funded identity used for deploy fees and as the simulation source |
-| `--csv` | no | Emit the report as comma-separated values instead of a table |
-| `--json` | no | Emit the report as pretty-printed JSON instead of a table |
-| `--html` | no | Emit the report as a single self-contained HTML page — no external CSS, scripts, or fonts, so it renders from a `file://` URL and from a downloaded CI artifact. Rows mirror the JSON output; with `--check` each row also shows its limit and pass/fail status |
-| `--check` | no | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation |
-| `--record <PATH>` | no | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` reproduce the same report offline. Mutually exclusive with `--replay` |
-| `--replay <PATH>` | no | Replay a run from a fixture written by `--record`. The whole pipeline runs offline — no `stellar` CLI, no `curl`, no network access — and the report is byte-identical to the recorded run. Mutually exclusive with `--record` |
 
 Configuration precedence: a CLI flag overrides the `budget.toml` value. If neither provides `network`/`source`, the command exits with an error naming the missing field.
 
@@ -1175,137 +1225,3 @@ The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are do
 All macros accept the same limit sources: integer literal, `env = "VAR"`,
 `env_file = "PATH", env = "VAR"`, or `config = "key"`. The `baseline` parameter
 is available on all macros except `budget_scaling`.
-
-### `#[budget_events_lt(N)]`
-
-Asserts that the event count emitted by the test's `env` is strictly less than `N`.
-
-Events represent the count of contract events published during execution. This macro measures local event emission as a local proxy.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_events_lt;
-
-#[test]
-#[budget_events_lt(10)]
-fn test_events_budget() {
-    let env = Env::default();
-    // ... emit events via contract ...
-}
-
-**Dynamic limit from environment variable:**
-
-```rust
-#[test]
-#[budget_events_lt(env = "MAX_EVENTS")]
-fn test_events_with_env() {
-    std::env::set_var("MAX_EVENTS", "10");
-    let env = Env::default();
-    // ...
-}
-
-**Limit from `.env` file:**
-
-```rust
-#[test]
-#[budget_events_lt(
-    env_file = "../tier-a-limits.env",
-    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__EVENTS"
-)]
-fn test_events_from_file() {
-    let env = Env::default();
-    // ...
-}
-
-**Config-driven limit from `budget.json`:**
-
-```rust
-#[test]
-#[budget_events_lt(config = "events")]
-fn test_events_from_config() {
-    let env = Env::default();
-    // ...
-}
-
-**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
-measurement before comparison, so the *marginal* events cost is asserted.
-The subtraction saturates at 0.
-
-```rust
-#[test]
-#[budget_events_lt(10, baseline = instantiation_floor_events())]
-fn test_marginal_events() {
-    let env = Env::default();
-    // ...
-}
-
-Event count {actual} exceeded limit {N}
-Event count {marginal} exceeded limit {N} (marginal: {measured} measured - {baseline} baseline)
-
-### `#[budget_ledger_entries_lt(N)]`
-
-Asserts that the ledger entry cost count triple (read, write, total) used by `env` is strictly less than `N`.
-
-Ledger entry counts track the volume of ledger entries accessed and modified. This macro measures local tracking data as a proxy.
-
-**Static limit:**
-
-```rust
-use budget_macros::budget_ledger_entries_lt;
-
-#[test]
-#[budget_ledger_entries_lt(50)]
-fn test_ledger_entries_budget() {
-    let env = Env::default();
-    // ... access ledger entries via contract ...
-}
-
-**Dynamic limit from environment variable:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(env = "MAX_LEDGER_ENTRIES")]
-fn test_ledger_entries_with_env() {
-    std::env::set_var("MAX_LEDGER_ENTRIES", "50");
-    let env = Env::default();
-    // ...
-}
-
-**Limit from `.env` file:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(
-    env_file = "../tier-a-limits.env",
-    env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__LEDGER_ENTRIES"
-)]
-fn test_ledger_entries_from_file() {
-    let env = Env::default();
-    // ...
-}
-
-**Config-driven limit from `budget.json`:**
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(config = "ledger_entries")]
-fn test_ledger_entries_from_config() {
-    let env = Env::default();
-    // ...
-}
-
-**Baseline subtraction** — `baseline = <expr>` subtracts a fixed floor from the
-measurement before comparison, so the *marginal* ledger entries cost is asserted.
-The subtraction saturates at 0.
-
-```rust
-#[test]
-#[budget_ledger_entries_lt(50, baseline = instantiation_floor_ledger_entries())]
-fn test_marginal_ledger_entries() {
-    let env = Env::default();
-    // ...
-}
-
-| `#[budget_events_lt(N)]` | Events emitted | `Event count` | Yes |
-| `#[budget_ledger_entries_lt(N)]` | Ledger entries (reads + writes) | `Ledger entry count` | Yes |
