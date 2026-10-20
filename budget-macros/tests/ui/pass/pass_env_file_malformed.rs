@@ -1,7 +1,10 @@
+//! Pass fixture: since #952 a malformed env-file line is skipped instead of
+//! aborting the lookup, so the valid `TARGET_CPU_LIMIT` line still resolves.
+
 #[allow(unused_imports)]
 use budget_macros::budget_cpu_lt;
 
-#[path = "support/mock_env.rs"]
+#[path = "../support/mock_env.rs"]
 mod mock_env;
 
 #[test]

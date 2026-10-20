@@ -1,6 +1,5 @@
 error: `config` cannot be specified more than once
- --> tests/ui/budget_lt_duplicate_config.rs:3:35
+ --> tests/ui/budget_lt_duplicate_config.rs:5:35
   |
-3 | #[budget_cpu_lt(config = "first", config = "second")]
+5 | #[budget_cpu_lt(config = "first", config = "second")]
   |                                   ^^^^^^
-

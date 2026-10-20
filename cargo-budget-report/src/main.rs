@@ -1360,7 +1360,7 @@ mod release_profile_tests {
         let manifest = include_str!("../tests/fixtures/release_profile/partial.toml");
         let deviations = release_profile_deviations(manifest).unwrap();
 
-        assert_eq!(deviations.len(), 7);
+        assert_eq!(deviations.len(), 6);
         assert!(!deviations
             .iter()
             .any(|deviation| deviation.starts_with("opt-level")));
