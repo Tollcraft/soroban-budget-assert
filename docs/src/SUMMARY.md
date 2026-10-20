@@ -12,6 +12,7 @@
 ## Guides & Tutorials
 - [Deriving Limits](deriving_limits.md)
 - [CI Tutorial](ci_tutorial.md)
+- [CI/CD Integration](ci_cd_integration.md)
 - [Cross-Contract Testing](cross_contract_testing.md)
 - [Adding a New Cost Metric](adding_a_metric.md)
 
