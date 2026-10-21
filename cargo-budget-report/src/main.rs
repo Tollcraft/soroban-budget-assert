@@ -3007,7 +3007,6 @@ fn run() -> Result<i32> {
 
 mod config;
 mod limit_checks;
-mod url_checks;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
