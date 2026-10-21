@@ -1134,19 +1134,22 @@ Effects of this file:
 - If `amm-pool-contract` were renamed tomorrow, every section above would keep working unchanged except `[scenarios.full_workflow]`, whose `package` value must match the annotation used by Tier A tests.
 - If `initialize` had been misspelled (e.g. `[functions.initialise]`), nothing would error and nothing would fail: the orphaned entry would be ignored, `initialize` would run unconfigured with no arguments, and none of its metrics would be enforced — the only symptom is missing rows in a later report.
 
-### `#[budget_lt(N)]`
+### `#[budget_lt(...)]`
 
-Generic budget assertion — asserts that **both** CPU instruction cost **and**
-memory bytes cost are strictly less than `N`. This macro is a convenience
-shorthand when you want a single ceiling covering both metrics.
+Asserts combined CPU and memory limits simultaneously. Unlike the single-metric macros, `#[budget_lt]` parses its attribute into specific property key-value pairs (`cpu =`, `mem =`, `env_ident =`, `cpu_baseline =`, `mem_baseline =`) rather than a plain literal, environment variable, or configuration file.
 
-**Static limit:**
+- Requires at least one of `cpu` or `mem` (failing with `must provide at least one of cpu = ... or mem = ...` otherwise).
+- `cpu_baseline` requires a CPU limit to be set (failing with `cpu_baseline requires a cpu limit` otherwise).
+- `mem_baseline` requires a memory limit to be set (failing with `mem_baseline requires a memory limit` otherwise).
+- Unknown properties are rejected with `unknown property: X`.
+- On failure the test panics with the corresponding CPU or memory cost error.
 
 ```rust
 use budget_macros::budget_lt;
+use soroban_sdk::Env;
 
 #[test]
-#[budget_lt(1_000_000)]
+#[budget_lt(cpu = 1000, mem = 10_000_000)]
 fn test_generic_budget() {
     let env = Env::default();
     // ... contract invocation ...
@@ -1157,7 +1160,7 @@ fn test_generic_budget() {
 
 ```rust
 #[test]
-#[budget_lt(env = "GENERIC_BUDGET_LIMIT")]
+#[budget_lt(cpu = env = "GENERIC_BUDGET_LIMIT")]
 fn test_generic_with_env() {
     std::env::set_var("GENERIC_BUDGET_LIMIT", "1000000");
     let env = Env::default();
@@ -1169,21 +1172,21 @@ fn test_generic_with_env() {
 
 ```rust
 #[test]
-#[budget_lt(env_file = "../tier-a-limits.env", env = "TIER_A__AMM_POOL_CONTRACT__SWAP__CPU")]
+#[budget_lt(cpu = env_file = "../tier-a-limits.env", env = "TIER_A__AMM_POOL_CONTRACT__SWAP__CPU")]
 fn test_generic_from_file() {
     let env = Env::default();
-    // ...
+    // ... test logic ...
 }
 ```
 
-**Config-driven limit:**
+**Dynamic limit via `env_ident`:**
 
 ```rust
 #[test]
-#[budget_lt(config = "generic_budget")]
-fn test_generic_from_config() {
+#[budget_lt(env_ident = "MY_BUDGET_LIMITS", cpu = 1000)]
+fn test_budget_lt_env() {
     let env = Env::default();
-    // ...
+    // ... test logic ...
 }
 ```
 
@@ -1191,23 +1194,12 @@ fn test_generic_from_config() {
 
 ```rust
 #[test]
-#[budget_lt(1_000_000, baseline = instantiation_floor())]
-fn test_generic_marginal() {
+#[budget_lt(cpu = 1000, cpu_baseline = 100)]
+fn test_budget_lt_baseline() {
     let env = Env::default();
-    // ...
+    // ... test logic ...
 }
 ```
-
-Failure message format:
-```
-CPU instruction cost {cpu} exceeded limit {N}
-Memory bytes cost {mem} exceeded limit {N}
-```
-
-The first check that fails triggers the panic — if both are over, only the
-CPU failure is reported. The macro supports the same attribute forms as
-`budget_cpu_lt` and `budget_mem_lt`: integer literal, `env = "VAR"`,
-`env_file = "PATH"`, `config = "key"`, and `baseline = <expr>`.
 
 
 The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are documented in the
@@ -1223,17 +1215,10 @@ The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are do
 | `#[budget_read_bytes_lt(N)]` | Read bytes (memory proxy) | `Read bytes cost (memory proxy)` | Yes |
 | `#[budget_events_lt(N)]` | Events emitted | `Event count` | Yes |
 | `#[budget_ledger_entries_lt(N)]` | Ledger entries (reads + writes) | `Ledger entry count` | Yes |
-| `#[budget_lt(N)]` | Both CPU + memory | `CPU instruction cost` or `Memory bytes cost` | Yes |
+| `#[budget_lt(...)]` | Both CPU + memory | `CPU instruction cost` or `Memory bytes cost` | Yes (via `cpu_baseline` / `mem_baseline`) |
 | `#[budget_scaling(...)]` | CPU growth model | `Scaling check failed at size {__curr_s}` | N/A |
 
-All macros accept the same limit sources: integer literal, `env = "VAR"`,
-`env_file = "PATH", env = "VAR"`, or `config = "key"`. The `baseline` parameter
-is available on all macros except `budget_scaling`.
+Single-metric macros accept the limit sources: integer literal, `env = "VAR"`,
+`env_file = "PATH", env = "VAR"`, or `config = "key"`. `#[budget_lt(...)]` instead parses property key-value pairs (`cpu =`, `mem =`, `env_ident =`, `cpu_baseline =`, `mem_baseline =`). The `baseline` parameter is available on all macros except `budget_scaling` (`#[budget_lt(...)]` uses `cpu_baseline` and `mem_baseline` instead).
 
-- A method with its own `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`, `#[budget_read_bytes_lt]`, `#[budget_events_lt]`, `#[budget_ledger_entries_lt]`, or `#[budget_lt]` attribute is governed by that, not the block limit - it is never asserted twice.
-
-- A method with its own `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`, `#[budget_read_bytes_lt]`, `#[budget_events_lt]`, `#[budget_ledger_entries_lt]`, or `#[budget_lt]` attribute is governed by that, not the block limit - it is never asserted twice.
-
-- A method with its own `#[budget_*]` attribute (`budget_cpu_lt`, `budget_mem_lt`, `budget_write_bytes_lt`, `budget_read_bytes_lt`, `budget_events_lt`, `budget_ledger_entries_lt`, `budget_lt`, or `budget_scaling`) is governed by that, not the block limit - it is never asserted twice.
-
-A method with its own `#[budget_*]` attribute (including `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`, `#[budget_read_bytes_lt]`, `#[budget_events_lt]`, `#[budget_ledger_entries_lt]`, or `#[budget_lt]`) is governed by that, not the block limit - it is never asserted twice.
+- A method with its own `#[budget_*]` attribute (including `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`, `#[budget_read_bytes_lt]`, `#[budget_events_lt]`, `#[budget_ledger_entries_lt]`, or `#[budget_lt]`) is governed by that, not the block limit - it is never asserted twice.
