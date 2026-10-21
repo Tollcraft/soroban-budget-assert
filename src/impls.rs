@@ -67,7 +67,7 @@
 //! }
 //!
 //! let metrics = FunctionMetrics { name: "do_expensive_work", cpu: 750_000, mem: 300_000 };
-//! assert!(metrics.is_within_bounds().unwrap());
+//! assert!(metrics.is_within_bounds());
 //! ```
 //!
 //! ## Design notes
@@ -197,7 +197,7 @@ pub trait MemoryCost {
 /// # Provided methods
 ///
 /// * [`is_within_bounds`](BudgetBounds::is_within_bounds) — checks both costs
-///   against their respective limits and returns a `Result<bool, String>`.
+///   against their respective limits and returns whether they are within bounds.
 ///
 /// # Usage
 ///
@@ -226,10 +226,10 @@ pub trait MemoryCost {
 ///
 /// let metrics = SwapMetrics { cpu: 1_500_000, mem: 100_000 };
 /// // CPU is below limit (1_500_000 < 2_000_000) and memory has no limit.
-/// assert!(metrics.is_within_bounds().unwrap());
+/// assert!(metrics.is_within_bounds());
 ///
 /// let exceeded = SwapMetrics { cpu: 3_000_000, mem: 100_000 };
-/// assert!(!exceeded.is_within_bounds().unwrap());
+/// assert!(!exceeded.is_within_bounds());
 /// ```
 pub trait BudgetBounds: CpuCost + MemoryCost {
     /// A human-readable label identifying this budget measurement.
@@ -270,21 +270,13 @@ pub trait BudgetBounds: CpuCost + MemoryCost {
     /// * If the limit is `None`, the metric is always considered within
     ///   bounds (reported but not enforced).
     ///
-    /// All metrics must pass for the overall result to be `Ok(true)`.
+    /// All metrics must pass for the overall result to be `true`.
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` — both costs are within their configured limits (or have
-    ///   no configured limit).
-    /// * `Ok(false)` — at least one cost exceeds its configured limit.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(message)` when an implementation encounters an internal
-    /// inconsistency that prevents the check from completing (e.g., a limit
-    /// value that cannot be meaningfully compared). Concrete implementations
-    /// that always return `None` from both limit accessors will never
-    /// produce an error.
+    /// * `true` — both costs are within their configured limits (or have no
+    ///   configured limit).
+    /// * `false` — at least one cost meets or exceeds its configured limit.
     ///
     /// # Examples
     ///
@@ -306,9 +298,9 @@ pub trait BudgetBounds: CpuCost + MemoryCost {
     /// }
     ///
     /// // No limits configured → always within bounds.
-    /// assert!(NoLimits.is_within_bounds().unwrap());
+    /// assert!(NoLimits.is_within_bounds());
     /// ```
-    fn is_within_bounds(&self) -> Result<bool, String> {
+    fn is_within_bounds(&self) -> bool {
         let cpu_ok = match self.cpu_limit() {
             Some(limit) => self.cpu_instruction_cost() < limit,
             None => true,
@@ -317,7 +309,7 @@ pub trait BudgetBounds: CpuCost + MemoryCost {
             Some(limit) => self.memory_bytes_cost() < limit,
             None => true,
         };
-        Ok(cpu_ok && mem_ok)
+        cpu_ok && mem_ok
     }
 }
 
@@ -510,7 +502,7 @@ mod tests {
             cpu_limit: Some(1000),
             mem_limit: Some(500),
         };
-        assert!(b.is_within_bounds().unwrap());
+        assert!(b.is_within_bounds());
     }
 
     #[test]
@@ -549,7 +541,7 @@ mod tests {
             cpu_limit: Some(1000),
             mem_limit: Some(500),
         };
-        assert!(!b.is_within_bounds().unwrap());
+        assert!(!b.is_within_bounds());
     }
 
     #[test]
@@ -584,8 +576,7 @@ mod tests {
             cpu: u64::MAX,
             mem: u64::MAX
         }
-        .is_within_bounds()
-        .unwrap());
+        .is_within_bounds());
     }
 
     // ── CostReportable tests ───────────────────────────────────────────────

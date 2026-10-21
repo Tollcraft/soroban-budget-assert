@@ -19,7 +19,7 @@ use anyhow::Context;
 use cargo_metadata::CrateType;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -82,8 +82,21 @@ pub(crate) fn print_delta(
     prev: &BTreeMap<String, BTreeMap<String, Measurement>>,
     curr: &BTreeMap<String, BTreeMap<String, Measurement>>,
 ) {
+    let mut stderr = std::io::stderr().lock();
+    render_delta(prev, curr, &mut stderr);
+}
+
+fn render_delta(
+    prev: &BTreeMap<String, BTreeMap<String, Measurement>>,
+    curr: &BTreeMap<String, BTreeMap<String, Measurement>>,
+    output: &mut impl Write,
+) {
     if prev.is_empty() && !curr.is_empty() {
-        eprintln!("  (first run -- no previous measurements to compare)");
+        writeln!(
+            output,
+            "  (first run -- no previous measurements to compare)"
+        )
+        .unwrap();
         return;
     }
     if prev.is_empty() && curr.is_empty() {
@@ -133,15 +146,19 @@ pub(crate) fn print_delta(
                         } else {
                             0
                         };
-                        eprintln!("  {pkg}::{func} [{metric}] {p} -> {c} ({delta}, {pct:+}%)");
+                        writeln!(
+                            output,
+                            "  {pkg}::{func} [{metric}] {p} -> {c} ({delta}, {pct:+}%)"
+                        )
+                        .unwrap();
                         any_change = true;
                     }
                     (None, Some(c)) => {
-                        eprintln!("  {pkg}::{func} [{metric}] (new) {c}");
+                        writeln!(output, "  {pkg}::{func} [{metric}] (new) {c}").unwrap();
                         any_change = true;
                     }
                     (Some(_p), None) => {
-                        eprintln!("  {pkg}::{func} [{metric}] (removed)");
+                        writeln!(output, "  {pkg}::{func} [{metric}] (removed)").unwrap();
                         any_change = true;
                     }
                     _ => {}
@@ -151,7 +168,7 @@ pub(crate) fn print_delta(
     }
 
     if !any_change {
-        eprintln!("  No changes detected.");
+        writeln!(output, "  No changes detected.").unwrap();
     }
 }
 
@@ -656,7 +673,9 @@ mod tests {
         let mut curr = BTreeMap::new();
 
         // 1. First run with empty maps
-        print_delta(&prev, &curr);
+        let mut output = Vec::new();
+        render_delta(&prev, &curr, &mut output);
+        assert!(output.is_empty());
 
         // 2. First run with current measurements
         let mut fn_map = BTreeMap::new();
@@ -669,7 +688,13 @@ mod tests {
             },
         );
         curr.insert("pool".to_string(), fn_map);
-        print_delta(&prev, &curr);
+        let mut output = Vec::new();
+        render_delta(&prev, &curr, &mut output);
+        let first_run = String::from_utf8(output).unwrap();
+        assert_eq!(
+            first_run,
+            "  (first run -- no previous measurements to compare)\n"
+        );
 
         // 3. Comparison with changes (increase, decrease, new, removed)
         prev = curr.clone();
@@ -693,6 +718,13 @@ mod tests {
         let mut new_curr = BTreeMap::new();
         new_curr.insert("pool".to_string(), curr_fns);
 
-        print_delta(&prev, &new_curr);
+        let mut output = Vec::new();
+        render_delta(&prev, &new_curr, &mut output);
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("pool::deposit [cpu_instructions] 1000 -> 1200 (+200, +20%)"));
+        assert!(rendered.contains("pool::deposit [read_bytes] 100 -> 80 (-20, -20%)"));
+        assert!(rendered.contains("pool::withdraw [cpu_instructions] (new) 500"));
+        assert!(!rendered.contains("pool::deposit [write_bytes] 50 -> 50"));
+        assert!(!rendered.contains("first run"));
     }
 }
