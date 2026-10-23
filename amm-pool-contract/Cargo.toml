@@ -15,5 +15,8 @@ soroban-sdk = { version = "27.0.3", features = ["testutils"] }
 budget-macros = { path = "../budget-macros" }
 
 [features]
+# Selects the pre-SDK-22 `env.budget()` measurement path in
+# tests/calibrate_gap_sdk20.rs. It switches no dependency: the SDK version is
+# whatever `[dependencies]` pins, so pair it with a pin applied first (see
+# calibrate_gap.ps1) or the harness reports the pinned SDK's costs.
 sdk20 = []
-sdk22 = []

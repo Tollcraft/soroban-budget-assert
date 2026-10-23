@@ -1,20 +1,32 @@
 // @measure local:sdk20  # discovered by scripts/regenerate-measurements.sh
 #![cfg(feature = "sdk20")]
 
-//! Calibration test for cost estimation gap measurement (Soroban SDK 20.x).
+//! Calibration test for cost estimation gap measurement (pre-SDK-22 budget API).
 //!
 //! This harness measures the local CPU and memory cost estimates for the
-//! synthetic `do_expensive_work` operation at a 10k loop depth under SDK 20.x,
-//! establishing a local-vs-network baseline gap. The figures are used to
-//! calibrate real contract costs against the empirical local estimates.
+//! synthetic `do_expensive_work` operation at a 10k loop depth, establishing a
+//! local-vs-network baseline gap. The figures are used to calibrate real
+//! contract costs against the empirical local estimates.
+//!
+//! It is the variant for `soroban-sdk` 20.x and 21.x, which read the budget
+//! through `env.budget()`; 22.x onward reads it through
+//! `env.cost_estimate().budget()` and uses `calibrate_gap.rs` instead. The
+//! `sdk20` feature selects *this code path only* — it switches no
+//! dependency, so the SDK version comes from the `soroban-sdk` pin in
+//! `amm-pool-contract/Cargo.toml`. Run against the workspace's 27 pin this file
+//! compiles and its `CALIBRATE_*` output is an SDK 27 figure, not a 20.x one.
+//! Enabling the feature also compiles out the post-22 harnesses that carry
+//! `#![cfg(not(feature = "sdk20"))]`.
 //!
 //! # Usage
 //!
 //! This test is marked `#[ignore]` and excluded from the default test suite.
-//! To run it deliberately:
+//! Pin a pre-22 SDK first, then run it — `../calibrate_gap.ps1` does both for a
+//! list of versions:
 //!
 //! ```bash
-//! cargo build --target wasm32v1-none --release -p amm-pool-contract --features sdk20
+//! # 1. Pin soroban-sdk = "20.5.0" (or 21.x) in amm-pool-contract/Cargo.toml, then cargo update
+//! cargo build --target wasm32v1-none --release -p amm-pool-contract
 //! cargo test -p amm-pool-contract --test calibrate_gap_sdk20 --features sdk20 -- --ignored --nocapture
 //! ```
 //!

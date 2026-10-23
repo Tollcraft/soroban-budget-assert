@@ -81,7 +81,7 @@ run_harness() {
 # Look for files under */tests/*.rs containing the marker.
 # The marker format: // @measure <mode>[:<feature>[:<test_name>]]
 #   <mode>     = "local" or "testnet"
-#   <feature>  = optional Cargo feature to enable (e.g. "sdk20", "sdk22")
+#   <feature>  = optional Cargo feature to enable (e.g. "sdk20")
 #   <test_name>= optional specific test function to run
 
 # Collected with a `read` loop rather than `mapfile`, which is a bash 4
@@ -106,8 +106,8 @@ for file in ${test_files[@]+"${test_files[@]}"}; do
         continue
     fi
     # Parse mode, optional feature, and optional test name.
-    # Expected: "// @measure local" or "// @measure local:sdk22" or
-    #           "// @measure local:sdk22:my_test"
+    # Expected: "// @measure local" or "// @measure local:sdk20" or
+    #           "// @measure local:sdk20:my_test"
     #
     # A trailing "# ..." comment is stripped first. Every marker carries
     # "# discovered by scripts/regenerate-measurements.sh"; left in place it

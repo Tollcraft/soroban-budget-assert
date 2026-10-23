@@ -80,12 +80,16 @@ cargo build --target wasm32v1-none --release -p amm-pool-contract
 cargo test -p amm-pool-contract calibrate_gap -- --nocapture
 ```
 
-SDK 20 and 21 use `env.budget()` instead of `env.cost_estimate().budget()`. For those versions, run with `--features sdk20` and use the `calibrate_gap_sdk20` test binary:
+SDK 20 and 21 read the budget through `env.budget()` instead of `env.cost_estimate().budget()`, so their harness is a separate file, `calibrate_gap_sdk20.rs`, gated behind the `sdk20` Cargo feature. **The feature selects that code path; it does not change the `soroban-sdk` version**, which is always whatever `amm-pool-contract/Cargo.toml` pins. Pin first, then enable:
 
 ```bash
+# 1. Pin soroban-sdk = "20.5.0" (or 21.x) in amm-pool-contract/Cargo.toml
+# 2. cargo update -p soroban-sdk
 cargo build --target wasm32v1-none --release -p amm-pool-contract
 cargo test -p amm-pool-contract --features sdk20 --test calibrate_gap_sdk20 calibrate_gap -- --nocapture
 ```
+
+Run against the workspace's SDK 27 pin, the harness compiles and its `CALIBRATE_*` output is an SDK 27 figure, not a 20.x one, so it must not be transcribed into a 20.x/21.x row. Enabling `sdk20` also compiles out the post-22 harnesses that carry `#![cfg(not(feature = "sdk20"))]`, so run it only as part of a pin. `amm-pool-contract/calibrate_gap.ps1` applies the pin and the feature together for a list of versions.
 
 The network figure column requires a separate `cargo-budget-report` run on Soroban testnet against the same WASM.
 
@@ -101,7 +105,7 @@ The network figure column requires a separate `cargo-budget-report` run on Sorob
 
 > **Note on SDK 21 compilation:** `soroban-env-host` 21.2.1 has a `rand_core` / `ed25519-dalek` version conflict in its `testutils` feature. Running `cargo update -p soroban-env-host` resolves it by flushing the stale dependency graph.
 
-> **Note on SDK 20 API:** `soroban-sdk` 20.x uses `env.budget()` instead of `env.cost_estimate().budget()`. A separate test file (`calibrate_gap_sdk20.rs`) is gated behind the `sdk20` Cargo feature and provides the same measurement.
+> **Note on SDK 20 API:** `soroban-sdk` 20.x uses `env.budget()` instead of `env.cost_estimate().budget()`. A separate test file (`calibrate_gap_sdk20.rs`) is gated behind the `sdk20` Cargo feature and provides the same measurement for those versions. The feature names the code path, not the dependency: the SDK version is the pin in `amm-pool-contract/Cargo.toml`, and each row above was captured with that row's version pinned (the `Toolchain` column records the compiler used), as "How to regenerate" step 1 describes.
 
 ### Cross-version comparison (local only)
 
