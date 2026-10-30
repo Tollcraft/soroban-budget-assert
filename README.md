@@ -306,6 +306,7 @@ The [MEASUREMENTS.md](MEASUREMENTS.md) file at the repository root records all e
 Join the discussion and get support:
 
 - **Community Link**: [Stellar Developer Discord](https://discord.gg/5aprtMSyR)
+- **X**: [@tollcraft_dev](https://x.com/tollcraft_dev)
 
 | Maintainer     | Role            | Telegram                                     |
 | -------------- | --------------- | -------------------------------------------- |
