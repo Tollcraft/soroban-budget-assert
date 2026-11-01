@@ -590,7 +590,7 @@ fn parse_existing_tier_a_keys(content: &str) -> BTreeSet<String> {
 }
 
 /**
- * 
+ *
  * When called with an existing env file, checks that no TIER_A__ keys would be lost.
  * A changed numeric value is normal re-derivation and must still be written.
  * Only keys that would completely disappear are flagged.
