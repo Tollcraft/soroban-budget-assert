@@ -1712,6 +1712,15 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
     let from_pathbuf = std::path::PathBuf::from(from_path);
     let measurements = derive::load_tier_b_report(&from_pathbuf)?;
 
+    // Reject empty measurements — an empty snapshots array would
+    // otherwise rewrite tier-a-limits.env with zero limits, losing
+    // all previously derived limits.
+    if measurements.is_empty() {
+        return Err(Error::Message(
+            "no derivable rows in Tier B report; tier-a-limits.env is not written".into(),
+        ));
+    }
+
     // 2) Resolve the margin. CLI overrides win over `budget.toml`.
     //    Detect missing-vs-present on the CLI side first so a partial
     //    CLI override errors out instead of falling through to the
@@ -1750,6 +1759,8 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
         &margin,
         args.profile.as_deref(),
         &timestamp_utc,
+        Some(&out_env),
+        args.allow_dropped_limits,
     )?;
 
     if !args.quiet {
@@ -4242,6 +4253,7 @@ mem_limit = 4000
             network: None,
             source: None,
             allow_mainnet: false,
+            allow_dropped_limits: false,
             json: false,
             markdown: false,
             check: false,
@@ -4284,6 +4296,7 @@ mem_limit = 4000
             network: None,
             source: None,
             allow_mainnet: false,
+            allow_dropped_limits: false,
             json: false,
             markdown: false,
             check: false,
@@ -4325,6 +4338,7 @@ mem_limit = 4000
             force: false,
             network: None,
             source: None,
+            allow_dropped_limits: false,
             allow_mainnet: false,
             json: false,
             markdown: false,
@@ -4371,6 +4385,7 @@ mem_limit = 4000
             network: None,
             source: None,
             allow_mainnet: false,
+            allow_dropped_limits: false,
             json: false,
             markdown: false,
             check: false,

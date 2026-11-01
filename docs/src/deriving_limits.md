@@ -70,9 +70,18 @@ cargo budget-report \
   --from build/budget-report.json
 
 # (Or pipe straight from --json into the derive step.)
+set -o pipefail
 cargo budget-report --json | cargo budget-report \
   --derive-limits tier-a-limits.env --from -
 
+# Why `set -o pipefail`: without it, the pipeline's exit status is
+# always that of the last command (`cargo budget-report --derive-limits`),
+# so a simulation failure in the Tier B report (which causes
+# `--derive-limits` to exit non-zero) would be silently swallowed and
+tier-a-limits.env would be overwritten with an incomplete report.
+# With `set -o pipefail`, the pipeline propagates the first non-zero
+# exit status, protecting against a single RPC blip silently deleting
+# a function's TIER_A__... keys.
 # 3) Run the workspace tests. The Tier A assertions read from
 #    tier-a-limits.env at runtime via the macro's
 #    `env_file = "PATH"` + `env = "VAR"` form.
