@@ -73,8 +73,11 @@ impl Tolerance {
     /// Returns `true` when `current` is allowed given `baseline` and tolerance.
     ///
     /// Boundary policy: `current == max_allowed` passes; `current > max_allowed`
-    /// fails. The check is `current <= baseline * (1 + tol)` in integer space
-    /// to avoid floating-point off-by-one near the boundary.
+    /// fails. The ceiling is `floor(baseline * (1 + tolerance))`, evaluated in
+    /// integer space: the tolerance is converted once to a parts-per-billion
+    /// fixed-point integer and the product is computed in `u128`, so a
+    /// tolerance such as `15%` cannot lose its last unit to a binary rounding
+    /// error (`100.0 * 1.15` is `114.99999999999999` in `f64`).
     pub fn allows(self, baseline: u64, current: u64) -> bool {
         max_allowed(baseline, self.value) >= current
     }
@@ -110,22 +113,41 @@ pub fn parse_tolerance(s: &str) -> Result<Tolerance> {
     Ok(Tolerance::new(value))
 }
 
+/// Fixed-point scale used by [`max_allowed`]: one whole unit in parts per
+/// billion. Every tolerance form `parse_tolerance` accepts (`"N%"` and
+/// `"0.NN"` decimals) is exactly representable at this resolution, so the
+/// ceiling is computed without a lossy `f64` product.
+const PPB: u128 = 1_000_000_000;
+
 /// Compute the largest allowed value for a given baseline + tolerance.
-/// Returns `u64::MAX` if the multiplication would overflow (effectively an
-/// unlimited ceiling) — this is also what `Tolerance::allows` checks against.
+///
+/// The result is `floor(baseline * (1 + tolerance))`, computed in integer
+/// space rather than as a `f64` product: `(1 + tolerance)` is scaled to a
+/// fixed-point integer in parts per billion and the multiplication is done in
+/// `u128`. Doing the arithmetic in `f64` and truncating loses a whole unit
+/// whenever the binary rounding error is negative (`100.0 * 1.15` is
+/// `114.99999999999999`, which truncates to `114` even though 15 % of 100 is
+/// exactly 15). The scaling rounds to nearest because a decimal fraction such
+/// as `0.15` stored as an `f64` sits a hair *below* its decimal value and
+/// truncating the scaled tolerance would reintroduce the same off-by-one.
+///
+/// A zero tolerance allows only `current <= baseline`, and a tolerance large
+/// enough to overflow saturates at `u64::MAX` (effectively an unlimited
+/// ceiling) — this is also what `Tolerance::allows` checks against.
 pub fn max_allowed(baseline: u64, tolerance: f64) -> u64 {
     let rhs = 1.0_f64 + tolerance;
-    if rhs <= 0.0 {
-        return baseline.saturating_sub(baseline); // == 0
-    }
-    let scaled = (baseline as f64) * rhs;
-    if scaled >= u64::MAX as f64 {
-        return u64::MAX;
-    }
-    if scaled < 0.0 {
+    if rhs.is_nan() || rhs <= 0.0 {
         return 0;
     }
-    scaled as u64
+    // A cast from a float saturates, so an enormous tolerance becomes
+    // `u128::MAX` here and falls out as `u64::MAX` below.
+    let rhs_ppb = (rhs * PPB as f64).round() as u128;
+    let total = (baseline as u128).saturating_mul(rhs_ppb) / PPB;
+    if total >= u64::MAX as u128 {
+        u64::MAX
+    } else {
+        total as u64
+    }
 }
 
 /// On-disk baseline, keyed by `<package>::<function>`.
@@ -1015,6 +1037,98 @@ mod tests {
     fn classify_pass_when_exactly_equal() {
         let v = classify(1000, 1000, Tolerance::new(0.10));
         assert!(matches!(v, Verdict::Pass));
+    }
+
+    // -- max_allowed exact-ceiling table --------------------------------------
+
+    #[test]
+    fn max_allowed_is_exact_for_fifteen_percent() {
+        // `100.0 * 1.15` is `114.99999999999999` in f64; truncating it yields
+        // 114, so 115 used to be reported as a regression at `--tolerance 15%`.
+        assert_eq!(max_allowed(100, 0.15), 115);
+        assert_eq!(max_allowed(1000, 0.15), 1150);
+        assert_eq!(max_allowed(1_000_000, 0.15), 1_150_000);
+    }
+
+    #[test]
+    fn max_allowed_truncates_fractional_ceilings() {
+        // Not rounded up to hide the error: 1104.9 stays 1104.
+        assert_eq!(max_allowed(1000, 0.1049), 1104);
+        // `0.07` is stored just below its decimal value; still exact.
+        assert_eq!(max_allowed(1000, 0.07), 1070);
+        assert_eq!(max_allowed(100, 0.0), 100);
+    }
+
+    #[test]
+    fn max_allowed_saturates_on_overflow() {
+        assert_eq!(max_allowed(u64::MAX, 0.10), u64::MAX);
+        assert_eq!(max_allowed(u64::MAX, 100.0), u64::MAX);
+        assert_eq!(max_allowed(u64::MAX, f64::INFINITY), u64::MAX);
+    }
+
+    #[test]
+    fn max_allowed_ceiling_is_exact_for_every_whole_percent() {
+        for baseline in [100_u64, 1_000, 1_000_000, 100_000_000] {
+            for pct in 1_u64..=100 {
+                let tolerance = parse_tolerance(&format!("{pct}%")).unwrap();
+                // floor(baseline * (1 + pct/100)) == baseline + floor(baseline * pct / 100)
+                let expected = baseline + (baseline as u128 * pct as u128 / 100) as u64;
+                assert_eq!(
+                    max_allowed(baseline, tolerance.value),
+                    expected,
+                    "baseline {baseline} at {pct}% must have ceiling {expected}"
+                );
+                assert!(
+                    tolerance.allows(baseline, expected),
+                    "baseline {baseline} at {pct}%: {expected} == ceiling must pass"
+                );
+                assert!(
+                    !tolerance.allows(baseline, expected + 1),
+                    "baseline {baseline} at {pct}%: {} (ceiling + 1) must fail",
+                    expected + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_treats_exact_percentage_ceiling_as_pass() {
+        let baseline = Baseline {
+            entries: BTreeMap::from([(
+                function_key("amm-pool-contract", "do_expensive_work"),
+                BaselineEntry::from_measurement(m(100, 0, 0)),
+            )]),
+        };
+        let tolerance = parse_tolerance("15%").unwrap();
+
+        let at_ceiling = BTreeMap::from([(
+            "amm-pool-contract".to_string(),
+            BTreeMap::from([("do_expensive_work".to_string(), m(115, 0, 0))]),
+        )]);
+        let report = check_against_baseline(&baseline, &at_ceiling, tolerance, &BTreeMap::new());
+        let cpu = find_metric(
+            &report,
+            "amm-pool-contract",
+            "do_expensive_work",
+            MetricKind::CpuInstructions,
+        );
+        assert_eq!(cpu.max_allowed(), 115, "printed ceiling must match maths");
+        assert!(matches!(cpu.verdict, Verdict::Pass));
+        assert_eq!(report.regression_count(), 0);
+
+        let one_above = BTreeMap::from([(
+            "amm-pool-contract".to_string(),
+            BTreeMap::from([("do_expensive_work".to_string(), m(116, 0, 0))]),
+        )]);
+        let report = check_against_baseline(&baseline, &one_above, tolerance, &BTreeMap::new());
+        let cpu = find_metric(
+            &report,
+            "amm-pool-contract",
+            "do_expensive_work",
+            MetricKind::CpuInstructions,
+        );
+        assert!(matches!(cpu.verdict, Verdict::Regression));
+        assert_eq!(report.regression_count(), 1);
     }
 
     // -- check_against_baseline ----------------------------------------------

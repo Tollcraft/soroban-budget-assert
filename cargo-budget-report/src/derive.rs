@@ -41,7 +41,7 @@
 
 use crate::error::{Error, Result};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -171,6 +171,11 @@ fn default_schema_version() -> u32 {
 /// budget-report --json` currently emits an array, but the
 /// `json_output::render_json` helper wraps it; either is consumed
 /// without further massaging.
+///
+/// Rejects rows where the `value` field is missing or null, since such
+/// rows cannot be derived into a Tier A limit. The error names the
+/// package, function, and metric so the user knows exactly which row
+/// caused the problem.
 pub fn load_tier_b_report(path: &Path) -> Result<Vec<TierBMeasurement>> {
     let contents = if path == Path::new("-") {
         use std::io::Read;
@@ -185,11 +190,49 @@ pub fn load_tier_b_report(path: &Path) -> Result<Vec<TierBMeasurement>> {
     };
     let value: serde_json::Value = serde_json::from_str(&contents).map_err(Error::Json)?;
     let snapshots_opt = crate::json_output::validate_report_schema(&value, path)?;
-    let measurements: Vec<TierBMeasurement> = match snapshots_opt {
+    // Try to get a raw array of rows regardless of whether the JSON is
+    // wrapped (schema_version + snapshots) or bare array shape.
+    let raw_array: Vec<serde_json::Value> = match snapshots_opt {
         Some(snapshots) => serde_json::from_value(serde_json::Value::Array(snapshots.clone()))
             .map_err(Error::Json)?,
-        None => serde_json::from_value(value).map_err(Error::Json)?,
+        None => match value.as_array() {
+            Some(arr) => arr.clone(),
+            None => Vec::new(),
+        },
     };
+    if raw_array.is_empty() {
+        return Err(Error::Message(
+            "no derivable rows in Tier B report; tier-a-limits.env is not written".into(),
+        ));
+    }
+    let mut measurements = Vec::with_capacity(raw_array.len());
+    for row in raw_array {
+        let row_clone = row.clone();
+        let package = row
+            .get("package")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown package>");
+        let function = row
+            .get("function")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown function>");
+        let metric = row
+            .get("metric")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown metric>");
+        let value = row.get("value");
+        if value.is_none() || value == Some(&serde_json::Value::Null) {
+            return Err(Error::Message(format!(
+                "snapshot row has no value for {package}::{function} [{metric}]; each row must have a non-null value to derive a Tier A limit"
+            )));
+        }
+        let m: TierBMeasurement = serde_json::from_value(row_clone).map_err(|e| {
+            Error::Message(format!(
+                "failed to parse {package}::{function} [{metric}]: {e}"
+            ))
+        })?;
+        measurements.push(m);
+    }
     Ok(measurements)
 }
 
@@ -223,9 +266,10 @@ pub struct Derivation {
 /// limit will then assert `cost < 0`, which is never true and so
 /// always panics — this is intentional: a Tier B report that records
 /// zero for a metric (e.g. `extend_instance_ttl - Write Bytes`)
-/// means "no charge recorded" and the test author should either drop
-/// the macro on that assertion or use `env = "VAR"` and leave the
-/// variable unset (which the macro falls back to `u64::MAX`).
+/// means "no charge recorded". The `budget-macros` crate now emits a
+/// compile error for zero-valued limits rather than falling back to
+/// `u64::MAX`, so test authors should ensure their Tier B reports
+/// record non-zero values for metrics they assert against.
 fn ceil_apply(value: u64, margin: f64) -> u64 {
     let scaled = (value as f64) * margin;
     if !scaled.is_finite() || scaled < 0.0 {
@@ -523,6 +567,36 @@ fn metric_to_env_segment(metric_label: &str) -> &'static str {
 }
 
 /// Persist the derivation's two outputs.
+/// Parse the existing `.env` file and return the set of `TIER_A__` keys it contains.
+/// Follows the same rules as `parse_env_file_value` in budget-macros:
+/// - Blank lines and lines starting with `#` are ignored.
+/// - For each remaining line, split on the first `=`; the left side is the key.
+fn parse_existing_tier_a_keys(content: &str) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some((lhs, _)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = lhs.trim();
+        if key.starts_with("TIER_A__") {
+            keys.insert(key.to_string());
+        }
+    }
+    keys
+}
+
+/**
+ *
+ * When called with an existing env file, checks that no TIER_A__ keys would be lost.
+ * A changed numeric value is normal re-derivation and must still be written.
+ * Only keys that would completely disappear are flagged.
+ * Unless the user explicitly opts in to the loss via `--allow-dropped-limits`.
+ */
+#[allow(clippy::too_many_arguments)]
 pub fn write_outputs(
     out_env: &Path,
     out_provenance: Option<&Path>,
@@ -531,7 +605,34 @@ pub fn write_outputs(
     margin: &Margin,
     build_profile: Option<&str>,
     timestamp_utc: &str,
+    existing_env: Option<&Path>,
+    allow_dropped_limits: bool,
 ) -> Result<()> {
+    // If an existing env file is present, check that no TIER_A__ keys would be lost.
+    // A changed numeric value is normal re-derivation and must still be written.
+    // Only keys that would completely disappear are flagged.
+    // Unless the user explicitly opts in to the loss via --allow-dropped-limits.
+    if let Some(existing_path) = existing_env {
+        let existing_content =
+            std::fs::read_to_string(existing_path).unwrap_or_else(|_| String::new());
+        let existing_keys = parse_existing_tier_a_keys(&existing_content);
+        let new_keys: BTreeSet<String> = derivation.limits.iter().map(|l| l.key.clone()).collect();
+        let dropped: Vec<String> = existing_keys.difference(&new_keys).cloned().collect();
+        if !dropped.is_empty() {
+            let dropped_str = dropped.join(", ");
+            if allow_dropped_limits {
+                eprintln!(
+                    "Warning: the following TIER_A__ keys would be lost and are not present in the new output: {}",
+                    dropped_str
+                );
+            } else {
+                return Err(Error::Message(format!(
+                    "the following TIER_A__ keys would be lost and are not present in the new output: {}",
+                    dropped_str
+                )));
+            }
+        }
+    }
     let env_body = derivation.render_env_file(source_label, margin, build_profile, timestamp_utc);
     atomic_write(out_env, &env_body)?;
     if let Some(path) = out_provenance {
@@ -890,6 +991,45 @@ mod tests {
             "got: {msg}"
         );
         assert!(msg.contains("accepted versions are [1]"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_tier_b_report_rejects_row_with_no_value() {
+        // A row with no `value` field (or null value) should be rejected
+        // with an error naming the package, function, and metric.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let json = serde_json::json!([{
+            "package": "p",
+            "function": "f",
+            "metric": "CPU Instructions",
+            // "value" is intentionally missing
+        }]);
+        std::fs::write(tmp.path(), json.to_string()).unwrap();
+        let err = load_tier_b_report(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("p"), "err should name the package, got: {msg}");
+        assert!(
+            msg.contains("f"),
+            "err should name the function, got: {msg}"
+        );
+        assert!(
+            msg.contains("CPU Instructions"),
+            "err should name the metric, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_tier_b_report_rejects_empty_snapshots_array() {
+        // An empty snapshots array should be rejected and not write the output file.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let json = serde_json::json!([]);
+        std::fs::write(tmp.path(), json.to_string()).unwrap();
+        let err = load_tier_b_report(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no derivable rows"),
+            "err should mention no derivable rows, got: {msg}"
+        );
     }
 
     #[test]
