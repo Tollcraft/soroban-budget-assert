@@ -62,20 +62,52 @@ fn run_stellar_command(args: &[String], operation: &str) -> Result<String, crate
     }
 }
 
+/// Seconds curl may spend establishing the connection to the RPC endpoint.
+const CURL_CONNECT_TIMEOUT_SECS: u64 = 30;
+/// Seconds curl may spend on the whole simulate request. Without a bound a
+/// silent endpoint hangs the run forever and the retry policy for timeouts
+/// can never fire.
+const CURL_MAX_TIME_SECS: u64 = 30;
+
 fn run_simulation_request(endpoint: &str, payload: &Value) -> Result<Value, crate::RetryFailure> {
+    run_simulation_request_with_timeouts(
+        endpoint,
+        payload,
+        CURL_CONNECT_TIMEOUT_SECS,
+        CURL_MAX_TIME_SECS,
+    )
+}
+
+/// Argument list for the simulate POST, with bounded connect and total time.
+fn simulation_curl_args(endpoint: &str, connect_timeout: u64, max_time: u64) -> Vec<String> {
+    vec![
+        "-s".into(),
+        "-S".into(),
+        "--connect-timeout".into(),
+        connect_timeout.to_string(),
+        "--max-time".into(),
+        max_time.to_string(),
+        "-X".into(),
+        "POST".into(),
+        "-H".into(),
+        "Content-Type: application/json".into(),
+        "-d".into(),
+        "@-".into(),
+        endpoint.into(),
+    ]
+}
+
+fn run_simulation_request_with_timeouts(
+    endpoint: &str,
+    payload: &Value,
+    connect_timeout: u64,
+    max_time: u64,
+) -> Result<Value, crate::RetryFailure> {
     let mut curl = Command::new("curl")
-        .args([
-            "-s",
-            "-X",
-            "POST",
-            "-H",
-            "Content-Type: application/json",
-            "-d",
-            "@-",
-            endpoint,
-        ])
+        .args(simulation_curl_args(endpoint, connect_timeout, max_time))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| crate::RetryFailure::Permanent(format!("failed to execute curl: {}", e)))?;
 
@@ -264,6 +296,32 @@ impl Transport for LiveTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulation_curl_args_bound_connect_and_total_time() {
+        let args = simulation_curl_args("http://x", 7, 9);
+        let pos = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+        assert_eq!(args[pos("--connect-timeout") + 1], "7");
+        assert_eq!(args[pos("--max-time") + 1], "9");
+        assert_eq!(CURL_CONNECT_TIMEOUT_SECS, 30);
+        assert_eq!(CURL_MAX_TIME_SECS, 30);
+    }
+
+    /// An endpoint that accepts the connection but never answers must surface
+    /// as a transient failure (so the retry policy applies) instead of hanging.
+    #[test]
+    fn silent_endpoint_times_out_as_transient_failure() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let started = std::time::Instant::now();
+        let result = run_simulation_request_with_timeouts(&endpoint, &serde_json::json!({}), 1, 1);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        match result {
+            Err(crate::RetryFailure::Transient(msg)) => assert!(msg.contains("curl exited")),
+            other => panic!("expected transient failure, got {:?}", other.is_ok()),
+        }
+        drop(listener);
+    }
 
     #[test]
     fn resolves_supported_network_aliases() {

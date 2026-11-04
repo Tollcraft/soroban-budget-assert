@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **Dead `config.rs` removed; simulate `curl` is time-bounded (issue #825).** The never-called `cargo-budget-report/src/config.rs` (a second copy of runtime configuration) is deleted along with its `mod config;`. `run_simulation_request` now passes `--connect-timeout 30 --max-time 30` to curl, so a silent endpoint exits non-zero and is classified `RetryFailure::Transient` and retried per the existing policy; covered by `silent_endpoint_times_out_as_transient_failure` in `live.rs`.
+
 ### Added
 
 - **`--markdown` check columns and failed-stub text (issue #849).** `cargo-budget-report/src/markdown.rs` now grows `Limit` and `Status` (`PASS`/`FAIL`) columns whenever the rows carry `--check` metadata, detected from the data so the `--markdown --from current_report.json` step-summary path shows breaches even when it is not itself given `--check`. A stub row produced by a failed simulation renders as `N/A (simulation failed)` instead of `N/A (testnet required)`, so a limit breach no longer reads as a missing network measurement. A plain (non-`--check`) report keeps the original four columns byte for byte.
