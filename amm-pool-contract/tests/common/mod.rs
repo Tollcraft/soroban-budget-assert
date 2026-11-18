@@ -62,7 +62,7 @@ pub fn load_contract_wasm(target: &str) -> Vec<u8> {
     std::fs::read(&path).unwrap_or_else(|err| {
         panic!(
             "failed to read WASM artifact at {}: {err} \
-             (a `cargo build` was attempted first; check its output above)",
+             (a `stellar contract build` was attempted first; check its output above)",
             path.display()
         )
     })
@@ -87,20 +87,25 @@ fn artifact_needs_rebuild(wasm: &Path) -> bool {
 }
 
 /// Builds the `amm-pool-contract` cdylib for `target` in release mode.
+///
+/// soroban-sdk 29's `build.rs` rejects a plain `cargo build` for wasm: it needs
+/// the spec-shaking marker that only `stellar contract build` sets, so the
+/// build must go through the CLI.
 fn build_contract_wasm(target: &str) {
-    let status = Command::new(env!("CARGO"))
+    let status = Command::new("stellar")
         .args([
+            "contract",
             "build",
-            "-p",
+            "--package",
             "amm-pool-contract",
-            "--release",
-            "--target",
-            target,
+            "--locked",
         ])
         .status()
-        .expect("failed to spawn `cargo build` for the amm-pool-contract WASM");
+        .unwrap_or_else(|err| {
+            panic!("failed to spawn `stellar contract build` for {target}: {err}")
+        });
     assert!(
         status.success(),
-        "`cargo build -p amm-pool-contract --release --target {target}` failed"
+        "`stellar contract build --package amm-pool-contract` failed for {target}"
     );
 }
