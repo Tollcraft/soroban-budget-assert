@@ -5,13 +5,13 @@
 # whichever toolchain a contributor happens to have installed.
 #
 # Note on Toolchain Compatibility:
-# This repository pins stable 1.91.0 in `rust-toolchain.toml`. Standard options
+# This repository pins stable 1.92.0 in `rust-toolchain.toml`. Standard options
 # below enforce the workspace style on stable. Options marked as [Nightly-only]
 # require a nightly rustfmt toolchain and are silently ignored by `cargo fmt`
-# on stable Rust 1.91.0.
+# on stable Rust 1.92.0.
 
 # Why: Freezes formatting style edition to 2021 rules so future rustfmt releases do not alter output on unchanged source.
-# Note: [Nightly-only / Inert on stable 1.91.0] Requires nightly rustfmt; ignored on stable 1.91.0.
+# Note: [Nightly-only / Inert on stable 1.92.0] Requires nightly rustfmt; ignored on stable 1.92.0.
 style_edition = "2021"
 
 # Why: Specifies Rust 2021 edition syntax parsing rules.
@@ -45,21 +45,21 @@ merge_derives = true
 remove_nested_parens = true
 
 # Why: Requires explicit ABI strings (e.g. `extern "C"`) in extern declarations.
-# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
+# Note: [Nightly-only / Inert on stable 1.92.0] Ignored when running `cargo fmt` on stable 1.92.0.
 force_explicit_abi = true
 
 # Why: Formats function parameters vertically when a signature spans multiple lines.
-# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
+# Note: [Nightly-only / Inert on stable 1.92.0] Ignored when running `cargo fmt` on stable 1.92.0.
 fn_params_layout = "Tall"
 
 # Why: Omits leading pipe characters in match arm pattern choices (`A | B =>` rather than `| A | B =>`).
-# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
+# Note: [Nightly-only / Inert on stable 1.92.0] Ignored when running `cargo fmt` on stable 1.92.0.
 match_arm_leading_pipes = "Never"
 
 # Why: Prefers explicit field initialization (`Point { x: x, y: y }`) rather than shorthand syntax.
-# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
+# Note: [Nightly-only / Inert on stable 1.92.0] Ignored when running `cargo fmt` on stable 1.92.0.
 use_field_init_shorthand = false
 
 # Why: Controls try expression shorthand formatting.
-# Note: [Nightly-only / Inert on stable 1.91.0] Ignored when running `cargo fmt` on stable 1.91.0.
+# Note: [Nightly-only / Inert on stable 1.92.0] Ignored when running `cargo fmt` on stable 1.92.0.
 use_try_shorthand = false
