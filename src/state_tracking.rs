@@ -45,6 +45,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::ops::{Add, AddAssign};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,24 @@ impl CostSnapshot {
     /// Returns a snapshot whose both metrics are zero.
     pub fn zero() -> Self {
         Self::default()
+    }
+}
+
+impl Add for CostSnapshot {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self::new(
+            self.cpu.saturating_add(rhs.cpu),
+            self.memory.saturating_add(rhs.memory),
+        )
+    }
+}
+
+impl AddAssign for CostSnapshot {
+    fn add_assign(&mut self, rhs: Self) {
+        self.cpu = self.cpu.saturating_add(rhs.cpu);
+        self.memory = self.memory.saturating_add(rhs.memory);
     }
 }
 
@@ -446,6 +465,47 @@ mod tests {
     #[test]
     fn cost_snapshot_default_is_zero() {
         assert_eq!(CostSnapshot::default(), CostSnapshot::zero());
+    }
+
+    #[test]
+    fn cost_snapshot_add_sums_metrics_and_is_commutative() {
+        let left = CostSnapshot::new(10, 20);
+        let right = CostSnapshot::new(3, 5);
+
+        assert_eq!(left + right, CostSnapshot::new(13, 25));
+        assert_eq!(left + right, right + left);
+    }
+
+    #[test]
+    fn cost_snapshot_add_assign_sums_metrics() {
+        let mut snapshot = CostSnapshot::new(10, 20);
+        snapshot += CostSnapshot::new(3, 5);
+
+        assert_eq!(snapshot, CostSnapshot::new(13, 25));
+    }
+
+    #[test]
+    fn cost_snapshot_add_saturates_at_u64_max() {
+        let maxed = CostSnapshot::new(u64::MAX, u64::MAX);
+        let increment = CostSnapshot::new(1, 2);
+
+        assert_eq!(maxed + increment, maxed);
+
+        let mut assigned = maxed;
+        assigned += increment;
+        assert_eq!(assigned, maxed);
+    }
+
+    #[test]
+    fn cost_snapshot_add_zero_is_identity() {
+        let snapshot = CostSnapshot::new(42, 128);
+
+        assert_eq!(snapshot + CostSnapshot::zero(), snapshot);
+        assert_eq!(CostSnapshot::zero() + snapshot, snapshot);
+
+        let mut assigned = snapshot;
+        assigned += CostSnapshot::zero();
+        assert_eq!(assigned, snapshot);
     }
 
     #[test]
