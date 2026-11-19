@@ -51,14 +51,6 @@ impl ReplayTransport {
             .with_context(|| format!("Fixture not found for {key}"))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn get_value_entry(&self, key: &str) -> Result<Value> {
-        self.entries
-            .get(key)
-            .cloned()
-            .with_context(|| format!("Fixture not found for {key}"))
-    }
-
     /// Look up `key`, which was built for `verb` on `target` (the package, or
     /// `package:function`) in the given network and source context.
     fn lookup(
