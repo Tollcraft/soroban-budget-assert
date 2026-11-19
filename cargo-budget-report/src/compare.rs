@@ -971,6 +971,49 @@ mod tests {
         assert!((t.value - 0.10).abs() < f64::EPSILON);
     }
 
+    #[test]
+    fn parse_tolerance_edge_cases_and_rejections() {
+        // The inclusive ends of the percentage range: "0%" disables headroom
+        // while "100%" allows the measurement to double.
+        assert!((parse_tolerance("0%").unwrap().value - 0.0).abs() < 1e-9);
+        assert!((parse_tolerance("100%").unwrap().value - 1.0).abs() < 1e-9);
+
+        // Decimal and scientific notation describe the same fraction.
+        assert!((parse_tolerance("0.001").unwrap().value - 0.001).abs() < 1e-9);
+        assert!((parse_tolerance("1e-3").unwrap().value - 0.001).abs() < 1e-9);
+        assert!((parse_tolerance("1e-2").unwrap().value - 0.01).abs() < 1e-9);
+
+        // Surrounding whitespace is trimmed, including between the number and
+        // the `%` suffix.
+        assert!((parse_tolerance(" 15% ").unwrap().value - 0.15).abs() < 1e-9);
+        assert!((parse_tolerance(" 10 % ").unwrap().value - 0.10).abs() < 1e-9);
+        assert!((parse_tolerance("\t5%\n").unwrap().value - 0.05).abs() < 1e-9);
+
+        // Every malformed input is rejected rather than silently defaulting.
+        for input in [
+            "",
+            "%",
+            "abc",
+            "-5%",
+            "-0.5",
+            "NaN",
+            "inf",
+            "5%%",
+            "5 percent",
+        ] {
+            assert!(
+                parse_tolerance(input).is_err(),
+                "expected rejection for {input:?}"
+            );
+        }
+
+        // Error classes stay distinguishable for callers that surface them.
+        let negative = parse_tolerance("-5%").unwrap_err().to_string();
+        assert!(negative.contains("non-negative"), "got: {negative}");
+        let non_finite = parse_tolerance("inf").unwrap_err().to_string();
+        assert!(non_finite.contains("finite"), "got: {non_finite}");
+    }
+
     // -- Tolerance::allows / classify boundary math --------------------------
 
     #[test]
@@ -991,6 +1034,30 @@ mod tests {
         // (and the `classify` flow) report it as accepted. The math boundary
         // is `current > max_allowed`, not `current != baseline`.
         assert!(t.allows(1000, 999));
+    }
+
+    #[test]
+    fn zero_baseline_max_allowed_is_always_zero() {
+        // `max_allowed` scales the baseline itself, so a zero baseline has
+        // nothing to scale: 0 * (1 + tol) == 0 for every tolerance.
+        for tol in [0.0, 0.10, 1.0, 10.0] {
+            assert_eq!(max_allowed(0, tol), 0, "tolerance {tol} must not help");
+        }
+    }
+
+    #[test]
+    fn zero_baseline_allows_only_zero() {
+        // Mathematical consequence: when a baseline metric is zero, any
+        // non-zero measurement is a regression no matter how high the
+        // tolerance is — even 1000 %. Contract test authors whose baseline
+        // records zero for a metric (e.g. `extend_instance_ttl` writes) must
+        // keep the metric at zero or override it explicitly; a percentage
+        // tolerance cannot create headroom from a zero baseline.
+        for tol in [0.0, 0.10, 1.0, 10.0] {
+            let t = Tolerance::new(tol);
+            assert!(t.allows(0, 0), "tolerance {tol} must allow no change");
+            assert!(!t.allows(0, 1), "tolerance {tol} cannot allow +1");
+        }
     }
 
     #[test]
