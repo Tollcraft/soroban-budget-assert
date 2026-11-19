@@ -20,5 +20,5 @@ We welcome contributions to `soroban-budget-assert`.
 
 ## ⚙️ Supported Versions & Compatibility
 
-See the [Supported Versions & Compatibility reference](reference.md#supported-versions-compatibility)
+See the [Supported Versions & Compatibility reference](reference.md#-supported-versions--compatibility)
 for the canonical SDK/XDR pins and compatibility matrix.
