@@ -11,12 +11,10 @@ fn repo_root() -> PathBuf {
 #[test]
 fn user_guide_qualifies_cost_figures_with_their_measured_profile() {
     let root = repo_root();
-    let user_guide = fs::read_to_string(root.join("docs/src/user_guide.md"))
-        .expect("read user guide");
-    let measurements =
-        fs::read_to_string(root.join("MEASUREMENTS.md")).expect("read measurements");
-    let expected_example =
-        "size-optimized release profile: local WASM ~901,816; testnet ~756,678";
+    let user_guide =
+        fs::read_to_string(root.join("docs/src/user_guide.md")).expect("read user guide");
+    let measurements = fs::read_to_string(root.join("MEASUREMENTS.md")).expect("read measurements");
+    let expected_example = "size-optimized release profile: local WASM ~901,816; testnet ~756,678";
 
     assert!(
         user_guide.contains(expected_example),
