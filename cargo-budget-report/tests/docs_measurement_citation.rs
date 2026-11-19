@@ -24,9 +24,7 @@ fn user_guide_qualifies_cost_figures_with_their_measured_profile() {
     );
     assert!(
         measurements.lines().any(|line| {
-            line.contains("901,816")
-                && line.contains("756,678")
-                && line.contains("size-opt")
+            line.contains("901,816") && line.contains("756,678") && line.contains("size-opt")
         }),
         "the cited values must appear together in MEASUREMENTS.md for the size-optimized profile"
     );

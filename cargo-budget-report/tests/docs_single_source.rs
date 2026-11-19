@@ -10,7 +10,10 @@ fn repo_root() -> PathBuf {
 
 fn markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap_or_else(|error| {
-        panic!("cannot read documentation directory {}: {error}", dir.display())
+        panic!(
+            "cannot read documentation directory {}: {error}",
+            dir.display()
+        )
     }) {
         let entry = entry.unwrap_or_else(|error| panic!("cannot read directory entry: {error}"));
         let path = entry.path();
@@ -46,8 +49,8 @@ fn compatibility_matrix_has_one_canonical_source() {
         canonical.display()
     );
 
-    let contributing = fs::read_to_string(docs_dir.join("contributing.md"))
-        .expect("read contributing guide");
+    let contributing =
+        fs::read_to_string(docs_dir.join("contributing.md")).expect("read contributing guide");
     assert!(
         contributing.contains("reference.md#supported-versions-compatibility"),
         "contributing guide must link to the canonical compatibility reference"
