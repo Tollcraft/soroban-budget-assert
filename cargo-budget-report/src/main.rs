@@ -1071,7 +1071,7 @@ fn simulate_function(
     };
 
     let rpc_resp = transport
-        .simulate_transaction(&b64_xdr, package, function)
+        .simulate_transaction(&b64_xdr, source, network, package, function)
         .map_err(|e| Error::CommandFailed(format!("{:#}", e)))?;
 
     if let Some(error) = rpc_resp.get("error") {
@@ -1895,13 +1895,21 @@ impl transport::Transport for TransportKind {
     fn simulate_transaction(
         &mut self,
         b64_xdr: &str,
+        source: &str,
+        network: &str,
         package: &str,
         function: &str,
     ) -> anyhow::Result<serde_json::Value> {
         match self {
-            TransportKind::Live(t) => t.simulate_transaction(b64_xdr, package, function),
-            TransportKind::Recording(t) => t.simulate_transaction(b64_xdr, package, function),
-            TransportKind::Replay(t) => t.simulate_transaction(b64_xdr, package, function),
+            TransportKind::Live(t) => {
+                t.simulate_transaction(b64_xdr, source, network, package, function)
+            }
+            TransportKind::Recording(t) => {
+                t.simulate_transaction(b64_xdr, source, network, package, function)
+            }
+            TransportKind::Replay(t) => {
+                t.simulate_transaction(b64_xdr, source, network, package, function)
+            }
         }
     }
 }

@@ -242,6 +242,8 @@ impl Transport for LiveTransport {
     fn simulate_transaction(
         &mut self,
         b64_xdr: &str,
+        _source: &str,
+        _network: &str,
         _package: &str,
         _function: &str,
     ) -> Result<Value> {
