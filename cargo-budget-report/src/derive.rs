@@ -611,6 +611,59 @@ mod tests {
     }
 
     #[test]
+    fn margin_for_metric_matches_core_constants() {
+        // Pin `Margin::for_metric` against the canonical metric names from the
+        // core trait so a future rename/additions on either side cannot drift
+        // silently and leave derivation without a margin.
+        use soroban_budget_assert_core::traits::{
+            METRIC_CPU_INSTRUCTIONS, METRIC_MEMORY_BYTES, METRIC_READ_BYTES, METRIC_WASM_BYTES,
+            METRIC_WRITE_BYTES,
+        };
+
+        let margin = Margin::new(1.1, 1.2, 1.3, 1.4).unwrap();
+
+        assert_eq!(margin.for_metric(METRIC_CPU_INSTRUCTIONS), Some(1.1));
+        assert_eq!(margin.for_metric(METRIC_MEMORY_BYTES), Some(1.2));
+        assert_eq!(margin.for_metric(METRIC_READ_BYTES), Some(1.3));
+        assert_eq!(margin.for_metric(METRIC_WRITE_BYTES), Some(1.4));
+
+        // WASM binary size is unmetered, so it deliberately has no margin.
+        assert_eq!(margin.for_metric(METRIC_WASM_BYTES), None);
+
+        // Lookup is exact-match; unknown or differently-cased labels are not
+        // silently coerced to a metric.
+        assert_eq!(margin.for_metric(""), None);
+        assert_eq!(margin.for_metric("cpu instructions"), None);
+        assert_eq!(margin.for_metric("Unknown Bytes"), None);
+    }
+
+    #[test]
+    fn ceil_apply_boundary_and_saturation_tests() {
+        // Identity boundaries: zero stays zero and a 1.0 margin is a no-op.
+        assert_eq!(ceil_apply(0, 1.0), 0);
+        assert_eq!(ceil_apply(1, 1.0), 1);
+
+        // 100 * 1.0001 = 100.01 -> the ceiling rounds up to 101.
+        assert_eq!(ceil_apply(100, 1.0001), 101);
+
+        // Saturation: scaling beyond u64::MAX caps instead of wrapping.
+        assert_eq!(ceil_apply(u64::MAX, 1.5), u64::MAX);
+        assert_eq!(ceil_apply(u64::MAX, f64::MAX), u64::MAX);
+
+        // `Margin::new` rejects these, but `ceil_apply` is an independent
+        // function and must stay panic-free: non-finite or negative margins
+        // preserve the measured value rather than overflowing or unwinding.
+        for margin in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0] {
+            assert_eq!(
+                ceil_apply(100, margin),
+                100,
+                "margin {margin} must not panic"
+            );
+        }
+        assert_eq!(ceil_apply(u64::MAX, f64::NAN), u64::MAX);
+    }
+
+    #[test]
     fn wrapped_tier_b_report_parses() {
         let body = serde_json::json!({
             "schema_version": 1,
