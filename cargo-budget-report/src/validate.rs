@@ -272,15 +272,10 @@ pub(crate) fn validate_budget_toml(
         // exported function of the workspace. Skipped when we have no exported
         // functions to compare against (e.g. nothing was built).
         if !available_functions.is_empty() {
+            let known: HashSet<&str> = available_functions.iter().map(String::as_str).collect();
+            let mut hint: Option<(Vec<&str>, String)> = None;
+
             if let Some(toml::Value::Table(fns)) = top.get("functions") {
-                // Membership is asked once per configured function, so a set
-                // replaces the previous scan of the whole export list for
-                // every name. The typo candidates and the rendered
-                // "available functions" hint are built lazily, on the first
-                // name that is actually missing, so a config where every
-                // function resolves allocates neither.
-                let known: HashSet<&str> = available_functions.iter().map(String::as_str).collect();
-                let mut hint: Option<(Vec<&str>, String)> = None;
                 for name in fns.keys() {
                     let bare_name = name
                         .split_once("::")
@@ -309,6 +304,51 @@ pub(crate) fn validate_budget_toml(
                             ),
                         },
                     ));
+                }
+            }
+
+            if let Some(toml::Value::Table(scenarios)) = top.get("scenarios") {
+                for (scenario_name, val) in scenarios {
+                    if let toml::Value::Table(sc_table) = val {
+                        if let Some(toml::Value::Array(funcs)) = sc_table.get("functions") {
+                            for f_val in funcs {
+                                if let toml::Value::String(fn_name) = f_val {
+                                    let bare_name = fn_name
+                                        .split_once("::")
+                                        .map(|(_, f)| f)
+                                        .unwrap_or(fn_name.as_str());
+                                    if known.contains(bare_name) {
+                                        continue;
+                                    }
+                                    let (candidate_list, avail_list) =
+                                        hint.get_or_insert_with(|| {
+                                            (
+                                                available_functions
+                                                    .iter()
+                                                    .map(String::as_str)
+                                                    .collect(),
+                                                available_functions.join(", "),
+                                            )
+                                        });
+                                    let suggestion =
+                                        closest_match(bare_name, candidate_list.as_slice());
+                                    errors.push(ValidationError::new(
+                                        format!("budget.toml [scenarios.{scenario_name}]"),
+                                        match suggestion {
+                                            Some(s) => format!(
+                                                "scenario `{scenario_name}` component function `{fn_name}` does not exist in the workspace (did you mean `{s}`?). Available functions: {}",
+                                                avail_list.as_str()
+                                            ),
+                                            None => format!(
+                                                "scenario `{scenario_name}` component function `{fn_name}` does not exist in the workspace. Available functions: {}",
+                                                avail_list.as_str()
+                                            ),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
