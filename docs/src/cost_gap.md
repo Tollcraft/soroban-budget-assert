@@ -4,7 +4,35 @@ When developing Soroban smart contracts, locally measured resource costs (**Tier
 
 Relying on a local estimate as a direct prediction of network cost creates a false sense of security. A budget check set tightly against local numbers can pass consistently in CI right up until it fails on-chain.
 
-This guide explains why this gap exists, how large it typically is across different operation types, which operations remain unmeasured, and how to set practical safety margins for your contract.
+## Measurement Status by Operation
+
+Not every operation has the same evidence behind it. Each operation below has one of three statuses:
+
+* **Network-verified**: both a WASM-registered local estimate and a testnet `simulateTransaction` figure are recorded, so the gap is known. The gap figures in the table above apply.
+* **Local only**: a WASM-registered local estimate is recorded, but the network figure is still pending. The local figure is a real baseline you can gate regressions against; the size and direction of its network gap are not yet known.
+* **Pending**: a fixture exists, but no figure has been recorded yet.
+
+| Operation | Status | Recorded figure | Evidence |
+|---|---|---|---|
+| Storage writes | Network-verified | −17.2% | [MEASUREMENTS.md › CPU instructions](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#cpu-instructions) (`write_bytes` row) |
+| VM arithmetic (compute-only) | Network-verified | +8.6% | [MEASUREMENTS.md › isolated VM benchmark](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#unmeasured-operation-types) |
+| Host-function calls | Network-verified | −6.9% to −19.8% | [MEASUREMENTS.md › Host-function calls](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#host-function-calls) |
+| Map operations | Network-verified | −3.8% to −10.7% | [`map_operations_benchmark.json`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/fixtures/map_operations_benchmark.json) capture record |
+| Authorization checks (`require_auth`) | Local only | 2,864,886 CPU | [MEASUREMENTS.md › Authorization](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#authorization-require_auth-measurement) |
+| TTL extensions | Local only | 444,536 CPU (instance) / 458,090 CPU (persistent) | [MEASUREMENTS.md › TTL extension](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#ttl-extension) |
+| Event emissions | Local only | 2,945,588 CPU | [MEASUREMENTS.md › Event emission](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#event-emission) (`do_event_heavy_work`) |
+| Cross-contract invocations | Local only | 3,603,572 CPU (one frame) | [MEASUREMENTS.md › Cross-contract call depth](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#cross-contract-call-depth) |
+| Memory bytes (allocations) | Pending | — | [MEASUREMENTS.md › Memory bytes](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#memory-bytes) (`allocate_vec` row, figures not yet filled in) |
+| Storage reads (isolated) | Pending | — | [MEASUREMENTS.md › CPU instructions](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#cpu-instructions) (`do_read_heavy_work` row, figures blank) |
+
+### How to use each status
+
+* **Network-verified**: apply the gap from [The Gap by Operation Type](#the-gap-by-operation-type) when choosing margins.
+* **Local only**: set Tier A limits from the recorded local figure for regression gating, but **do not borrow another operation's gap**. Some of these local figures sit far from their older Tier B estimates (`require_auth` is ~32× and instance TTL extension ~20× the figures in `tier-a-limits.env`), so confirm with a testnet `cargo budget-report` run before treating any of them as an absolute network limit.
+* **Pending**: no figure exists. Treat these operations as uncharacterised: use the local-only safety buffer below and validate against network simulation.
+
+> **Keeping this table current:** `cargo-budget-report/tests/cost_gap_measurement_links.rs` checks that every row links to an existing `MEASUREMENTS.md` section or capture fixture, that every figure quoted here appears in that evidence, and that a **Local only** row's evidence still shows the network figure as pending. When a network figure lands in `MEASUREMENTS.md`, move the row to **Network-verified** and quote its delta.
+
 
 > **Canonical evidence:** For the raw benchmark tables, JSON fixtures, SDK version calibration records, and step-by-step reproduction instructions, see the root [`MEASUREMENTS.md`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md) file and the [Measurements Reference](measurements.md).
 
