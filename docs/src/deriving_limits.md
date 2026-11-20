@@ -103,8 +103,8 @@ following changes, in roughly decreasing order of urgency:
 1. The contract source (any code path that produces a Tier A regression
    in CI is a sign that the Tier B report's underlying profile also moved).
 2. The release profile in the workspace's `Cargo.toml` — see
-   [_Use the same release profile for comparable numbers_](#use-the-same-release-profile-for-comparable-numbers)
-   above; an `opt-level` or `lto` flip silently re-prices every limit.
+   [_Required release profile for comparable measurements_](reference.md#required-release-profile-for-comparable-measurements);
+   an `opt-level` or `lto` flip silently re-prices every limit.
 3. The `soroban-sdk` or `stellar-xdr` version (different host metering,
    different VM cost model; see `MEASUREMENTS.md` for SDK-versioned
    calibration).
