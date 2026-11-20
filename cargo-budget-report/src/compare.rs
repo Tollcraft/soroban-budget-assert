@@ -516,8 +516,10 @@ pub fn check_against_baseline(
             }
         };
 
+        let qualified = format!("{package}::{function}");
         let tolerance = tolerance_overrides
-            .get(&function)
+            .get(&qualified)
+            .or_else(|| tolerance_overrides.get(&function))
             .copied()
             .unwrap_or(default_tolerance);
 
