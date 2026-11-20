@@ -313,6 +313,79 @@ mod tests {
         }
     }
 
+    /// Pin the runtime-symbol classification across the toolchain names a
+    /// real Soroban build emits and the entrypoints a contract actually
+    /// exports.
+    ///
+    /// Runtime symbols must never be treated as invocation targets. A leading
+    /// underscore is the whole rule for the `_`-prefixed family, so contract
+    /// methods that merely *contain* an underscore (`do_work`,
+    /// `init_contract`) stay callable.
+    #[test]
+    fn runtime_symbols_identified_correctly() {
+        for name in [
+            "_start",
+            "_hidden_func",
+            "__data_end",
+            "__heap_base",
+            "__stack_pointer",
+            "__rust_alloc",
+            "memory",
+        ] {
+            assert!(
+                is_runtime_symbol(name),
+                "{name} is a toolchain/runtime symbol, not an entrypoint"
+            );
+        }
+
+        for name in ["swap", "deposit", "init", "do_work", "init_contract"] {
+            assert!(
+                !is_runtime_symbol(name),
+                "{name} is a contract entrypoint and must not be filtered"
+            );
+        }
+    }
+
+    /// Contract entrypoints survive scanning next to toolchain exports, and a
+    /// module that exports *only* toolchain symbols is reported as
+    /// [`ExportScan::OnlyRuntimeSymbols`] rather than yielding a fake
+    /// entrypoint.
+    #[test]
+    fn contract_entrypoints_not_filtered_as_runtime() {
+        let wasm = wasm_with_exports(
+            &["_start", "__data_end", "memory", "swap", "init_pool"],
+            false,
+        );
+        match scan_wasm_exports(&wasm).unwrap() {
+            ExportScan::Functions(fns) => {
+                assert_eq!(
+                    fns.into_iter().collect::<Vec<_>>(),
+                    vec!["init_pool", "swap"],
+                    "only the contract entrypoints remain"
+                );
+            }
+            other => panic!("expected Functions, got {other:?}"),
+        }
+
+        // `memory` is a memory export, not a function, so it never lands in
+        // the function list at all; the rest are allocator/toolchain funcs.
+        let runtime_only = wasm_with_exports(&["_start", "__data_end", "__rust_alloc"], false);
+        match scan_wasm_exports(&runtime_only).unwrap() {
+            ExportScan::OnlyRuntimeSymbols { found } => {
+                assert_eq!(
+                    found,
+                    vec![
+                        "__data_end".to_string(),
+                        "__rust_alloc".to_string(),
+                        "_start".to_string()
+                    ],
+                    "every toolchain export is listed and none is promoted"
+                );
+            }
+            other => panic!("expected OnlyRuntimeSymbols, got {other:?}"),
+        }
+    }
+
     /// A minimal module with no export section at all — the shape a plain
     /// `rlib` build leaves behind.
     fn wasm_without_export_section() -> Vec<u8> {
