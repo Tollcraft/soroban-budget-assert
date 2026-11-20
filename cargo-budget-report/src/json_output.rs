@@ -50,6 +50,17 @@ pub(crate) const ACCEPTED_SCHEMA_VERSIONS: &[u32] = &[SCHEMA_VERSION];
 /// Crucially, `schema_version` is validated *first* before parsing the `snapshots` array,
 /// ensuring that unsupported versions are reported immediately even if the snapshots
 /// would fail to parse under the current types.
+/// Top-level keys recognised in a wrapped JSON report envelope.
+///
+/// Any key not in this set triggers a validation error so that typos like
+/// `snapshot` (instead of `snapshots`) are caught immediately.
+const ALLOWED_TOP_LEVEL_KEYS: &[&str] = &[
+    "schema_version",
+    "snapshots",
+    "generated_at",
+    "generator_version",
+];
+
 pub(crate) fn validate_report_schema<'a>(
     root: &'a serde_json::Value,
     path: &Path,
@@ -80,6 +91,18 @@ pub(crate) fn validate_report_schema<'a>(
         if let Some(n) = version_val.as_u64() {
             if let Ok(v32) = u32::try_from(n) {
                 if ACCEPTED_SCHEMA_VERSIONS.contains(&v32) {
+                    // Reject unknown top-level keys before accepting the report.
+                    for key in obj.keys() {
+                        if !ALLOWED_TOP_LEVEL_KEYS.contains(&key.as_str()) {
+                            return Err(Error::Json(serde::de::Error::custom(format!(
+                                "unknown top-level key `{}` in {}; allowed keys are {:?}",
+                                key,
+                                path.display(),
+                                ALLOWED_TOP_LEVEL_KEYS
+                            ))));
+                        }
+                    }
+
                     let snapshots =
                         obj.get("snapshots")
                             .and_then(|s| s.as_array())
@@ -138,11 +161,68 @@ pub(crate) fn validate_report_schema<'a>(
 ///
 /// The `limit` and `pass` fields are present in `--check` mode only, and
 /// `Option` fields are omitted entirely when unset (see [`crate::CostReport`]).
+fn now_utc_iso8601() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = now / 86_400;
+    let rem = now % 86_400;
+    let hh = rem / 3600;
+    let mm = (rem % 3600) / 60;
+    let ss = rem % 60;
+
+    let mut year = 1970u64;
+    let mut remaining_days = days;
+    let is_leap_year =
+        |y: u64| (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
+    loop {
+        let is_leap = is_leap_year(year);
+        let year_len = if is_leap { 366 } else { 365 };
+        if remaining_days < year_len {
+            break;
+        }
+        remaining_days -= year_len;
+        year += 1;
+    }
+    let is_leap = is_leap_year(year);
+    let month_lengths = [
+        31u64,
+        if is_leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    for &len in &month_lengths {
+        if remaining_days < len {
+            break;
+        }
+        remaining_days -= len;
+        month += 1;
+    }
+    let day = remaining_days + 1;
+    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
 #[derive(Serialize)]
 pub(crate) struct BudgetReportJson<'a> {
     /// Schema version of the document being emitted; always
     /// [`SCHEMA_VERSION`] for as long as this type is the only writer.
     schema_version: u32,
+    /// Timestamp when this report envelope was generated (UTC ISO-8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_at: Option<String>,
+    /// Cargo package version of the tool generating the report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generator_version: Option<&'static str>,
     /// The report rows, borrowed rather than owned: rendering only serializes
     /// them, so cloning each row into the envelope would allocate for nothing.
     snapshots: &'a [crate::CostReport],
@@ -165,6 +245,8 @@ pub(crate) fn render_json(reports: &[crate::CostReport]) -> String {
     // allocation here is the output `String` itself.
     let wrapper = BudgetReportJson {
         schema_version: SCHEMA_VERSION,
+        generated_at: Some(now_utc_iso8601()),
+        generator_version: Some(env!("CARGO_PKG_VERSION")),
         snapshots: reports,
     };
     serde_json::to_string_pretty(&wrapper).expect("report serialization should not fail")
@@ -226,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_carries_only_the_schema_version_and_snapshots() {
+    fn envelope_carries_schema_version_metadata_and_snapshots() {
         // Adding a top-level field is a schema change, so it should show up as
         // a deliberate edit to this assertion rather than as a side effect.
         let json_str = render_json(&[report("pkg", "fn")]);
@@ -237,7 +319,19 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys, vec!["schema_version", "snapshots"]);
+        assert_eq!(
+            keys,
+            vec![
+                "generated_at",
+                "generator_version",
+                "schema_version",
+                "snapshots"
+            ]
+        );
+        assert_eq!(json["generator_version"], env!("CARGO_PKG_VERSION"));
+        let gen_at = json["generated_at"].as_str().unwrap();
+        assert!(gen_at.ends_with('Z'));
+        assert_eq!(gen_at.len(), 20); // YYYY-MM-DDTHH:MM:SSZ
     }
 
     #[test]
