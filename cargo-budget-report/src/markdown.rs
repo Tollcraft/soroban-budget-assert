@@ -28,6 +28,24 @@ const NOT_MEASURED_CHECK: &str = "N/A (simulation failed)";
 /// configured, or no pass/fail recorded).
 const NOT_APPLICABLE: &str = "-";
 
+/// Escape text for use inside a Markdown table cell.
+///
+/// * `|` → `\|` — an unescaped pipe would be interpreted as a column
+///   delimiter, shifting all subsequent cells and corrupting alignment.
+/// * Embedded newlines (`\n`, `\r\n`, `\r`) are collapsed into a single space
+///   so that the table row stays on one line.
+fn escape_cell(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('|') || text.contains('\n') || text.contains('\r') {
+        std::borrow::Cow::Owned(
+            text.replace('\r', "")
+                .replace('\n', " ")
+                .replace('|', r"\|"),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
 /// Typical bytes a row adds beyond its package and function names: the four
 /// column separators, a metric name (at most `CPU Instructions`), a value of up
 /// to 13 characters, and the newline. Only sizes the up-front allocation, so an
@@ -80,9 +98,9 @@ pub(crate) fn render_markdown(reports: &[CostReport]) -> String {
 
     for r in reports {
         out.push_str("| ");
-        out.push_str(&r.package);
+        out.push_str(&escape_cell(&r.package));
         out.push_str(" | ");
-        out.push_str(&r.function);
+        out.push_str(&escape_cell(&r.function));
         out.push_str(" | ");
         out.push_str(r.metric);
         out.push_str(" | ");
@@ -314,10 +332,11 @@ _Simulated resource amounts from local WASM test harness. Network-dependent bill
     }
 
     #[test]
-    fn render_markdown_does_not_escape_or_alter_cell_text() {
-        // Behaviour preserved from the original: names are emitted verbatim.
+    fn render_markdown_escapes_pipes_in_cell_text() {
+        // Pipes in package or function names must be escaped so the Markdown
+        // table structure is preserved.
         let md = render_markdown(&[report("a|b", "c d", "CPU Instructions", Some(1))]);
-        assert!(md.contains("| a|b | c d | CPU Instructions | 1 |\n"));
+        assert!(md.contains(r"| a\|b | c d | CPU Instructions | 1 |"));
     }
 
     #[test]
