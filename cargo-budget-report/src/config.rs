@@ -49,6 +49,86 @@ impl Default for Config {
     }
 }
 
+#[derive(Debug)]
+pub enum ConfigError {
+    Toml(toml::de::Error),
+    FieldType {
+        field: &'static str,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Toml(e) => write!(f, "TOML syntax error: {e}"),
+            Self::FieldType { field, message } => {
+                write!(f, "field '{field}' has invalid type: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Toml(e) => Some(e),
+            Self::FieldType { .. } => None,
+        }
+    }
+}
+
+impl From<toml::de::Error> for ConfigError {
+    fn from(err: toml::de::Error) -> Self {
+        Self::Toml(err)
+    }
+}
+
+/// Fallible configuration parser that reports specific syntax and type errors.
+pub fn parse_config_fallible(content: &str) -> Result<Config, ConfigError> {
+    let mut config = Config::default();
+    let table: toml::Table = toml::from_str(content)?;
+
+    if let Some(val) = table.get("network") {
+        config.network = val
+            .clone()
+            .try_into::<String>()
+            .map_err(|e| ConfigError::FieldType {
+                field: "network",
+                message: e.to_string(),
+            })?;
+    }
+    if let Some(val) = table.get("source") {
+        config.source = val
+            .clone()
+            .try_into::<String>()
+            .map_err(|e| ConfigError::FieldType {
+                field: "source",
+                message: e.to_string(),
+            })?;
+    }
+    if let Some(val) = table.get("timeout_secs") {
+        config.timeout_secs =
+            val.clone()
+                .try_into::<u64>()
+                .map_err(|e| ConfigError::FieldType {
+                    field: "timeout_secs",
+                    message: e.to_string(),
+                })?;
+    }
+    if let Some(val) = table.get("retry_attempts") {
+        config.retry_attempts =
+            val.clone()
+                .try_into::<u32>()
+                .map_err(|e| ConfigError::FieldType {
+                    field: "retry_attempts",
+                    message: e.to_string(),
+                })?;
+    }
+
+    Ok(config)
+}
+
 /// Parse a TOML string into a [`Config`], filling missing fields from
 /// [`Config::default`].
 ///
@@ -56,22 +136,41 @@ impl Default for Config {
 /// - An empty string or whitespace-only input returns the default config.
 /// - A comment-only file returns the default config.
 /// - Unknown TOML keys are silently ignored (handled by `serde`).
-/// - A malformed TOML string returns the default config rather than
+/// - When individual fields fail type deserialization, valid sibling fields
+///   are preserved while malformed fields fall back to their defaults.
+/// - A malformed TOML syntax error returns the default config rather than
 ///   propagating a parse error — the tool must always produce output, even
 ///   when the config file is temporarily broken.
 pub fn parse_config(content: &str) -> Config {
-    let base = Config::default();
+    let mut config = Config::default();
 
-    // Attempt to deserialise into PartialConfig, which has every field
-    // Optional so that missing keys fall back to defaults below.
-    let partial = match toml::from_str::<PartialConfig>(content) {
-        Ok(p) => p,
-        // Any parse failure (invalid syntax, type mismatch, etc.) is treated
-        // as "no config provided" so the caller always gets a usable Config.
-        Err(_) => return base,
+    let table = match toml::from_str::<toml::Table>(content) {
+        Ok(t) => t,
+        Err(_) => return config,
     };
 
-    apply_partial(base, partial)
+    if let Some(val) = table.get("network") {
+        if let Ok(net) = val.clone().try_into::<String>() {
+            config.network = net;
+        }
+    }
+    if let Some(val) = table.get("source") {
+        if let Ok(src) = val.clone().try_into::<String>() {
+            config.source = src;
+        }
+    }
+    if let Some(val) = table.get("timeout_secs") {
+        if let Ok(t) = val.clone().try_into::<u64>() {
+            config.timeout_secs = t;
+        }
+    }
+    if let Some(val) = table.get("retry_attempts") {
+        if let Ok(r) = val.clone().try_into::<u32>() {
+            config.retry_attempts = r;
+        }
+    }
+
+    config
 }
 
 /// Merge `partial` into `base`, taking each field from `partial` when

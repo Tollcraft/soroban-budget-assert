@@ -178,6 +178,21 @@ impl Baseline {
 
         let mut entries: BTreeMap<String, BaselineEntry> = BTreeMap::new();
         for (key, val) in root_table {
+            let (_pkg, _fn_) = match split_key(key) {
+                Some((p, f))
+                    if !p.is_empty()
+                        && !f.is_empty()
+                        && !key.contains('.')
+                        && !f.contains(KEY_SEPARATOR) =>
+                {
+                    (p, f)
+                }
+                _ => {
+                    anyhow::bail!(
+                        "invalid baseline header '{key}': expected '\"package::function\"' format (e.g. '[\"my-contract::my_function\"]')"
+                    );
+                }
+            };
             if !val.is_table() {
                 anyhow::bail!("expected a table for key '{key}', got {}", value_kind(val));
             }
