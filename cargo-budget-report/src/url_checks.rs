@@ -36,32 +36,21 @@
 /// Returns `false` for any input that does not carry a well-formed
 /// `scheme://host` prefix.
 fn check_url_scheme_host(url: &str, expected_scheme: &str, expected_host: &str) -> bool {
-    // Trim first so a URL pasted with stray leading/trailing whitespace still
-    // parses. Interior whitespace is left alone and fails the match below.
     let trimmed = url.trim();
 
-    // The scheme is a literal, case-sensitive prefix. `starts_with` alone is
-    // not sufficient: `httpsfoo://` also starts with `https`, which is exactly
-    // why the `://` guard below is required.
-    if !trimmed.starts_with(expected_scheme) {
+    let Some(colon_slash_slash) = trimmed.find("://") else {
+        return false;
+    };
+    let scheme = &trimmed[..colon_slash_slash];
+    if !scheme.eq_ignore_ascii_case(expected_scheme) {
         return false;
     }
 
-    // Everything after the scheme must be the `://` authority marker. This
-    // rejects both `https:/github.com` and bare schemes such as `https`.
-    let after_scheme = &trimmed[expected_scheme.len()..];
-    if !after_scheme.starts_with("://") {
-        return false;
-    }
-
-    // The authority runs up to the first `/` (or the end of the string). There
-    // is no port/userinfo/query parsing: the whole span is compared verbatim,
-    // so any decoration fails the equality check.
-    let after_protocol = &after_scheme[3..];
+    let after_protocol = &trimmed[colon_slash_slash + 3..];
     let host_end = after_protocol.find('/').unwrap_or(after_protocol.len());
     let host = &after_protocol[..host_end];
 
-    host == expected_host
+    host.eq_ignore_ascii_case(expected_host)
 }
 
 /// Returns `true` when `url` is an `https://github.com` URL whose text contains
@@ -293,13 +282,13 @@ mod tests {
         }
 
         #[test]
-        fn scheme_match_is_case_sensitive() {
-            assert!(!check_url_scheme_host(
+        fn scheme_match_is_case_insensitive() {
+            assert!(check_url_scheme_host(
                 "HTTPS://github.com",
                 "https",
                 "github.com"
             ));
-            assert!(!check_url_scheme_host(
+            assert!(check_url_scheme_host(
                 "Http://github.com",
                 "http",
                 "github.com"
@@ -307,8 +296,8 @@ mod tests {
         }
 
         #[test]
-        fn host_match_is_case_sensitive() {
-            assert!(!check_url_scheme_host(
+        fn host_match_is_case_insensitive() {
+            assert!(check_url_scheme_host(
                 "https://GitHub.com/x",
                 "https",
                 "github.com"
