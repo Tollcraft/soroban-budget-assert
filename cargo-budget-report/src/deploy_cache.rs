@@ -139,6 +139,15 @@ fn hex_sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// Canonicalise a wasm SHA-256 hex string for storage and comparison.
+///
+/// [`hex_sha256`] always produces lowercase, and the cache stores and compares
+/// only that form, so a cache file written by another tool with uppercase hex
+/// still matches.
+fn normalized_hash(wasm_sha256: &str) -> String {
+    wasm_sha256.to_ascii_lowercase()
+}
+
 impl DeployCache {
     /// Load the cache at `dir/.budget-cache.toml`, or start with an empty
     /// cache if the file is absent, unreadable, malformed, or carries an
@@ -165,17 +174,25 @@ impl DeployCache {
         }
     }
 
-    /// Return the contract id for a prior deployment that exactly matches
+    /// Return the contract id for a prior deployment that matches
     /// `(wasm_sha256, network, source)`, or `None` if no such entry exists.
     ///
-    /// The lookup is an exact match on all three key components — a different
-    /// wasm hash, a different network, or a different source account all
-    /// produce a miss, forcing a fresh deployment.
+    /// The lookup matches all three key components — a different wasm hash, a
+    /// different network, or a different source account all produce a miss,
+    /// forcing a fresh deployment. Hex hashes are compared case-insensitively:
+    /// an uppercase or mixed-case `wasm_sha256` still hits an entry stored by
+    /// [`put`](Self::put), so a hand-edited cache never triggers a needless
+    /// redeploy.
     pub fn get(&self, wasm_sha256: &str, network: &str, source: &str) -> Option<&str> {
+        let hash = normalized_hash(wasm_sha256);
         self.file
             .entries
             .iter()
-            .find(|e| e.wasm_sha256 == wasm_sha256 && e.network == network && e.source == source)
+            .find(|e| {
+                normalized_hash(&e.wasm_sha256) == hash
+                    && e.network == network
+                    && e.source == source
+            })
             .map(|e| e.contract_id.as_str())
     }
 
@@ -203,7 +220,7 @@ impl DeployCache {
 
         self.file.entries.push(CacheEntry {
             package: package.to_string(),
-            wasm_sha256: wasm_sha256.to_string(),
+            wasm_sha256: normalized_hash(wasm_sha256),
             network: network.to_string(),
             source: source.to_string(),
             contract_id: contract_id.to_string(),
@@ -368,6 +385,56 @@ mod tests {
         let reloaded = DeployCache::load(dir.path());
         assert_eq!(reloaded.get("hash-a", "testnet", "alice"), Some(ID_A));
         assert_eq!(reloaded.get("hash-b", "testnet", "alice"), Some(ID_B));
+    }
+
+    #[test]
+    fn get_matches_uppercase_hash_inserted_lowercase() {
+        let dir = tempdir().unwrap();
+        let mut cache = DeployCache::load(dir.path());
+        cache.put("pkg", "deadbeef", "testnet", "alice", ID_A);
+
+        assert_eq!(cache.get("DEADBEEF", "testnet", "alice"), Some(ID_A));
+        assert_eq!(cache.get("DeadBeef", "testnet", "alice"), Some(ID_A));
+    }
+
+    #[test]
+    fn get_matches_lowercase_hash_inserted_uppercase() {
+        let dir = tempdir().unwrap();
+        let mut cache = DeployCache::load(dir.path());
+        cache.put("pkg", "DEADBEEF", "testnet", "alice", ID_A);
+
+        assert_eq!(cache.get("deadbeef", "testnet", "alice"), Some(ID_A));
+        assert_eq!(cache.get("DeAdBeEf", "testnet", "alice"), Some(ID_A));
+    }
+
+    #[test]
+    fn insert_stores_canonical_lowercase_hash() {
+        let dir = tempdir().unwrap();
+        let mut cache = DeployCache::load(dir.path());
+        cache.put("pkg", "DEADBEEF", "testnet", "alice", ID_A);
+        cache.save().unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join(CACHE_FILE)).unwrap();
+        assert!(text.contains("wasm_sha256 = \"deadbeef\""));
+        assert!(!text.contains("DEADBEEF"));
+    }
+
+    #[test]
+    fn uppercase_hashes_on_disk_still_hit() {
+        let dir = tempdir().unwrap();
+        let content = r#"version = 1
+
+[[entry]]
+package = "pkg"
+wasm_sha256 = "DEADBEEF"
+network = "testnet"
+source = "alice"
+contract_id = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+"#;
+        std::fs::write(dir.path().join(CACHE_FILE), content).unwrap();
+
+        let cache = DeployCache::load(dir.path());
+        assert_eq!(cache.get("deadbeef", "testnet", "alice"), Some(ID_A));
     }
 
     #[test]

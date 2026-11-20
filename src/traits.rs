@@ -392,6 +392,38 @@ impl BudgetExceededError {
             limit,
         }
     }
+
+    /// Returns how far the measured value exceeded the limit.
+    ///
+    /// Uses saturating subtraction, so a value at or below the limit yields
+    /// `0` instead of panicking on underflow.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use soroban_budget_assert_core::BudgetExceededError;
+    ///
+    /// assert_eq!(BudgetExceededError::new("CPU Instructions", 1500, 1000).exceeded_by(), 500);
+    /// assert_eq!(BudgetExceededError::new("CPU Instructions", 1000, 1000).exceeded_by(), 0);
+    /// ```
+    pub fn exceeded_by(&self) -> u64 {
+        self.actual.saturating_sub(self.limit)
+    }
+
+    /// Alias for [`exceeded_by`](Self::exceeded_by).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use soroban_budget_assert_core::BudgetExceededError;
+    ///
+    /// let err = BudgetExceededError::new("Memory Bytes", 768, 512);
+    /// assert_eq!(err.delta(), 256);
+    /// assert_eq!(err.delta(), err.exceeded_by());
+    /// ```
+    pub fn delta(&self) -> u64 {
+        self.exceeded_by()
+    }
 }
 
 impl fmt::Display for BudgetExceededError {
@@ -682,6 +714,43 @@ mod tests {
         assert_eq!(err.metric, "CPU Instructions");
         assert_eq!(err.actual, 1500);
         assert_eq!(err.limit, 1000);
+    }
+
+    #[test]
+    fn budget_exceeded_error_exceeded_by() {
+        let err = BudgetExceededError::new("CPU Instructions", 1500, 1000);
+        assert_eq!(err.exceeded_by(), 500);
+    }
+
+    #[test]
+    fn budget_exceeded_error_exceeded_by_with_zero_limit() {
+        let err = BudgetExceededError::new("Memory Bytes", 42, 0);
+        assert_eq!(err.exceeded_by(), 42);
+    }
+
+    #[test]
+    fn budget_exceeded_error_exceeded_by_saturates_at_equality() {
+        let err = BudgetExceededError::new("CPU Instructions", 1000, 1000);
+        assert_eq!(err.exceeded_by(), 0);
+    }
+
+    #[test]
+    fn budget_exceeded_error_exceeded_by_saturates_below_limit() {
+        let err = BudgetExceededError::new("CPU Instructions", 400, 1000);
+        assert_eq!(err.exceeded_by(), 0);
+    }
+
+    #[test]
+    fn budget_exceeded_error_delta_is_alias() {
+        let err = BudgetExceededError::new("Write Bytes", 1024, 256);
+        assert_eq!(err.delta(), 768);
+        assert_eq!(err.delta(), err.exceeded_by());
+    }
+
+    #[test]
+    fn budget_exceeded_error_exceeded_by_max_values() {
+        let err = BudgetExceededError::new("CPU Instructions", u64::MAX, 1);
+        assert_eq!(err.exceeded_by(), u64::MAX - 1);
     }
 
     #[test]

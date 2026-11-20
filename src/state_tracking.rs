@@ -45,6 +45,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,18 @@ impl LinearStateTracker {
     }
 }
 
+impl fmt::Display for LinearStateTracker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} operations (total CPU: {}, total memory: {} bytes)",
+            self.len(),
+            self.total_cpu(),
+            self.total_memory()
+        )
+    }
+}
+
 impl StateTracker for LinearStateTracker {
     fn record(&mut self, operation: &str, snapshot: CostSnapshot) {
         // Perform an O(N) linear scan to see if the operation is already tracked.
@@ -254,6 +267,18 @@ impl HashedStateTracker {
     /// Returns the number of entries currently stored.
     pub fn capacity(&self) -> usize {
         self.entries.capacity()
+    }
+}
+
+impl fmt::Display for HashedStateTracker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} operations (total CPU: {}, total memory: {} bytes)",
+            self.len(),
+            self.total_cpu(),
+            self.total_memory()
+        )
     }
 }
 
@@ -598,6 +623,48 @@ mod tests {
         t.clear();
         assert!(t.is_empty());
         assert!(t.lookup("a").is_none());
+    }
+
+    // ── Display ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn linear_tracker_display_empty() {
+        let t = LinearStateTracker::new();
+        assert_eq!(
+            t.to_string(),
+            "0 operations (total CPU: 0, total memory: 0 bytes)"
+        );
+    }
+
+    #[test]
+    fn linear_tracker_display_populated() {
+        let mut t = LinearStateTracker::new();
+        t.record("deposit", CostSnapshot::new(1_000, 256));
+        t.record("withdraw", CostSnapshot::new(750, 128));
+        assert_eq!(
+            t.to_string(),
+            "2 operations (total CPU: 1750, total memory: 384 bytes)"
+        );
+    }
+
+    #[test]
+    fn hashed_tracker_display_empty() {
+        let t = HashedStateTracker::new();
+        assert_eq!(
+            t.to_string(),
+            "0 operations (total CPU: 0, total memory: 0 bytes)"
+        );
+    }
+
+    #[test]
+    fn hashed_tracker_display_populated() {
+        let mut t = HashedStateTracker::new();
+        t.record("deposit", CostSnapshot::new(1_000, 256));
+        t.record("withdraw", CostSnapshot::new(750, 128));
+        assert_eq!(
+            t.to_string(),
+            "2 operations (total CPU: 1750, total memory: 384 bytes)"
+        );
     }
 
     // ── Parity between backends ─────────────────────────────────────────
