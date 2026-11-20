@@ -56,6 +56,17 @@ pub fn check_write_bytes(bytes: u32, limit: u64) -> Result<(), String> {
     check_bounds(u64::from(bytes), limit, "Write Bytes")
 }
 
+/// Check that the number of memory bytes consumed by the transaction is
+/// within `limit`.
+///
+/// `SimulationOutcome::Metrics` models memory as `Option<u32>`, so callers
+/// pass the measured value straight through. The widening from `u32` to `u64`
+/// mirrors [`check_cpu_instructions`] and ensures the comparison is lossless
+/// even when `limit` exceeds `u32::MAX`.
+pub fn check_memory_bytes(bytes: u32, limit: u64) -> Result<(), String> {
+    check_bounds(u64::from(bytes), limit, "Memory Bytes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +107,28 @@ mod tests {
     fn write_bytes_over_limit_fails() {
         let err = check_write_bytes(20_000, 10_000).unwrap_err();
         assert!(err.contains("Write Bytes"));
+    }
+
+    #[test]
+    fn memory_under_limit_passes() {
+        assert!(check_memory_bytes(1_441_165, 2_000_000).is_ok());
+    }
+
+    #[test]
+    fn memory_at_limit_passes() {
+        assert!(check_memory_bytes(2_000_000, 2_000_000).is_ok());
+    }
+
+    #[test]
+    fn memory_over_limit_fails() {
+        let err = check_memory_bytes(2_000_001, 2_000_000).unwrap_err();
+        assert_eq!(err, "Memory Bytes 2000001 exceeds limit 2000000");
+    }
+
+    #[test]
+    fn zero_memory_limit_accepts_zero_bytes_only() {
+        assert!(check_memory_bytes(0, 0).is_ok());
+        assert!(check_memory_bytes(1, 0).is_err());
     }
 
     #[test]

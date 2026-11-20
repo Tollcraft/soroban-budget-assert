@@ -13,8 +13,80 @@ on:
 # anyway; restoring the dry run *as required* is a better fix than leaving it
 # off. See the PR body.
 jobs:
+  # Release artifacts are published from a tagged commit, which is not covered by
+  # the Code Quality workflow's `push`/`pull_request` triggers on main. Without
+  # this job a tag pointing at a commit that fails the workspace gates could
+  # still build and publish a binary, so every publishable job below waits on it.
+  verify:
+    name: Verify
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          # Matches .github/workflows/quality.yml and budget.yml, including the
+          # wasm targets the contract tests build against.
+          toolchain: 1.92.0
+          components: rustfmt, clippy
+          targets: wasm32v1-none wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Install System Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # `cargo test --workspace` registers the contract fixtures from
+      # `target/wasm32v1-none/release/`, so the workspace tests only pass once
+      # the contracts are built the same way budget.yml builds them.
+      - name: Install Stellar CLI
+        env:
+          STELLAR_CLI_VERSION: 28.1.0
+          STELLAR_CLI_SHA256: c1680deee94301d33ada7a17f98411e642a4248c727afbd2e43050d345746462
+        run: |
+          set -euo pipefail
+          archive="stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/${archive}" \
+            -o "${RUNNER_TEMP}/${archive}"
+          echo "${STELLAR_CLI_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check -
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
+          install -m 0755 "${RUNNER_TEMP}/stellar" /usr/local/bin/stellar
+          stellar --version
+
+      - name: Build Contracts
+        run: |
+          set -euo pipefail
+          for package in amm-pool-contract host-function-contract bloat-contract; do
+            stellar contract build --package "${package}" --locked
+          done
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: Check module reachability
+        run: scripts/check-module-reachability.sh
+
+      - name: Check CLI documentation
+        run: bash scripts/check-cli-docs.sh
+
+      - name: Check documented compatibility pins
+        run: .github/scripts/check-compatibility-docs.sh
+
   build:
     name: Build
+    needs: verify
     if: github.event_name == 'push'
     permissions:
       contents: write
@@ -78,7 +150,7 @@ jobs:
 
   checksums:
     name: Generate Checksums
-    needs: build
+    needs: [verify, build]
     if: github.event_name == 'push'
     permissions:
       contents: write
@@ -110,7 +182,7 @@ jobs:
 
   publish:
     name: Publish to crates.io
-    needs: [build, checksums]
+    needs: [verify, build, checksums]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
