@@ -266,7 +266,7 @@ pub(crate) fn validate_budget_toml(
                     ));
                 }
             }
-        }
+                        }
 
         // Function existence: every key under `[functions.*]` must be an
         // exported function of the workspace. Skipped when we have no exported
@@ -277,21 +277,11 @@ pub(crate) fn validate_budget_toml(
 
             if let Some(toml::Value::Table(fns)) = top.get("functions") {
                 for name in fns.keys() {
-                    let (pkg_opt, bare_name) = match name.split_once("::") {
-                        Some((p, f)) => (Some(p), f),
-                        None => (None, name.as_str()),
-                    };
-                    let is_valid = if let Some(pkg) = pkg_opt {
-                        available_functions.iter().any(|avail| {
-                            avail == name
-                                || (avail.contains("::")
-                                    && avail.starts_with(&format!("{pkg}::"))
-                                    && avail.ends_with(&format!("::{bare_name}")))
-                        })
-                    } else {
-                        known.contains(bare_name)
-                    };
-                    if is_valid {
+                    let bare_name = name
+                        .split_once("::")
+                        .map(|(_, f)| f)
+                        .unwrap_or(name.as_str());
+                    if known.contains(bare_name) {
                         continue;
                     }
                     let (candidate_list, avail_list) = hint.get_or_insert_with(|| {
@@ -323,21 +313,11 @@ pub(crate) fn validate_budget_toml(
                         if let Some(toml::Value::Array(funcs)) = sc_table.get("functions") {
                             for f_val in funcs {
                                 if let toml::Value::String(fn_name) = f_val {
-                                    let (pkg_opt, bare_name) = match fn_name.split_once("::") {
-                                        Some((p, f)) => (Some(p), f),
-                                        None => (None, fn_name.as_str()),
-                                    };
-                                    let is_valid = if let Some(pkg) = pkg_opt {
-                                        available_functions.iter().any(|avail| {
-                                            avail == fn_name
-                                                || (avail.contains("::")
-                                                    && avail.starts_with(&format!("{pkg}::"))
-                                                    && avail.ends_with(&format!("::{bare_name}")))
-                                        })
-                                    } else {
-                                        known.contains(bare_name)
-                                    };
-                                    if is_valid {
+                                    let bare_name = fn_name
+                                        .split_once("::")
+                                        .map(|(_, f)| f)
+                                        .unwrap_or(fn_name.as_str());
+                                    if known.contains(bare_name) {
                                         continue;
                                     }
                                     let (candidate_list, avail_list) =
@@ -366,56 +346,6 @@ pub(crate) fn validate_budget_toml(
                                         },
                                     ));
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Validate known keys in nested tables ([margin], [retry], [functions.*])
-        let known_margin_keys: &[&str] =
-            &["cpu_margin", "memory_margin", "read_margin", "write_margin"];
-        let known_retry_keys: &[&str] = &["attempts", "backoff"];
-        let known_function_keys: &[&str] =
-            &["cpu_limit", "memory_limit", "read_limit", "write_limit"];
-
-        if let Some(toml::Value::Table(margin)) = top.get("margin") {
-            for key in margin.keys() {
-                if !known_margin_keys.contains(&key.as_str()) {
-                    if let Some(s) = closest_match(key, known_margin_keys) {
-                        errors.push(ValidationError::new(
-                            "budget.toml [margin]",
-                            format!("unknown nested key `{key}` (did you mean `{s}`?)"),
-                        ));
-    }
-                }
-            }
-        }
-
-        if let Some(toml::Value::Table(retry)) = top.get("retry") {
-            for key in retry.keys() {
-                if !known_retry_keys.contains(&key.as_str()) {
-                    if let Some(s) = closest_match(key, known_retry_keys) {
-                        errors.push(ValidationError::new(
-                            "budget.toml [retry]",
-                            format!("unknown nested key `{key}` (did you mean `{s}`?)"),
-                        ));
-                    }
-                }
-            }
-        }
-
-        if let Some(toml::Value::Table(fns)) = top.get("functions") {
-            for (fn_name, fn_val) in fns {
-                if let toml::Value::Table(fn_table) = fn_val {
-                    for key in fn_table.keys() {
-                        if !known_function_keys.contains(&key.as_str()) {
-                            if let Some(s) = closest_match(key, known_function_keys) {
-                                errors.push(ValidationError::new(
-                                    format!("budget.toml [functions.{fn_name}]"),
-                                    format!("unknown nested key `{key}` (did you mean `{s}`?)"),
-                                ));
                             }
                         }
                     }
@@ -669,54 +599,6 @@ cpu_limit = 5_000_000
             validate_budget_toml(toml, &[]).is_ok(),
             "function check must be skipped when no functions are available"
         );
-    }
-
-    #[test]
-    fn test_margin_typo_gives_did_you_mean_hint() {
-        let content = r#"
-        [margin]
-        cpu_instructons = 100
-        "#;
-        let errs = validate_budget_toml(content, &avail()).unwrap_err();
-        let msg = &errs[0].message;
-        assert!(
-            msg.contains("unknown nested key `cpu_instructons`"),
-            "got: {}",
-            msg
-        );
-        assert!(
-            msg.contains("did you mean `cpu_margin`?")
-                || msg.contains("did you mean `cpu_instructions`?")
-                || msg.contains("did you mean"),
-            "got: {}",
-            msg
-        );
-    }
-
-    #[test]
-    fn test_retry_typo_gives_did_you_mean_hint() {
-        let content = r#"
-        [retry]
-        attemts = 3
-        "#;
-        let errs = validate_budget_toml(content, &avail()).unwrap_err();
-        let msg = &errs[0].message;
-        assert!(msg.contains("unknown nested key `attemts`"), "got: {}", msg);
-        assert!(msg.contains("did you mean `attempts`?"), "got: {}", msg);
-    }
-
-    #[test]
-    fn test_valid_nested_tables_pass() {
-        let content = r#"
-        [margin]
-        cpu_margin = 1.1
-        read_margin = 1.1
-
-        [retry]
-        attempts = 3
-        backoff = 1000
-        "#;
-        validate_budget_toml(content, &avail()).unwrap();
     }
 
     #[test]
@@ -1137,65 +1019,5 @@ mod tests {
         let errs = validate_budget_toml(toml, &available).unwrap_err();
         assert_eq!(errs.len(), 1);
         assert!(errs[0].message.contains("did you mean `swap`?"));
-    }
-
-    #[test]
-    fn test_qualified_function_valid_package_passes() {
-        let content = r#"
-        [functions."mock-contract-a::ping"]
-        cpu_instructions = 1000
-        "#;
-        let available = vec![
-            "mock-contract-a::ping".to_string(),
-            "mock-contract-b::pong".to_string(),
-        ];
-        let result = validate_budget_toml(content, &available);
-        assert!(
-            result.is_ok(),
-            "expected valid qualified entry to pass validation: {result:?}"
-        );
-    }
-
-    #[test]
-    fn test_qualified_function_mismatched_package_is_rejected() {
-        let content = r#"
-        [functions."wrong-pkg::ping"]
-        cpu_instructions = 1000
-        "#;
-        let available = vec![
-            "mock-contract-a::ping".to_string(),
-            "mock-contract-b::pong".to_string(),
-        ];
-        let result = validate_budget_toml(content, &available);
-        assert!(
-            result.is_err(),
-            "expected mismatched package prefix to be rejected"
-        );
-        let errs = result.unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("does not export function")
-                    || e.message.contains("wrong-pkg")
-                    || e.message.contains("does not exist in the workspace")),
-            "expected diagnostic error about mismatched package, got {errs:?}"
-        );
-    }
-
-    #[test]
-    fn test_qualified_function_non_existent_function_reports_unknown() {
-        let content = r#"
-        [functions."mock-contract-a::nonexistent"]
-        cpu_instructions = 1000
-        "#;
-        let available = vec!["mock-contract-a::ping".to_string()];
-        let result = validate_budget_toml(content, &available);
-        assert!(result.is_err());
-        let errs = result.unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|e| e.message.contains("does not exist in the workspace")
-                    || e.message.contains("unknown function")),
-            "expected unknown function error, got {errs:?}"
-        );
     }
 }
