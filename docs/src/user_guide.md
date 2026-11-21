@@ -171,7 +171,7 @@ To surface the comparison in the PR's checks, append a Markdown diff table to th
 cargo budget-report --check-baseline --markdown >> "$GITHUB_STEP_SUMMARY"
 ```
 
-It shows baseline, current, absolute and percentage change per metric, with a text direction marker (no colour) and a status that separates a real tolerance breach from a value that merely moved. Add `--hide-unchanged` to keep it to the rows that changed. See [Baseline Comparison Output](reference.md#baseline-comparison-output-check-baseline).
+It shows baseline, current, absolute and percentage change per metric, with a text direction marker (no colour) and a status that separates a real tolerance breach from a value that merely moved. Add `--hide-unchanged` to keep it to the rows that changed. See [Baseline Comparison Output](reference.md#baseline-comparison-output).
 
 ## Step 7 (optional): Watch mode for iterative development
 
@@ -238,5 +238,5 @@ The delta line shows the direction and percentage of the change, so you can see 
 
 ## ⚙️ Supported Versions & Compatibility
 
-See the [Supported Versions & Compatibility reference](reference.md#supported-versions-compatibility)
+See the [Supported Versions & Compatibility reference](reference.md#-supported-versions--compatibility)
 for the canonical SDK/XDR pins and compatibility matrix.

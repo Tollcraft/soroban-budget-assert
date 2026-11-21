@@ -194,6 +194,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/check-module-reachability.sh
 .github/scripts/check-compatibility-docs.sh
+bash scripts/check-docs-anchors.sh
 cargo install cargo-machete --version 0.6.2 --locked
 cargo machete
 ```

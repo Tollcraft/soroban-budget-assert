@@ -696,7 +696,7 @@ This section is the **complete** flag reference: every `#[arg(...)]` field decla
 | `--html` | — | `false` | Emit the report as a single self-contained HTML page — no external CSS, scripts, or fonts, so it renders from a `file://` URL and from a downloaded CI artifact. Rows mirror the JSON output; with `--check` each row also shows its limit and pass/fail status. |
 | `--markdown` | — | `false` | Emit the report as a GitHub-Flavored Markdown table suitable for appending to `$GITHUB_STEP_SUMMARY`. Columns are `Package`, `Function`, `Metric`, `Value`; when the report carries `--check` metadata (a `limit`/`pass` on any row) it gains `Limit` and `Status` (`PASS`/`FAIL`) columns. Numeric values are comma-formatted; a metric with no measured value renders as `N/A (testnet required)` in a plain report, or `N/A (simulation failed)` on a failed-check stub row (whose `Status` is `FAIL`). `--markdown` emits exactly one document — the table — in every mode (live run and `--from`); the machine-readable report stays behind `--json`, which wins if both flags are passed. Reads an existing JSON report file only when given an explicit `--from <PATH>` (or `--from -` for stdin) instead of running a live simulation; without `--from` it runs a live simulation even if `current_report.json` exists in the working directory and never auto-reads it. The `--from` path is the mode the CI workflow uses to render the step summary from `current_report.json`. |
 | `--check` | — | `false` | Compare measured metrics against `cpu_limit` / `read_limit` / `write_limit` declared per function in `budget.toml`; print a per-function+metric pass/fail line and exit non-zero on any breach or failed configured simulation. See [`--check`: enforcing regression limits](#--check-enforcing-regression-limits-against-network-verified-costs). |
-| `--color <auto\|always\|never>` | — | `auto` | When to colourise the plain-text `--check` report. Only meaningful together with `--check` — there is nothing to colourise otherwise, and callers gate on `args.check` before consulting it. See [the discrepancy note](#-color-does-not-actually-force-colour-into-a-pipe) below: `--color always` does **not**, despite its help text, force colour into a non-terminal output. |
+| `--color <auto\|always\|never>` | — | `auto` | When to colourise the plain-text `--check` report. Only meaningful together with `--check` — there is nothing to colourise otherwise, and callers gate on `args.check` before consulting it. See [the discrepancy note](#--color-does-not-actually-force-colour-into-a-pipe) below: `--color always` does **not**, despite its help text, force colour into a non-terminal output. |
 | `--quiet` | — | `false` | Suppress non-essential progress messages and warnings on stderr (build/deploy/simulate progress, retry notices). The final report is still printed to stdout; fatal errors (spawn failures, hard build failures) still go to stderr regardless. |
 | `--validate` | — | `false` | Re-decode each successful simulation's `SorobanTransactionData` XDR through `stellar xdr decode` and diff the result against the values this tool computed. Any discrepancy is reported as a diagnostic and the process exits non-zero. Silently **skipped** (not failed) when the Stellar CLI or its `xdr decode` subcommand is unavailable — this is a self-check against a second decoder, not a new data source. |
 | `--profile <PROFILE>` | — | `release` | Cargo build profile used to compile each contract's WASM (`cargo build --profile <PROFILE>`). A custom profile (e.g. `release-opt`) must already be defined in the workspace `Cargo.toml`; the tool does not validate that it exists before invoking `cargo build` with it. |
@@ -1002,7 +1002,7 @@ to CI: `schema_version`, `generated_at`, `generator_version`, and a `snapshots` 
 }
 ```
 
-When `--check --json` is used, configured functions gain `limit` and `pass` (see [the `--check` section above](#check-enforcing-regression-limits-against-network-verified-costs)); the shape for unconfigured functions is unchanged.
+When `--check --json` is used, configured functions gain `limit` and `pass` (see [the `--check` section above](#--check-enforcing-regression-limits-against-network-verified-costs)); the shape for unconfigured functions is unchanged.
 
 ### HTML output (`--html`)
 
@@ -1118,9 +1118,9 @@ This is the complete reference for the `budget.toml` file. It was verified again
 | `source` | string | no | none | Stellar source identity used for deployment fees and as simulation source. Falls back to `--source`; if neither is set the run aborts. |
 | `tolerance` | number (fraction) | no | `0.10` | Default regression tolerance for `--check-baseline`. Overridable per function (see below) and by `--tolerance`. |
 | `[margin]` | table | no | none | Per-metric margin multipliers consumed only by `--derive-limits`. See [below](#margin-deriving-tier-a-limits). |
-| `[scenarios.<name>]` | table of tables | no | none | Function-to-scenario mapping consumed only by `--derive-limits`. See [below](#scenariosnamemapping-functions-to-derived-scenario-limits). |
-| `[functions.<name>]` | table of tables | no | none | Per-function configuration. See [below](#functionsnameper-function-configuration). |
-| `[retry]` | table | no | built-in defaults | Retry policy for deploy / invoke-build / simulate RPC calls. See [below](#retrytransient-failure-retry-policy). |
+| `[scenarios.<name>]` | table of tables | no | none | Function-to-scenario mapping consumed only by `--derive-limits`. See [below](#scenariosname-mapping-functions-to-derived-scenario-limits). |
+| `[functions.<name>]` | table of tables | no | none | Per-function configuration. See [below](#functionsname-per-function-configuration). |
+| `[retry]` | table | no | built-in defaults | Retry policy for deploy / invoke-build / simulate RPC calls. See [below](#retry-transient-failure-retry-policy). |
 
 **Unknown top-level keys and sections are silently accepted.** This is deliberate: `[lints]` (for soroban-cost-linter) and other foreign sections let two tools share one `budget.toml`. Note the asymmetry with `[functions.*]`, where unknown keys are a hard error.
 
