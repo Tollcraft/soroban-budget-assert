@@ -379,6 +379,54 @@ mod tests {
             ));
         }
 
+        /// Characterization test: `check_url_scheme_host` deliberately rejects
+        /// URLs carrying an explicit port, including the scheme's default port.
+        ///
+        /// The authority is compared verbatim against the expected host, so a
+        /// port decoration (`:443`, `:8000`, `:8443`) never matches a bare host
+        /// name. This is a design decision, not an oversight: accepting
+        /// `host:port` would mean either parsing the port (and the userinfo,
+        /// IPv6 brackets and default-port omissions that come with it) or
+        /// prefix-matching the authority — and prefix matching is exactly the
+        /// spoofing hole these predicates exist to close
+        /// (`github.com:443.evil.example` must not pass).
+        ///
+        /// Practical consequence: `LOCAL_RPC_URL` in `live.rs`
+        /// (`http://localhost:8000/soroban/rpc`) is classified by asking for
+        /// the literal host `localhost:8000`, never the bare `localhost`.
+        ///
+        /// Do not relax this when adding URL helpers: a predicate that starts
+        /// matching ports has silently widened its authority comparison.
+        #[test]
+        fn check_url_scheme_host_rejects_explicit_ports() {
+            // HTTPS with the default port — still not the bare host.
+            assert!(!check_url_scheme_host(
+                "https://github.com:443/Tollcraft/repo",
+                "https",
+                "github.com"
+            ));
+            // HTTP with a non-default port, the shape of the local RPC URL.
+            assert!(!check_url_scheme_host(
+                "http://localhost:8000/rpc",
+                "http",
+                "localhost"
+            ));
+            // An arbitrary port on a documentation host.
+            assert!(!check_url_scheme_host(
+                "https://stellar.org:8443",
+                "https",
+                "stellar.org"
+            ));
+
+            // The port is tolerated only when it is part of the *expected*
+            // host, which is how `live.rs` matches the local endpoint.
+            assert!(check_url_scheme_host(
+                "http://localhost:8000/soroban/rpc",
+                "http",
+                "localhost:8000"
+            ));
+        }
+
         #[test]
         fn userinfo_prefix_is_rejected() {
             assert!(!check_url_scheme_host(
