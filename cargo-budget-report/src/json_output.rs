@@ -59,6 +59,7 @@ const ALLOWED_TOP_LEVEL_KEYS: &[&str] = &[
     "snapshots",
     "generated_at",
     "generator_version",
+    "_metadata",
 ];
 
 pub(crate) fn validate_report_schema<'a>(
