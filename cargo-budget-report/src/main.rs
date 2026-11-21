@@ -1717,6 +1717,18 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
     let from_pathbuf = std::path::PathBuf::from(from_path);
     let measurements = derive::load_tier_b_report(&from_pathbuf)?;
 
+    // A run where nothing simulated (every simulation failed, or the report
+    // was truncated) is a valid but useless input: deriving from it would
+    // replace the limits file with a header and no rows. Refuse before
+    // touching either output (#968).
+    if measurements.is_empty() {
+        return Err(Error::Message(format!(
+            "{} contains no measurement rows; refusing to replace {} with an empty limits file",
+            source_label,
+            out_env.display()
+        )));
+    }
+
     // 2) Resolve the margin. CLI overrides win over `budget.toml`.
     //    Detect missing-vs-present on the CLI side first so a partial
     //    CLI override errors out instead of falling through to the
@@ -1745,6 +1757,64 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
 
     // 4) Run the derivation and write the outputs atomically.
     let derivation = derive::Derivation::from_report(&measurements, &config)?;
+    if derivation.limits.is_empty() {
+        return Err(Error::Message(format!(
+            "{} produced no derivable Tier A limit; refusing to replace {} with an empty limits file",
+            source_label,
+            out_env.display()
+        )));
+    }
+
+    // Keys are read with the same `KEY=value` rules the macro's
+    // `parse_env_file_value` uses — blank lines and `#` comments ignored, the
+    // name is everything before the first `=` — so both sides agree on what a
+    // key is (#968).
+    let collect_tier_a_keys = |contents: &str| -> std::collections::BTreeSet<String> {
+        contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter_map(|line| line.split_once('=').map(|(key, _)| key.trim().to_string()))
+            .filter(|key| key.starts_with("TIER_A__"))
+            .collect()
+    };
+
+    // 5) Compare keys, never values: a changed number is the normal
+    //    re-derive outcome, but a limit that cannot be re-derived at all
+    //    would silently disappear from the file under test.
+    let new_keys: std::collections::BTreeSet<String> = derivation
+        .limits
+        .iter()
+        .map(|limit| limit.key.clone())
+        .collect();
+    let mut dropped_keys: Vec<String> = Vec::new();
+    if out_env.exists() {
+        let existing = std::fs::read_to_string(&out_env)
+            .map_err(|e| Error::Message(format!("failed to read {}: {e}", out_env.display())))?;
+        dropped_keys = collect_tier_a_keys(&existing)
+            .into_iter()
+            .filter(|key| !new_keys.contains(key))
+            .collect();
+    }
+    if !dropped_keys.is_empty() && !args.allow_dropped_limits {
+        return Err(Error::Message(format!(
+            "refusing to replace {}: {} Tier A limit{} it already proves cannot be \
+             re-derived from {}:\n  {}\n\
+             Re-run the measurement so every function is simulated, or pass \
+             --allow-dropped-limits if the removal is deliberate (for example after \
+             deleting a contract function).",
+            out_env.display(),
+            dropped_keys.len(),
+            if dropped_keys.len() == 1 {
+                "that"
+            } else {
+                "s that"
+            },
+            source_label,
+            dropped_keys.join("\n  ")
+        )));
+    }
+
     let timestamp_utc = build_utc_timestamp(std::time::SystemTime::now())?;
     let provenance = out_provenance.unwrap_or_else(|| default_provenance_path(&out_env));
     derive::write_outputs(
@@ -1756,6 +1826,16 @@ fn run_derive_mode(args: &BudgetReportArgs, toml_config: &BudgetToml) -> Result<
         args.profile.as_deref(),
         &timestamp_utc,
     )?;
+
+    if !args.quiet && !dropped_keys.is_empty() {
+        eprintln!(
+            "Dropped {} Tier A limit{} from {} (--allow-dropped-limits):\n  {}",
+            dropped_keys.len(),
+            if dropped_keys.len() == 1 { "" } else { "s" },
+            out_env.display(),
+            dropped_keys.join("\n  ")
+        );
+    }
 
     if !args.quiet {
         eprintln!(
@@ -3050,9 +3130,7 @@ fn run() -> Result<i32> {
     ))
 }
 
-mod config;
 mod limit_checks;
-mod url_checks;
 pub mod validate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4306,6 +4384,7 @@ mem_limit = 4000
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            allow_dropped_limits: false,
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
@@ -4348,6 +4427,7 @@ mem_limit = 4000
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            allow_dropped_limits: false,
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
@@ -4390,6 +4470,7 @@ mem_limit = 4000
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            allow_dropped_limits: false,
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
@@ -4435,6 +4516,7 @@ mem_limit = 4000
             margin_read: None,
             margin_write: None,
             provenance_out: None,
+            allow_dropped_limits: false,
             max_retry_attempts: None,
             retry_backoff_secs: None,
             color: ColorChoice::Auto,
