@@ -913,6 +913,35 @@ pub fn build_baseline(current: &BTreeMap<String, BTreeMap<String, Measurement>>)
 mod tests {
     use super::*;
 
+    /// `derive.rs` builds limit keys with the literal `"{}::{}"` format and
+    /// splits them back with `split_once("::")`. Pin the shared separator so
+    /// a change here cannot silently break that round trip.
+    #[test]
+    fn function_key_format_and_split_roundtrip() {
+        assert_eq!(KEY_SEPARATOR, "::");
+        assert_eq!(
+            function_key("amm-pool-contract", "swap"),
+            "amm-pool-contract::swap"
+        );
+
+        for (pkg, func) in [
+            ("amm-pool-contract", "swap"),
+            ("pkg", "do_work"),
+            ("pkg-with-dash", "fn_with_underscore"),
+        ] {
+            let key = function_key(pkg, func);
+            let (recovered_pkg, recovered_func) = key
+                .split_once(KEY_SEPARATOR)
+                .expect("key contains the separator");
+            assert_eq!(recovered_pkg, pkg, "{key}");
+            assert_eq!(recovered_func, func, "{key}");
+
+            // No ambiguity: a package name never absorbs the first colon.
+            assert_eq!(key.matches(KEY_SEPARATOR).count(), 1, "{key}");
+            assert_eq!(split_key(&key), Some((pkg.to_string(), func.to_string())));
+        }
+    }
+
     fn m(cpu: u64, read: u64, write: u64) -> Measurement {
         Measurement {
             cpu_instructions: cpu,

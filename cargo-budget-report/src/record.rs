@@ -392,6 +392,146 @@ mod tests {
         );
     }
 
+    /// Inner transport that returns one scripted JSON payload, so the
+    /// recorder can be exercised against values the fixed mock never emits.
+    struct ValueTransport {
+        response: Value,
+    }
+
+    impl Transport for ValueTransport {
+        fn deploy_contract(
+            &mut self,
+            _wasm_path: &Path,
+            _source: &str,
+            _network: &str,
+            _package_name: &str,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        fn build_invoke_xdr(
+            &mut self,
+            _contract_id: &str,
+            _source: &str,
+            _network: &str,
+            _function: &str,
+            _func_args: &[String],
+            _package: &str,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        fn simulate_transaction(
+            &mut self,
+            _b64_xdr: &str,
+            _source: &str,
+            _network: &str,
+            _package: &str,
+            _function: &str,
+        ) -> anyhow::Result<Value> {
+            Ok(self.response.clone())
+        }
+    }
+
+    /// A simulation is recorded verbatim whatever its JSON shape. Null and
+    /// error-bearing payloads are not filtered: the recorder's contract is
+    /// "errors are not recorded", and an `Ok(Value::Null)` is not an error.
+    #[test]
+    fn recording_transport_stores_simulate_entry_for_any_payload() {
+        for payload in [
+            json!(null),
+            json!({}),
+            json!([]),
+            json!([1, 2, 3]),
+            json!({ "error": { "message": "boom" } }),
+        ] {
+            let mut recording = RecordingTransport::new(ValueTransport {
+                response: payload.clone(),
+            });
+            let returned = recording
+                .simulate_transaction("xdr", "alice", "testnet", "pkg", "f")
+                .unwrap();
+            assert_eq!(returned, payload);
+
+            let fixture = recording.into_fixture();
+            assert_eq!(fixture.fixture_version, crate::fixture::FIXTURE_VERSION);
+            let key = simulate_key("testnet", "alice", "pkg", "f");
+            assert_eq!(fixture.entries.len(), 1, "{payload}");
+            assert_eq!(fixture.entries.get(&key), Some(&payload), "{key}");
+        }
+    }
+
+    /// Deploy and invoke keys are also last-write-wins for the same
+    /// (package, function) pair, not just simulate.
+    #[test]
+    fn recording_transport_overwrites_repeated_deploy_and_invoke() {
+        struct CounterTransport {
+            n: usize,
+        }
+
+        impl Transport for CounterTransport {
+            fn deploy_contract(
+                &mut self,
+                _wasm_path: &Path,
+                _source: &str,
+                _network: &str,
+                _package_name: &str,
+            ) -> anyhow::Result<String> {
+                self.n += 1;
+                Ok(format!("C{}", self.n))
+            }
+
+            fn build_invoke_xdr(
+                &mut self,
+                _contract_id: &str,
+                _source: &str,
+                _network: &str,
+                _function: &str,
+                _func_args: &[String],
+                _package: &str,
+            ) -> anyhow::Result<String> {
+                self.n += 1;
+                Ok(format!("XDR{}", self.n))
+            }
+
+            fn simulate_transaction(
+                &mut self,
+                _b64_xdr: &str,
+                _source: &str,
+                _network: &str,
+                _package: &str,
+                _function: &str,
+            ) -> anyhow::Result<Value> {
+                Ok(json!(null))
+            }
+        }
+
+        let mut recording = RecordingTransport::new(CounterTransport { n: 0 });
+        recording
+            .deploy_contract(Path::new("one.wasm"), "alice", "testnet", "pkg")
+            .unwrap();
+        let deploy = recording
+            .deploy_contract(Path::new("two.wasm"), "alice", "testnet", "pkg")
+            .unwrap();
+        recording
+            .build_invoke_xdr("C1", "alice", "testnet", "f", &[], "pkg")
+            .unwrap();
+        let invoke = recording
+            .build_invoke_xdr("C1", "alice", "testnet", "f", &["a".to_string()], "pkg")
+            .unwrap();
+
+        let entries = recording.into_fixture().entries;
+        assert_eq!(entries.len(), 2, "only one entry per key survives");
+        assert_eq!(
+            entries[&deploy_key("testnet", "alice", "pkg")],
+            json!(deploy)
+        );
+        assert_eq!(
+            entries[&invoke_key("testnet", "alice", "pkg", "f")],
+            json!(invoke)
+        );
+    }
+
     #[test]
     fn replay_reports_missing_entry() {
         let mut replay = ReplayTransport::new(FixtureFile::new());
