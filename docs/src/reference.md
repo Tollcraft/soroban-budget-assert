@@ -17,7 +17,18 @@ Marginal-cost baseline subtraction is handled directly in `budget-macros` baseli
 The budget macros are attribute macros that inject budget-measurement assertions
 into test functions.  They require a local variable named `env` (a
 `soroban_sdk::Env`) — the injected check reads `env.cost_estimate().budget()`
-after the original test statements run.
+after the original test statements run.  A test that binds the environment to a
+different name can point the measurement at it with `, env_ident = <binding>`,
+accepted by every attribute except `budget_scaling`:
+
+```rust
+#[test]
+#[budget_cpu_lt(850000, env_ident = host)]
+fn unit_test() {
+    let host = Env::default();
+    // ... the check runs against `host` ...
+}
+```
 
 The check runs on every path that leaves the test, so all of these body shapes work:
 
