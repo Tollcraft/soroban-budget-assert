@@ -78,10 +78,18 @@ pub(crate) fn render_args(specs: &[ArgSpec], function: &str) -> anyhow::Result<V
 }
 
 fn render_typed(arg: &TypedArg) -> anyhow::Result<String> {
+    if arg.generate && arg.ty != "address" {
+        bail!(
+            "`generate = true` is only supported for `address` arguments, but argument `{}` has type `{}`",
+            arg.name,
+            arg.ty
+        );
+    }
+
     let scalar = || -> anyhow::Result<String> {
         match arg.value.as_ref() {
             Some(toml::Value::String(s)) => Ok(s.clone()),
-            Some(toml::Value::Integer(i)) => Ok(i.to_string()),
+            Some(toml::Value::Integer(i)) => integer_scalar(&arg.ty, *i),
             Some(toml::Value::Boolean(b)) => Ok(b.to_string()),
             Some(other) => bail!("expected a scalar value, got {}", other.type_str()),
             None => bail!("`value` is required for type `{}`", arg.ty),
@@ -89,9 +97,8 @@ fn render_typed(arg: &TypedArg) -> anyhow::Result<String> {
     };
 
     match arg.ty.as_str() {
-        "u32" | "i32" | "u64" | "i64" | "u128" | "i128" | "u256" | "i256" | "symbol" | "string" => {
-            scalar()
-        }
+        "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "u64" | "i64" | "u128" | "i128"
+        | "u256" | "i256" | "symbol" | "string" => scalar(),
         "bool" => match arg.value.as_ref() {
             None => Ok("false".to_string()),
             Some(toml::Value::Boolean(b)) => Ok(b.to_string()),
@@ -126,10 +133,30 @@ fn render_typed(arg: &TypedArg) -> anyhow::Result<String> {
             serde_json::to_string(v).context("serialising the value to JSON for the CLI")
         }
         other => bail!(
-            "unknown argument type `{other}` (expected one of: u32/i32/u64/i64/u128/i128/u256/i256, \
-             bool, symbol, string, bytes, address, json/struct/vec/map)"
+            "unknown argument type `{other}` (expected one of: u8/u16/u32/u64/u128, i8/i16/i32/i64/i128, \
+             u256/i256, bool, symbol, string, bytes, address, json/struct/vec/map)"
         ),
     }
+}
+
+fn integer_scalar(ty: &str, value: i64) -> anyhow::Result<String> {
+    let in_range = match ty {
+        "u8" => u8::try_from(value).is_ok(),
+        "u16" => u16::try_from(value).is_ok(),
+        "u32" => u32::try_from(value).is_ok(),
+        "u64" => u64::try_from(value).is_ok(),
+        "u128" => u128::try_from(value).is_ok(),
+        "i8" => i8::try_from(value).is_ok(),
+        "i16" => i16::try_from(value).is_ok(),
+        "i32" => i32::try_from(value).is_ok(),
+        "i64" => true,
+        "i128" => true,
+        _ => true,
+    };
+    if !in_range {
+        bail!("integer value `{value}` is out of range for declared type `{ty}`");
+    }
+    Ok(value.to_string())
 }
 
 /// A deterministic, valid ed25519 public-key strkey derived from `seed`.
@@ -294,8 +321,8 @@ mod tests {
     const STRUCTURED_TYPES: [&str; 4] = ["json", "struct", "vec", "map"];
     /// The keyword hint appended to every unknown-type error. Kept as one
     /// constant so adding a keyword without updating it fails loudly.
-    const EXPECTED_TYPES: &str = "(expected one of: u32/i32/u64/i64/u128/i128/u256/i256, \
-                                  bool, symbol, string, bytes, address, json/struct/vec/map)";
+    const EXPECTED_TYPES: &str = "(expected one of: u8/u16/u32/u64/u128, i8/i16/i32/i64/i128, \
+                                  u256/i256, bool, symbol, string, bytes, address, json/struct/vec/map)";
 
     fn unknown_type(ty: &str) -> String {
         format!("function `f`, argument `x`: unknown argument type `{ty}` {EXPECTED_TYPES}")

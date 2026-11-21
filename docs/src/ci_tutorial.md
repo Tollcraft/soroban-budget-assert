@@ -131,16 +131,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.93.0
-          targets: wasm32v1-none
-          toolchain: 1.91.0
+          toolchain: 1.92.0
           targets: wasm32v1-none
 
       - name: Install System Dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
 
+      # soroban-sdk 29 requires the spec-shaking marker that only
+      # `stellar contract build` sets; a plain `cargo build` for wasm fails.
       - name: Build Contracts
-        run: cargo build -p amm-pool-contract --release --target wasm32v1-none
+        run: stellar contract build --package amm-pool-contract --locked
 
       - name: Run Budget Macros Test (Tier A)
         run: cargo test --workspace
@@ -456,7 +456,7 @@ You can merge the budget check into an existing workflow file by copying the rel
 
 ```yaml
 - name: Build Contracts
-  run: cargo build -p your-contract --release --target wasm32v1-none
+  run: stellar contract build --package your-contract --locked
 - name: Run Budget Macros Test
   run: cargo test --workspace
 ```
@@ -569,7 +569,7 @@ The workflow builds WASM *before* running tests. If `cargo build -p my-contract 
 
 ### Toolchain mismatch between local and CI numbers
 
-The workflow pins the Rust toolchain explicitly (`toolchain: 1.91.0` via `dtolnay/rust-toolchain` in the snippets above). If that pin disagrees with the `channel` in your `rust-toolchain.toml` — the thing your local measurements were taken under — the compiler versions differ and the WASM differs with them. Mismatches rarely announce themselves as such: they show up as budget numbers that creep for no reviewable reason, or as `cargo test` failing with cryptic "feature stable since 1.XX" errors. Pick one version, pin it in both places, and bump them together.
+The workflow pins the Rust toolchain explicitly (`toolchain: 1.92.0` via `dtolnay/rust-toolchain` in the snippets above). If that pin disagrees with the `channel` in your `rust-toolchain.toml` — the thing your local measurements were taken under — the compiler versions differ and the WASM differs with them. Mismatches rarely announce themselves as such: they show up as budget numbers that creep for no reviewable reason, or as `cargo test` failing with cryptic "feature stable since 1.XX" errors. Pick one version, pin it in both places, and bump them together.
 
 
 ### Dependency caching problems

@@ -1,0 +1,5 @@
+error: `model` cannot be specified more than once
+ --> tests/ui/scaling_duplicate_model.rs:7:53
+  |
+7 | #[budget_scaling(sizes = [10, 100], model = linear, model = quadratic, tolerance = 0.3)]
+  |                                                     ^^^^^

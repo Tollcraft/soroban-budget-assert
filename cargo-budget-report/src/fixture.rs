@@ -308,6 +308,36 @@ mod tests {
     }
 
     #[test]
+    fn load_missing_version_errors() {
+        // Without `fixture_version` the file cannot be validated, so it is a
+        // parse error naming the path rather than a silent default.
+        let dir = tempfile::tempdir().unwrap();
+        let err = load_body(&dir, r#"{"entries": {}}"#).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("Failed to parse fixture file"),
+            "got: {err:#}"
+        );
+        assert!(message.contains("fixture.json"), "got: {message}");
+        assert!(
+            format!("{err:#}").contains("fixture_version"),
+            "the parse error names the missing field: {err:#}"
+        );
+    }
+
+    #[test]
+    fn load_unsupported_version_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = load_body(&dir, r#"{"fixture_version": 99, "entries": {}}"#).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("Fixture version mismatch"), "got: {err:#}");
+        assert!(
+            message.contains(&format!("expected {FIXTURE_VERSION} got 99")),
+            "got: {message}"
+        );
+    }
+
+    #[test]
     fn load_rejects_a_future_fixture_version() {
         let dir = tempfile::tempdir().unwrap();
         let err = load_body(&dir, r#"{"fixture_version": 2, "entries": {}}"#).unwrap_err();

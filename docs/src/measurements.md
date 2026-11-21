@@ -35,26 +35,17 @@ These figures were produced during the initial tool development and are publishe
 
 ### CPU instructions
 
-| Operation type | Local estimate | Network figure | Delta | Fixture | Build profile | Toolchain | Date |
-|---|---:|---:|---:|---|---|---|---|
-| Mixed compute + storage (native Rust) | 143,887 | 756,678 | −81.0% | `amm-pool-contract::do_expensive_work(10_000)` | N/A (native test, no WASM) | rustc 1.81 | 2025-Q1 |
-| Mixed compute + storage (WASM) | 901,816 | 756,678 | +19.2% | `amm-pool-contract::do_expensive_work(10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q1 |
-| Mixed compute + storage (WASM) | 767,049 | 832,006 | −7.8% | `amm-pool-contract::do_expensive_work(10_000)` | default `release` (`opt-level=3`) | rustc 1.81 | 2025-Q1 |
-| Storage write (WASM) | 36,840 | 44,512 | −17.2% | `amm-pool-contract::write_bytes(1,024 bytes)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2026-07-26 |
-| Storage read (WASM) | — | — | — | `amm-pool-contract::do_read_heavy_work(100)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85 | 2026-07-27 |
-| Host-function calls (WASM) | 1,280,000 | 1,600,000 | −20.0% | `host-function-contract::repeated_sequence(1_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
-| VM-instruction-only (WASM) | 689,312 | 634,912 | +8.6% | `amm-pool-contract::do_vm_instruction_work(10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.81 | 2025-Q2 |
-| TTL extension (WASM) | — | — | — | `amm-pool-contract::extend_instance_ttl(100, 10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | rustc 1.85.0 | — |
+The canonical table lives in the root [`MEASUREMENTS.md` › Existing measurements › CPU instructions](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#cpu-instructions). This page links to it instead of copying it, so a benchmark update has exactly one place to land. `cargo-budget-report/tests/measurements_page_parity.rs` fails if a numeric benchmark row is duplicated here without also existing in the root file.
 
 > **TTL extension note:** The TTL extension fixture registers the contract as WASM, initializes it (creating instance storage entries), then calls `extend_instance_ttl(threshold=100, extend_to=10_000)`. Local estimate collected via `cargo test -p amm-pool-contract --test calibrate_extend_ttl -- --nocapture`. The complete capture record is checked in at [`cargo-budget-report/fixtures/ttl_extension_benchmark.json`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/fixtures/ttl_extension_benchmark.json). Network figure requires a `simulateTransaction` run on Soroban testnet.
 
 The native Rust row is included solely to illustrate that native estimates are unreliable for budget decisions. Only WASM-mode estimates should be used for assertions.
 
-The first three rows measure the same `do_expensive_work(10_000)` function, which mixes a compute loop (`n` iterations of `wrapping_add(wrapping_mul)`) with a storage write (`Vec` of up to 100 elements written to `env.storage().instance().set`). The numbers are aggregate costs of both operations.
+In the canonical table, the first three rows measure the same `do_expensive_work(10_000)` function, which mixes a compute loop (`n` iterations of `wrapping_add(wrapping_mul)`) with a storage write (`Vec` of up to 100 elements written to `env.storage().instance().set`). The numbers are aggregate costs of both operations.
 
-The storage-write row isolates the `write_bytes` fixture with a 1,024-byte value. Its delta is calculated as `(36,840 − 44,512) / 44,512 = −0.1724`, so the WASM-registered local estimate is 17.2% lower than the testnet simulation for this operation and underestimates the network cost.
+The canonical `write_bytes` row isolates that fixture with a 1,024-byte value. Its delta is calculated as `(36,840 − 44,512) / 44,512 = −0.1724`, so the WASM-registered local estimate is 17.2% lower than the testnet simulation for this operation and underestimates the network cost.
 
-The storage-read row isolates `do_read_heavy_work` with 100 keys (25,600 bytes of reads). Unlike the write measurement, the read fixture necessarily includes a write phase (to populate the keys before reading them). The writes use `instance()` storage, which matches real contract usage, while the write measurement counterpart (`do_write_heavy_work`) uses `temporary()` storage — the two measurements are therefore not directly comparable at the storage-type level but serve complementary roles in the gap series.
+The canonical `do_read_heavy_work` row isolates that fixture with 100 keys (25,600 bytes of reads). Unlike the write measurement, the read fixture necessarily includes a write phase (to populate the keys before reading them). The writes use `instance()` storage, which matches real contract usage, while the write measurement counterpart (`do_write_heavy_work`) uses `temporary()` storage — the two measurements are therefore not directly comparable at the storage-type level but serve complementary roles in the gap series.
 
 ```bash
 cargo build --target wasm32v1-none --release -p amm-pool-contract
@@ -95,11 +86,7 @@ The network figure column requires a separate `cargo-budget-report` run on Sorob
 
 ### Per-version calibration table
 
-| SDK version (pinned) | SDK version (resolved) | Local CPU estimate | Local mem estimate | Network CPU | Network mem | Delta CPU | Date | Toolchain |
-|---|---|---|---|---|---|---|---|---|
-| `20.0.0` | `20.5.0` | 6,606,666 | 1,942,982 | — | — | — | 2026-Q3 | `rustc 1.85.0` |
-| `21.0.0` (≈`21.7.7`)^* | `21.7.7` | 2,653,878 | 1,658,163 | — | — | — | 2026-Q3 | `rustc 1.85.0` |
-| `22.0.0` | `22.0.11` | 2,654,615 | 1,658,706 | — | — | — | 2026-Q3 | `rustc 1.85.0` |
+The per-version figures (pinned and resolved SDK versions, local CPU and memory estimates, and the network columns as they are filled in) are recorded in the root [`MEASUREMENTS.md` › Per-version calibration table](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#per-version-calibration-table), alongside the capture commands that produced them. Rows are not repeated here.
 
 > ^* SDK 21.0.0 is yanked; the lowest resolvable 21.x patch is 21.7.7.
 
@@ -109,11 +96,7 @@ The network figure column requires a separate `cargo-budget-report` run on Sorob
 
 ### Cross-version comparison (local only)
 
-| SDK | CPU | Mem | CPU Δ vs SDK 22 | Mem Δ vs SDK 22 |
-|---|---|---|---|---|
-| 20.5.0 | 6,606,666 | 1,942,982 | +148.9% | +17.1% |
-| 21.7.7 | 2,653,878 | 1,658,163 | −0.03% | −0.03% |
-| 22.0.11 | 2,654,615 | 1,658,706 | — | — |
+See [`MEASUREMENTS.md` › Cross-version comparison (local only)](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#cross-version-comparison-local-only) for the table, which is regenerated on every SDK bump in the canonical file.
 
 SDK 20 is dramatically more expensive (+149% CPU) because its `vm.exec` cost model uses a much higher per-instruction multiplier. SDK 21 and 22 are practically identical at the local-estimate level — the CPU delta is 737 instructions (−0.03%) and the memory delta is 543 bytes (−0.03%), well within measurement noise.
 
@@ -136,9 +119,7 @@ This section records the local-vs-network cost gap for the `require_auth` host-f
 
 ### Figures
 
-| Operation type | Local CPU | Local mem | Network CPU | Network mem | Delta CPU | Fixture | Build profile | Toolchain | Date |
-|---|---:|---:|---:|---:|---:|---|---|---|---|
-| Authorization (`require_auth`) | 2,864,886 | 1,721,879 | — | — | — | `amm-pool-contract::require_auth_only` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-07-28 |
+The measured authorization figures are kept in the root [`MEASUREMENTS.md` › Authorization (require_auth) measurement](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#authorization-require_auth-measurement), which is the table to update when a network figure lands. The fixture behind it is [`cargo-budget-report/fixtures/require_auth_benchmark.json`](https://github.com/Tollcraft/soroban-budget-assert/blob/main/cargo-budget-report/fixtures/require_auth_benchmark.json).
 
 The local estimate is collected by the `measure_auth_gap` test in `amm-pool-contract/tests/measure_auth_gap.rs`:
 
@@ -157,9 +138,7 @@ This section records the local-vs-network cost gap for the memory-bytes metric i
 
 ### Figures
 
-| Metric | Local estimate | Network figure | Delta | Fixture | Build profile | Toolchain | Date |
-|---|---:|---:|---:|---|---|---|---|
-| Memory Bytes | `MEM_LOCAL` | Pending | — | `amm-pool-contract::allocate_vec(10_000)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-07-28 |
+The figures are recorded in the root [`MEASUREMENTS.md` › Memory bytes](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#memory-bytes) table, which is the copy to update as the `MEM_LOCAL` and network values are captured.
 
 The local estimate is collected by `test_measure_memory_bytes_local_for_issue_122` in `amm-pool-contract/tests/budget_test.rs`:
 

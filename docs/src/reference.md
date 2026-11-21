@@ -17,7 +17,18 @@ Marginal-cost baseline subtraction is handled directly in `budget-macros` baseli
 The budget macros are attribute macros that inject budget-measurement assertions
 into test functions.  They require a local variable named `env` (a
 `soroban_sdk::Env`) — the injected check reads `env.cost_estimate().budget()`
-after the original test statements run.
+after the original test statements run.  A test that binds the environment to a
+different name can point the measurement at it with `, env_ident = <binding>`,
+accepted by every attribute except `budget_scaling`:
+
+```rust
+#[test]
+#[budget_cpu_lt(850000, env_ident = host)]
+fn unit_test() {
+    let host = Env::default();
+    // ... the check runs against `host` ...
+}
+```
 
 The check runs on every path that leaves the test, so all of these body shapes work:
 
@@ -544,8 +555,9 @@ observed ratios, deviation, and all measurements.
 ### Applying a budget attribute to an `impl` block
 
 `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`,
-`#[budget_read_bytes_lt]` and `#[budget_lt]` may be placed on an `impl` block.
-The limit then applies to **every** `fn` in the block:
+`#[budget_read_bytes_lt]`, `#[budget_events_lt]`,
+`#[budget_ledger_entries_lt]` and `#[budget_lt]` may be placed on an `impl`
+block. The limit then applies to **every** `fn` in the block:
 
 ```rust
 struct Contract;
@@ -697,12 +709,14 @@ This section is the **complete** flag reference: every `#[arg(...)]` field decla
 | `--max-retry-attempts <N>` | `[retry].max_attempts` | `4` | Total attempts (including the first) for deploy, invoke-build, and simulate-RPC calls before giving up. `1` disables retry entirely; `0` is rejected with an error. See [`retry`: transient-failure retry policy](#retry-transient-failure-retry-policy) and the [testnet troubleshooting guide](testnet_troubleshooting.md) for what actually gets retried. |
 | `--retry-backoff-secs <SECS>` | `[retry].initial_backoff_secs` | `2` | Initial backoff before the first retry; doubles on each subsequent attempt (2 → 4 → 8 with the defaults). |
 | `--derive-limits <OUT>` | — | none | Derive local (Tier A) test limits from a Tier B JSON report and write them as `KEY=VALUE` pairs to `OUT`, then exit — no build/deploy/simulate happens in this mode. Reads the Tier B report from `--from` (or stdin). Requires either all four `--margin-*` flags or a complete `[margin]` block in `budget.toml`; see [`margin`: deriving Tier A limits](#margin-deriving-tier-a-limits). |
+| `--allow-dropped-limits` | — | no | Allow dropping TIER_A__ keys that are present in the existing `tier-a-limits.env` but not in the newly derived output. Use this when you intentionally remove a contract function or metric and want the env file to reflect that change. Without this flag, the derive step will error if any TIER_A__ key would be lost, listing the dropped keys. |
 | `--from <PATH>` | — | stdin (`-`) | Source Tier B JSON report for `--derive-limits`. `-` (the default when omitted) reads from stdin, so `cargo budget-report --json \| cargo budget-report --derive-limits tier-a-limits.env --margin-cpu 1.5 ...` composes as a pipeline. Ignored outside `--derive-limits` mode. |
 | `--margin-cpu <F>` | `[margin].cpu_margin` | none | Multiplier applied to Tier B CPU values when deriving Tier A limits. Must be finite and `>= 1.0`. |
 | `--margin-memory <F>` | `[margin].memory_margin` | none | Multiplier applied to Tier B memory values. Same validity rule as `--margin-cpu`. |
 | `--margin-read <F>` | `[margin].read_margin` | none | Multiplier applied to Tier B read-bytes values. Same validity rule as `--margin-cpu`. |
 | `--margin-write <F>` | `[margin].write_margin` | none | Multiplier applied to Tier B write-bytes values. Same validity rule as `--margin-cpu`. All four `--margin-*` flags are all-or-nothing: supplying some but not all is an error listing the missing ones, and there is never a mix of CLI flags and a `[margin]` block — see [Value precedence](#value-precedence). |
 | `--provenance-out <PATH>` | — | `<OUT>` with `.env` replaced by `.md` | Only meaningful with `--derive-limits`: where to write the Markdown provenance table documenting how each derived limit was computed. Defaults from `--derive-limits`'s own `OUT` path (e.g. `tier-a-limits.env` → `tier-a-limits.provenance.md`), so it rarely needs to be set explicitly. |
+| `--allow-dropped-limits` | — | `false` | Only meaningful with `--derive-limits`: accept the removal of `TIER_A__…` keys that the existing `OUT` file proves but the report cannot re-derive. Without it, a key present in `OUT` and absent from the new output aborts the run before either file is written and lists every dropped key. Pass it when the removal is deliberate, e.g. after deleting the contract function the limit belonged to. |
 | `--record <PATH>` | — | none | Record every transport response (deploy, invoke-build, simulate RPC) into a replayable fixture file at `PATH`. The run itself still talks to the network; the fixture lets a later `--replay` run reproduce the same report offline. Mutually exclusive with `--replay` (rejected by clap's `conflicts_with` at parse time, before any network call happens). |
 | `--replay <PATH>` | — | none | Replay a run from a fixture file written by `--record`. The whole report pipeline runs offline: no `stellar` CLI, no `curl`, no network access, and preflight checks for those tools are skipped entirely. Mutually exclusive with `--record`. |
 | `--no-deploy-cache` | — | `false` | Skip `.budget-cache.toml` and redeploy every contract for this run, even when its WASM, network, and source account match a cached deployment. |
@@ -715,7 +729,7 @@ This section is the **complete** flag reference: every `#[arg(...)]` field decla
 - **`--force` only does anything with `--init`.** Passing `--force` alone (no `--init`) is accepted by the parser but has no effect — it isn't read anywhere outside `scaffold_init`.
 - **`--csv` / `--json` / `--html` / `--markdown` are mutually exclusive in effect, not by `conflicts_with`.** clap does not reject combining them; the renderer picks one output in a fixed priority order (`--csv` first, then `--json`, then `--markdown`, then `--html`, then the plain-text table). See [Output-format precedence](#output-format-precedence-when-flags-combine).
 - **`--record` and `--replay` *are* enforced as mutually exclusive** via clap's `conflicts_with`, so passing both is a parse-time error naming both flags — unlike the `--csv`/`--json`/`--html` case above.
-- **`--derive-limits` changes what every other network/build flag means.** In derive mode the tool never builds, deploys, or simulates anything; `--network`, `--source`, `--profile`, `--record`, `--replay`, and the retry flags are all irrelevant to that run. Only `--from`, `--margin-*`, and `--provenance-out` matter.
+- **`--derive-limits` changes what every other network/build flag means.** In derive mode the tool never builds, deploys, or simulates anything; `--network`, `--source`, `--profile`, `--record`, `--replay`, and the retry flags are all irrelevant to that run. Only `--from`, `--margin-*`, `--provenance-out`, and `--allow-dropped-limits` matter.
 - **`--record-baseline` / `--check-baseline` also short-circuit the legacy report path**, similarly to `--derive-limits`: `--json` still applies (it selects JSON vs. text rendering of the *baseline* report), but `--csv`, `--html`, and `--check` do not apply in these modes.
 - **`--tolerance` is overridden, not overriding, in one specific case**: a function's own `[functions.<name>].tolerance` in `budget.toml` wins even over an explicit `--tolerance` flag. Every other file-vs-flag precedence in this tool goes the other way (flag wins). See [Value precedence](#value-precedence).
 - **`--max-retry-attempts` / `--retry-backoff-secs`** apply identically whether or not `--record-baseline`/`--check-baseline`/`--derive-limits` are active, because they gate the same underlying deploy/invoke/simulate calls those modes still make (except `--derive-limits`, which makes none).
@@ -852,8 +866,19 @@ Summary: 2 check(s) passed, 1 failed
 
 ### JSON output example (`--check --json`)
 
+Every document is wrapped in an envelope carrying `schema_version` (currently `1`) plus the
+additive metadata `generated_at` (ISO-8601 UTC timestamp) and `generator_version` (the
+`cargo-budget-report` version that produced it); `snapshots` holds the report rows. Readers
+reject unknown top-level keys, so a misspelled `snapshots` fails loudly instead of parsing as
+an empty report. A free-form `_metadata` block (used by the checked-in sample fixtures) is
+tolerated and ignored. Adding metadata fields does not bump `schema_version`.
+
 ```json
-[
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-21T04:27:00Z",
+  "generator_version": "0.1.0",
+  "snapshots": [
   {
     "package": "amm-pool-contract",
     "function": "do_expensive_work",
@@ -878,7 +903,8 @@ Summary: 2 check(s) passed, 1 failed
     "limit": 1000,
     "pass": false
   }
-]
+  ]
+}
 ```
 
 For a function declared in `budget.toml` whose simulation fails, an entry still appears with `value` omitted and `pass: false`:
@@ -957,17 +983,23 @@ Each simulated function produces four rows (or four JSON objects) when its simul
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
-[Measurement scope](#measurement-scope). JSON output (`--json`) is an array suited to CI:
+[Measurement scope](#measurement-scope). JSON output (`--json`) is a versioned envelope suited
+to CI: `schema_version`, `generated_at`, `generator_version`, and a `snapshots` array of rows.
 
 ```json
-[
-  {
-    "package": "amm-pool-contract",
-    "function": "do_expensive_work",
-    "metric": "CPU Instructions",
-    "value": 756678
-  }
-]
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-21T04:27:00Z",
+  "generator_version": "0.1.0",
+  "snapshots": [
+    {
+      "package": "amm-pool-contract",
+      "function": "do_expensive_work",
+      "metric": "CPU Instructions",
+      "value": 756678
+    }
+  ]
+}
 ```
 
 When `--check --json` is used, configured functions gain `limit` and `pass` (see [the `--check` section above](#check-enforcing-regression-limits-against-network-verified-costs)); the shape for unconfigured functions is unchanged.
@@ -1256,80 +1288,157 @@ Effects of this file:
 - If `amm-pool-contract` were renamed tomorrow, every section above would keep working unchanged except `[scenarios.full_workflow]`, whose `package` value must match the annotation used by Tier A tests.
 - If `initialize` had been misspelled (e.g. `[functions.initialise]`), nothing would error and nothing would fail: the orphaned entry would be ignored, `initialize` would run unconfigured with no arguments, and none of its metrics would be enforced — the only symptom is missing rows in a later report.
 
-### `#[budget_lt(N)]`
+### `#[budget_lt(…)]`
 
-Generic budget assertion — asserts that **both** CPU instruction cost **and**
-memory bytes cost are strictly less than `N`. This macro is a convenience
-shorthand when you want a single ceiling covering both metrics.
+Combined assertion — one attribute that gates **both** the CPU instruction cost
+**and** the memory bytes cost, each against its own limit. The two halves are
+asserted independently and in that order, so a generous memory ceiling never
+excuses a breached CPU one.
 
-**Static limit:**
+`budget_lt` takes no positional limit and no bare `env` / `env_file` / `config`
+/ `pct`. Its attribute is parsed into `BudgetSpec`, a list of named
+`key = value` properties in which the limit source sits *underneath* the metric
+it bounds.
+
+**Properties:**
+
+| Property | Value | Constraint |
+|---|---|---|
+| `cpu` | a limit source: `N`, `env = "VAR"`, `env_file = PATH, env = "VAR"`, `config = "key"`, `pct = N, of = …` | required unless `mem` is present |
+| `mem` | the same limit sources | required unless `cpu` is present |
+| `env_ident` | identifier | names the `Env` binding when it is not called `env` |
+| `cpu_baseline` | expression returning `u64` | rejected without `cpu` |
+| `mem_baseline` | expression returning `u64` | rejected without `mem` |
+
+**Both metrics with literal limits** — the form the repo's own negative
+controls use (`amm-pool-contract/tests/budget_test.rs:1008`, `:1025`):
 
 ```rust
 use budget_macros::budget_lt;
+use soroban_sdk::Env;
 
 #[test]
-#[budget_lt(1_000_000)]
-fn test_generic_budget() {
+#[budget_lt(cpu = 1000, mem = 10_000_000)]
+fn test_cpu_ceiling_is_enforced_alongside_generous_memory() {
     let env = Env::default();
     // ... contract invocation ...
 }
 ```
 
-**Dynamic limit from environment variable:**
+**Tier A limits read from a checked-in file** — the shape used at
+`amm-pool-contract/tests/budget_test.rs:153`:
+
+```rust
+const TIER_A_LIMITS_FILE: &str = "../tier-a-limits.env";
+
+#[test]
+#[budget_lt(
+    cpu = env_file = TIER_A_LIMITS_FILE, env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__CPU",
+    mem = env_file = TIER_A_LIMITS_FILE, env = "TIER_A__AMM_POOL_CONTRACT__DEPOSIT__MEM",
+)]
+fn test_budget_require_auth_deposit() {
+    let env = Env::default();
+    // ... contract invocation ...
+}
+```
+
+Pass the path as a `const` rather than a string literal: a literal is resolved
+at macro-expansion time, so one that points nowhere is a compile error. The key
+lookup itself happens at run time, and a missing key panics naming both the
+file and the key.
+
+**Marginal cost** — subtract a per-metric baseline before comparing:
 
 ```rust
 #[test]
+#[budget_lt(
+    cpu = 16_000,
+    mem = 5_000_000,
+    cpu_baseline = baseline_cpu(),
+    mem_baseline = baseline_mem()
+)]
+fn test_marginal_budget() {
+    let env = Env::default();
+    // ... contract invocation ...
+}
+```
+
+Each baseline is subtracted from its own metric with `saturating_sub`, so a
+measurement below the baseline reports a marginal cost of 0 instead of wrapping
+to a huge number and failing.
+
+**A percentage of a network-measured limit:**
+
+```rust
+#[test]
+#[budget_lt(
+    cpu = pct = 25, of = env_file = TIER_A_LIMITS_FILE, env = "NETWORK__DEPOSIT__CPU",
+    mem = 500,
+)]
+fn test_cpu_at_a_quarter_of_the_network_limit() {
+    let env = Env::default();
+    // ... contract invocation ...
+}
+```
+
+`pct` must be between 1 and 100 and requires `of = <source>`; the reference
+source has to be an `env_file` + `env` pair, the only form that reads a named
+key from a checked-in file.
+
+**Failure message format:**
+
+```
+CPU instruction cost {cpu} exceeded limit {cpu_limit} - local estimate, real network cost may differ significantly in either direction
+Memory bytes cost {mem} exceeded limit {mem_limit} - local estimate, real network cost may differ significantly in either direction
+```
+
+With a baseline, the number before `exceeded` is the marginal cost and the raw
+measurement and baseline follow it:
+
+```
+CPU instruction cost {marginal} exceeded limit {cpu_limit} (marginal: {measured} measured - {baseline} baseline) - local estimate, …
+```
+
+A `pct` limit appends the fraction (`(25% of network limit)`), and an attribute
+expanded over an `impl` block appends the method it fired on: `` [fn `swap`] ``.
+
+**Forms the macro rejects.** These are the example call sites this page used to
+print, kept verbatim so a reader who copied one can match it to the diagnostic
+it produces. Each is a compile error, and each is pinned by a trybuild fixture
+under `budget-macros/tests/ui/`:
+
+```rust
+// budget_lt_positional_literal.rs — error: expected identifier
+#[budget_lt(1_000_000)]
+
+// budget_lt_env_source.rs — error: `env` names a limit source, not a property — use `cpu = env = …` or `mem = env = …`
 #[budget_lt(env = "GENERIC_BUDGET_LIMIT")]
-fn test_generic_with_env() {
-    std::env::set_var("GENERIC_BUDGET_LIMIT", "1000000");
-    let env = Env::default();
-    // ...
-}
-```
 
-**Limit from `.env` file:**
-
-```rust
-#[test]
+// budget_lt_env_file_source.rs — error: `env_file` names a limit source, not a property — use `cpu = env_file = …` or `mem = env_file = …`
 #[budget_lt(env_file = "../tier-a-limits.env", env = "TIER_A__AMM_POOL_CONTRACT__SWAP__CPU")]
-fn test_generic_from_file() {
-    let env = Env::default();
-    // ...
-}
-```
 
-**Config-driven limit:**
-
-```rust
-#[test]
+// budget_lt_config_source.rs — error: `config` names a limit source, not a property — use `cpu = config = …` or `mem = config = …`
 #[budget_lt(config = "generic_budget")]
-fn test_generic_from_config() {
-    let env = Env::default();
-    // ...
-}
+
+// budget_lt_baseline_property.rs — error: unknown property: baseline
+#[budget_lt(cpu = 1_000_000, mem = 1_000_000, baseline = 1_000)]
 ```
 
-**Baseline subtraction:**
+The accepted grammar is pinned by `budget-macros/tests/ui/pass/pass_budget_lt.rs`,
+which compiles and runs every form shown above. Remaining parser guards:
 
-```rust
-#[test]
-#[budget_lt(1_000_000, baseline = instantiation_floor())]
-fn test_generic_marginal() {
-    let env = Env::default();
-    // ...
-}
-```
+| Attribute | Diagnostic |
+|---|---|
+| `#[budget_lt]` | ``must provide at least one of `cpu` or `mem` limits`` |
+| `#[budget_lt(unknown_prop = 1000)]` | ``unknown property: unknown_prop`` |
+| `#[budget_lt(mem = 500, cpu_baseline = 100)]` | `` `cpu_baseline` requires a `cpu` limit`` |
+| `#[budget_lt(cpu = 1_000, mem_baseline = 50)]` | `` `mem_baseline` requires a `mem` limit`` |
+| `#[budget_lt(cpu = pct = 50)]` | `` `pct` requires `of = <source>` `` |
+| `#[budget_lt(cpu = env = "UNSET_VAR")]` | ``env var `UNSET_VAR` is not set at macro-expansion time`` |
 
-Failure message format:
-```
-CPU instruction cost {cpu} exceeded limit {N}
-Memory bytes cost {mem} exceeded limit {N}
-```
-
-The first check that fails triggers the panic — if both are over, only the
-CPU failure is reported. The macro supports the same attribute forms as
-`budget_cpu_lt` and `budget_mem_lt`: integer literal, `env = "VAR"`,
-`env_file = "PATH"`, `config = "key"`, and `baseline = <expr>`.
+The last row is why `budget_lt` cannot quietly stop asserting: a bare `env`
+source that is unset when the test crate is compiled fails the build rather
+than falling back to `u64::MAX`.
 
 
 The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are documented in the
@@ -1345,12 +1454,17 @@ The `#[budget_write_bytes_lt(N)]` and `#[budget_read_bytes_lt(N)]` macros are do
 | `#[budget_read_bytes_lt(N)]` | Read bytes (memory proxy) | `Read bytes cost (memory proxy)` | Yes |
 | `#[budget_events_lt(N)]` | Events emitted | `Event count` | Yes |
 | `#[budget_ledger_entries_lt(N)]` | Ledger entries (reads + writes) | `Ledger entry count` | Yes |
-| `#[budget_lt(N)]` | Both CPU + memory | `CPU instruction cost` or `Memory bytes cost` | Yes |
+| `#[budget_lt(…)]` | CPU instructions **and** memory bytes, each against its own limit | `CPU instruction cost` or `Memory bytes cost` | Yes, as `cpu_baseline` / `mem_baseline` |
 | `#[budget_scaling(...)]` | CPU growth model | `Scaling check failed at size {__curr_s}` | N/A |
 
-All macros accept the same limit sources: integer literal, `env = "VAR"`,
-`env_file = "PATH", env = "VAR"`, or `config = "key"`. The `baseline` parameter
-is available on all macros except `budget_scaling`.
+The single-metric macros take one limit directly: an integer literal,
+`env = "VAR"`, `env_file = "PATH", env = "VAR"`, or `config = "key"`, plus an
+optional `baseline = <expr>`.
+
+`#[budget_lt(…)]` is the exception — it has no positional limit and no bare
+`baseline`. The same sources nest under `cpu =` and `mem =`, at least one of
+them is required, and the baselines are the separate `cpu_baseline =` /
+`mem_baseline =` keys. See the `#[budget_lt(…)]` section above.
 
 - A method with its own `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`, `#[budget_read_bytes_lt]`, `#[budget_events_lt]`, `#[budget_ledger_entries_lt]`, or `#[budget_lt]` attribute is governed by that, not the block limit - it is never asserted twice.
 

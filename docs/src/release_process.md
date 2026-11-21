@@ -63,7 +63,21 @@ Before creating a release tag, complete the following steps on `main`:
    ```bash
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets -- -D warnings
+   bash scripts/check-module-reachability.sh
+   bash scripts/check-cli-docs.sh
+   bash .github/scripts/check-compatibility-docs.sh
+   cargo install cargo-machete --version 0.6.2 --locked
+   cargo machete
+   ```
+   These are the checks in `.github/workflows/quality.yml`. The budget
+   workflow also builds the contract fixtures and runs the workspace and
+   Tier A report tests:
+   ```bash
+   for package in amm-pool-contract host-function-contract bloat-contract; do
+     stellar contract build --package "$package" --locked
+   done
    cargo test --workspace
+   cargo test -p amm-pool-contract --test budget_test test_export_tier_a_budget_report
    ```
 5. **Verify PR Dry-Run CI:**
    - On every pull request targeting `main`, `.github/workflows/release.yml` automatically runs the `publish-dry-run` job:

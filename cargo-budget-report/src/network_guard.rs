@@ -578,6 +578,51 @@ mod tests {
         assert!(err.contains("unrecognised network"), "got: {err}");
     }
 
+    /// Pin the safety classification and operator-facing descriptions for
+    /// *every* [`NetworkClass`] variant.
+    ///
+    /// `is_disposable` is the single predicate that decides whether a deploy
+    /// may proceed without `--allow-mainnet`, and `describe` is what the
+    /// refusal message shows the operator. An empty description would produce
+    /// a message that names no network; an inverted disposability check would
+    /// either let Mainnet through or block testnet. Both failure modes are
+    /// invisible until someone deploys, so they are pinned here.
+    #[test]
+    fn network_class_disposability_and_descriptions() {
+        let expected = [
+            (NetworkClass::Testnet, true),
+            (NetworkClass::Futurenet, true),
+            (NetworkClass::Local, true),
+            (NetworkClass::Mainnet, false),
+            (NetworkClass::Unknown, false),
+        ];
+
+        let mut descriptions = std::collections::HashSet::new();
+        for (class, disposable) in expected {
+            assert_eq!(
+                class.is_disposable(),
+                disposable,
+                "unexpected disposability for {class:?}"
+            );
+
+            let description = class.describe();
+            assert!(
+                !description.trim().is_empty(),
+                "{class:?} must have a non-empty description for refusal messages"
+            );
+            assert!(
+                descriptions.insert(description),
+                "{class:?} must have a description distinct from the other variants"
+            );
+        }
+
+        // Mainnet and Unknown require an explicit opt-in: they are the two
+        // classes the guard exists to stop, so neither may ever be disposable.
+        assert!(!NetworkClass::Mainnet.is_disposable());
+        assert!(!NetworkClass::Unknown.is_disposable());
+        assert!(NetworkClass::Mainnet.describe().contains("Mainnet"));
+    }
+
     #[test]
     fn refusal_quotes_the_trimmed_network_value() {
         let err = ensure_deploy_allowed(&format!("  {MAINNET_PASSPHRASE}  "), false)
