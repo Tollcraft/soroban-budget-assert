@@ -10,21 +10,15 @@ We welcome contributions to `soroban-budget-assert`.
 
 ### Requirements
 - All new CLI features must support the `--json` flag.
-- Macro changes must include corresponding `#[test]` cases in the `amm-pool-contract`.
+- Macro changes must cover the compile-fail and pass fixtures exercised by
+  [`budget-macros/tests/ui.rs`](../../budget-macros/tests/ui.rs), as well as
+  relevant runtime tests in `amm-pool-contract`. The UI fixtures live in
+  `budget-macros/tests/ui/`; update their expected compiler diagnostics with
+  `TRYBUILD=overwrite cargo test -p budget-macros`.
 - Do not introduce panics in the CLI; use `anyhow::Result` for graceful error handling.
 - When adding a new cost metric, follow the [Adding a New Cost Metric](adding_a_metric.md) guide to ensure all coordinated edits are made.
 
 ## ⚙️ Supported Versions & Compatibility
 
-* **Supported SDK Version**: `soroban-sdk` = `"27.0.3"` (specifically tested/resolved to `27.0.6` in `Cargo.lock`)
-* **Supported XDR Version**: `stellar-xdr` = `"27.0.0"` (used for decoding transaction simulation responses)
-* **Corresponding Stellar Protocol**: **Protocol 27**
-
-### Compatibility Matrix
-
-| SDK Version | Protocol Version | Status | Notes |
-| :--- | :--- | :--- | :--- |
-| **`< 22.0.0`** | `< 22` | **Untested** | Older protocols may use different transaction/resource schemas. |
-| **`22.0.x`** | `22` | **Untested** | Previously supported; superseded by SDK 27 workspace baseline. |
-| **`23.0.x` – `26.0.x`** | `23` – `26` | **Untested** | Not pinned in the workspace; may work but are untested. |
-| **`27.0.x`** | `27` | **Supported** | Matches pinned manifest dependencies (`soroban-sdk` `27.0.3`, `stellar-xdr` `27.0.0`). |
+See the [Supported Versions & Compatibility reference](reference.md#supported-versions-compatibility)
+for the canonical SDK/XDR pins and compatibility matrix.

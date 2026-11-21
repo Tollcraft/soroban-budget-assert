@@ -494,29 +494,34 @@ Both `generate_budget_assert()` (via `generate_limit_expr()`) and `budget_write_
 ### `spec.env_ident` Support
 
 `BudgetSpec` carries an `env_ident` field (`budget-macros/src/lib.rs:67`,
-parsed at `:469-470`) that overrides the variable name read by
+parsed at `:536-537`) that overrides the variable name read by
 `env.cost_estimate().budget()`; `generate_budget_assert()` honours it at
-`:1142-1144`. Exactly one public macro accepts it — the rest either reject the
-key in the parser or force the identifier to `env` by construction:
+`:1295-1297`. `StandaloneSpec` carries the same key (`:81`, parsed at
+`:124-132`) and exposes it through `StandaloneSpec::env_ident()` (`:87`), which
+falls back to `env` when the key is absent. Every budget attribute except
+`budget_scaling` therefore accepts it:
 
 | Macro | `env_ident` |
 |---|---|
-| `#[budget_lt(...)]` | Accepted — the parsed spec is passed straight through (`:1671-1673`), so `#[budget_lt(cpu = 5, env_ident = my_env)]` measures `my_env` |
-| `#[budget_cpu_lt(...)]` | Rejected by the parser (`StandaloneSpec` only allows `baseline`); the expansion passes `env_ident: None`, defaulting to `env` (`:1302`) |
-| `#[budget_mem_lt(...)]` | Rejected by the parser; the expansion passes `env_ident: None`, defaulting to `env` (`:1645`) |
-| `#[budget_write_bytes_lt(...)]`, `#[budget_read_bytes_lt(...)]` | Rejected by the parser; `generate_bytes_proxy_assert` hardcodes the identifier to `env` (`:1323`) |
-| `#[budget_events_lt(...)]`, `#[budget_ledger_entries_lt(...)]` | Rejected by the parser; each hardcodes the identifier to `env` (`:1486`, `:1548`) |
-| `#[budget_scaling(...)]` | Not applicable — it parses a separate `ScalingConfig` (`sizes`/`model`/`tolerance`) and creates its own fresh `Env` per size (`:1836`) |
+| `#[budget_lt(...)]` | Accepted — the parsed spec is passed straight through (`:1877-1879`), so `#[budget_lt(cpu = 5, env_ident = my_env)]` measures `my_env` |
+| `#[budget_cpu_lt(...)]`, `#[budget_mem_lt(...)]` | Accepted (issue #989) — the standalone spec's ident is copied into the `BudgetSpec` the expansion builds (`:1468`, `:1851`) |
+| `#[budget_write_bytes_lt(...)]`, `#[budget_read_bytes_lt(...)]` | Accepted — `generate_bytes_proxy_assert` reads the ident from the spec (`:1493`) |
+| `#[budget_events_lt(...)]`, `#[budget_ledger_entries_lt(...)]` | Accepted — each expansion reads the ident from the spec (`:1667`, `:1746`) |
+| `#[budget_scaling(...)]` | Not applicable — it parses a separate `ScalingConfig` (`sizes`/`model`/`tolerance`) and creates its own fresh `Env` per size |
 
-The value must be a single identifier (`Option<Ident>` at `:67`):
-`env_ident = my_env` parses, but a field or method path such as
-`env_ident = self.env` does not. Consequently a method whose environment
-lives in a field cannot be targeted — bind it to a local first. Lifting that
-limitation would be a code change, out of scope for this docs fix.
+The value must be a single identifier (`Option<Ident>`): `env_ident = my_env`
+parses, but a field or method path such as `env_ident = self.env` does not.
+Consequently a method whose environment lives in a field cannot be targeted —
+bind it to a local first. Lifting that limitation would be a code change, out of
+scope for this docs fix.
 
-Verified against `budget-macros/src/lib.rs` and the parser unit test
-`a_spec_honours_an_explicit_env_ident` (run via `cargo test -p budget-macros`),
-which parses `cpu = 1000, env_ident = my_env` and asserts the ident is stored.
+Verified against `budget-macros/src/lib.rs` by the parser unit tests
+`a_spec_honours_an_explicit_env_ident`, `a_standalone_spec_accepts_an_env_ident`,
+`a_standalone_spec_accepts_the_two_keys_in_either_order`, and
+`a_standalone_spec_rejects_a_repeated_env_ident` (run via
+`cargo test -p budget-macros`), plus the behavioural fixture
+`tests/ui/pass/pass_env_ident_standalone.rs`, which drives all six standalone
+attributes through a non-`env` binding.
 
 ## Extension Guide
 

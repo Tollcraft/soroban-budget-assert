@@ -150,7 +150,7 @@ impl From<stellar_xdr::Error> for Error {
 /// [`Error`] before wrapping with context.
 impl From<anyhow::Error> for Error {
     fn from(e: anyhow::Error) -> Self {
-        Error::Message(e.to_string())
+        Error::Message(format!("{e:#}"))
     }
 }
 

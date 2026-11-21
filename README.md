@@ -72,11 +72,33 @@ The workspace pins `soroban-sdk` and `stellar-xdr` in its manifests. The manifes
 
 | Crate                                                                    | Manifest dependency                                                                                                 |
 | :----------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------ |
-| `amm-pool-contract` ([manifest](amm-pool-contract/Cargo.toml))           | `soroban-sdk` = `"27.0.3"` (also as a dev-dependency with the `testutils` feature) |
-| `host-function-contract` ([manifest](host-function-contract/Cargo.toml)) | `soroban-sdk` = `"27.0.3"` |
-| `cargo-budget-report` ([manifest](cargo-budget-report/Cargo.toml))       | `stellar-xdr` = `"27.0.0"` (used for decoding transaction simulation responses) |
+| `amm-pool-contract` ([manifest](amm-pool-contract/Cargo.toml))           | `soroban-sdk` = `"29.0.1"` (also as a dev-dependency with the `testutils` feature) |
+| `host-function-contract` ([manifest](host-function-contract/Cargo.toml)) | `soroban-sdk` = `"29.0.1"` |
+| `cargo-budget-report` ([manifest](cargo-budget-report/Cargo.toml))       | `stellar-xdr` = `"28.0.0"` (used for decoding transaction simulation responses) |
 
-- **Corresponding Stellar Protocol**: **Protocol 27**
+- **Pinned protocol**: **Protocol 28** — the protocol the manifests above require (`soroban-sdk` `29.0.1`, `stellar-xdr` `28.0.0`), and the only protocol this workspace is built and tested against in CI.
+- **Observed live protocol**: mainnet 29, testnet 30 — observed 2026-11-21. This records what the two public networks run today; it is not a capability claim, this workspace stays pinned to 28, and the **Untested** rows below stay untested.
+- **Re-checking the observation**: CI never runs these commands and never opens a socket, so they are written down here for the day the numbers above need re-deriving by hand.
+
+  ```bash
+  # Mainnet Soroban RPC, via getNetwork -> "protocolVersion": 29
+  curl -sS -X POST https://mainnet.sorobanrpc.com -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"1","method":"getNetwork","params":{}}'
+
+  # Testnet Soroban RPC, same call -> "protocolVersion": 30
+  curl -sS -X POST https://soroban-testnet.stellar.org/ -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":"1","method":"getNetwork","params":{}}'
+
+  # Mainnet cross-checked against Horizon's root resource -> current 29, core-supported 30.
+  # Horizon pretty-prints its JSON, hence the `: *` between the key and the number.
+  curl -sS https://horizon.stellar.org/ \
+    | grep -oE '"(current|core_supported)_protocol_version": *[0-9]+'
+
+  # `cargo-budget-report/src/live.rs` pins https://soroban.stellar.org for mainnet;
+  # that host now answers a redirect instead of JSON-RPC, which is why the mainnet
+  # number above comes from `mainnet.sorobanrpc.com` and from Horizon.
+  curl -sSI https://soroban.stellar.org/ | grep -iE '^HTTP|^location'
+  ```
 
 ### What "Supported" means here
 
@@ -87,7 +109,7 @@ A row marked **Supported** means: every workspace crate builds and passes `cargo
 | SDK Version     | Protocol Version | Status        | Notes                                                                                                                                                                                                                                                                                                                                                                                                               |
 | :-------------- | :--------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Older than the pinned line** | Older protocol | **Untested**  | Older protocols may use different transaction/resource schemas. |
-| **`27.0.x`**    | `27`             | **Supported** | Matches the pinned `soroban-sdk` `27.0.3` and `stellar-xdr` `27.0.0` manifest dependencies. |
+| **`29.0.x`**    | `28`             | **Supported** | Matches the pinned `soroban-sdk` `29.0.1` and `stellar-xdr` `28.0.0` manifest dependencies. |
 | **Future SDK/XDR versions** | Future protocol | **Untested**  | Future protocol upgrades or XDR schema changes may break parsing. |
 
 ---

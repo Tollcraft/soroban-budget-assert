@@ -41,7 +41,7 @@
 
 use crate::error::{Error, Result};
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -147,6 +147,23 @@ pub struct TierBMeasurement {
     pub value: u64,
 }
 
+/// A `snapshots` row exactly as the writer emitted it, before the `value`
+/// check.
+///
+/// `--check --json` omits the `value` key for a function whose simulation
+/// failed (`CostReport::value` is an `Option` with
+/// `skip_serializing_if = "Option::is_none"`), so deserializing straight into
+/// `TierBMeasurement` aborts with serde's bare ``missing field `value` `` and
+/// names nothing. `null` is accepted the same way.
+#[derive(Deserialize)]
+struct TierBRow {
+    package: String,
+    function: String,
+    metric: String,
+    #[serde(default)]
+    value: Option<u64>,
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
@@ -172,10 +189,11 @@ fn default_schema_version() -> u32 {
 /// `json_output::render_json` helper wraps it; either is consumed
 /// without further massaging.
 ///
-/// Rejects rows where the `value` field is missing or null, since such
-/// rows cannot be derived into a Tier A limit. The error names the
-/// package, function, and metric so the user knows exactly which row
-/// caused the problem.
+/// A row that carries no `value` — because `--check --json` omits the key for
+/// a function whose simulation failed — is rejected by name rather than
+/// through serde's bare ``missing field `value` ``, so the caller sees which
+/// package/function/metric is missing from the report instead of which field
+/// serde wanted (#968).
 pub fn load_tier_b_report(path: &Path) -> Result<Vec<TierBMeasurement>> {
     let contents = if path == Path::new("-") {
         use std::io::Read;
@@ -190,48 +208,30 @@ pub fn load_tier_b_report(path: &Path) -> Result<Vec<TierBMeasurement>> {
     };
     let value: serde_json::Value = serde_json::from_str(&contents).map_err(Error::Json)?;
     let snapshots_opt = crate::json_output::validate_report_schema(&value, path)?;
-    // Try to get a raw array of rows regardless of whether the JSON is
-    // wrapped (schema_version + snapshots) or bare array shape.
-    let raw_array: Vec<serde_json::Value> = match snapshots_opt {
+    let rows: Vec<TierBRow> = match snapshots_opt {
         Some(snapshots) => serde_json::from_value(serde_json::Value::Array(snapshots.clone()))
             .map_err(Error::Json)?,
-        None => match value.as_array() {
-            Some(arr) => arr.clone(),
-            None => Vec::new(),
-        },
+        None => serde_json::from_value(value).map_err(Error::Json)?,
     };
-    if raw_array.is_empty() {
-        return Err(Error::Message(
-            "no derivable rows in Tier B report; tier-a-limits.env is not written".into(),
-        ));
-    }
-    let mut measurements = Vec::with_capacity(raw_array.len());
-    for row in raw_array {
-        let row_clone = row.clone();
-        let package = row
-            .get("package")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<unknown package>");
-        let function = row
-            .get("function")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<unknown function>");
-        let metric = row
-            .get("metric")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<unknown metric>");
-        let value = row.get("value");
-        if value.is_none() || value == Some(&serde_json::Value::Null) {
-            return Err(Error::Message(format!(
-                "snapshot row has no value for {package}::{function} [{metric}]; each row must have a non-null value to derive a Tier A limit"
-            )));
-        }
-        let m: TierBMeasurement = serde_json::from_value(row_clone).map_err(|e| {
+    let mut measurements = Vec::with_capacity(rows.len());
+    for row in rows {
+        let value = row.value.ok_or_else(|| {
             Error::Message(format!(
-                "failed to parse {package}::{function} [{metric}]: {e}"
+                "{}: snapshot row {}::{} [{}] has no `value` (missing or null); a function \
+                 that failed to simulate yields no Tier B measurement, so it cannot be \
+                 derived into a Tier A limit",
+                path.display(),
+                row.package,
+                row.function,
+                row.metric
             ))
         })?;
-        measurements.push(m);
+        measurements.push(TierBMeasurement {
+            package: row.package,
+            function: row.function,
+            metric: row.metric,
+            value,
+        });
     }
     Ok(measurements)
 }
@@ -266,10 +266,12 @@ pub struct Derivation {
 /// limit will then assert `cost < 0`, which is never true and so
 /// always panics — this is intentional: a Tier B report that records
 /// zero for a metric (e.g. `extend_instance_ttl - Write Bytes`)
-/// means "no charge recorded". The `budget-macros` crate now emits a
-/// compile error for zero-valued limits rather than falling back to
-/// `u64::MAX`, so test authors should ensure their Tier B reports
-/// record non-zero values for metrics they assert against.
+/// means "no charge recorded" and the test author should either drop
+/// the macro on that assertion or bind the limit to a variable that is
+/// not defined. Note that an unset `env = "VAR"` is not a way to opt
+/// out: `budget-macros` reads it at macro-expansion time and fails to
+/// compile with "env var `VAR` is not set at macro-expansion time"
+/// rather than falling back to `u64::MAX`.
 fn ceil_apply(value: u64, margin: f64) -> u64 {
     let scaled = (value as f64) * margin;
     if !scaled.is_finite() || scaled < 0.0 {
@@ -567,36 +569,6 @@ fn metric_to_env_segment(metric_label: &str) -> &'static str {
 }
 
 /// Persist the derivation's two outputs.
-/// Parse the existing `.env` file and return the set of `TIER_A__` keys it contains.
-/// Follows the same rules as `parse_env_file_value` in budget-macros:
-/// - Blank lines and lines starting with `#` are ignored.
-/// - For each remaining line, split on the first `=`; the left side is the key.
-fn parse_existing_tier_a_keys(content: &str) -> BTreeSet<String> {
-    let mut keys = BTreeSet::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((lhs, _)) = trimmed.split_once('=') else {
-            continue;
-        };
-        let key = lhs.trim();
-        if key.starts_with("TIER_A__") {
-            keys.insert(key.to_string());
-        }
-    }
-    keys
-}
-
-/**
- *
- * When called with an existing env file, checks that no TIER_A__ keys would be lost.
- * A changed numeric value is normal re-derivation and must still be written.
- * Only keys that would completely disappear are flagged.
- * Unless the user explicitly opts in to the loss via `--allow-dropped-limits`.
- */
-#[allow(clippy::too_many_arguments)]
 pub fn write_outputs(
     out_env: &Path,
     out_provenance: Option<&Path>,
@@ -605,34 +577,7 @@ pub fn write_outputs(
     margin: &Margin,
     build_profile: Option<&str>,
     timestamp_utc: &str,
-    existing_env: Option<&Path>,
-    allow_dropped_limits: bool,
 ) -> Result<()> {
-    // If an existing env file is present, check that no TIER_A__ keys would be lost.
-    // A changed numeric value is normal re-derivation and must still be written.
-    // Only keys that would completely disappear are flagged.
-    // Unless the user explicitly opts in to the loss via --allow-dropped-limits.
-    if let Some(existing_path) = existing_env {
-        let existing_content =
-            std::fs::read_to_string(existing_path).unwrap_or_else(|_| String::new());
-        let existing_keys = parse_existing_tier_a_keys(&existing_content);
-        let new_keys: BTreeSet<String> = derivation.limits.iter().map(|l| l.key.clone()).collect();
-        let dropped: Vec<String> = existing_keys.difference(&new_keys).cloned().collect();
-        if !dropped.is_empty() {
-            let dropped_str = dropped.join(", ");
-            if allow_dropped_limits {
-                eprintln!(
-                    "Warning: the following TIER_A__ keys would be lost and are not present in the new output: {}",
-                    dropped_str
-                );
-            } else {
-                return Err(Error::Message(format!(
-                    "the following TIER_A__ keys would be lost and are not present in the new output: {}",
-                    dropped_str
-                )));
-            }
-        }
-    }
     let env_body = derivation.render_env_file(source_label, margin, build_profile, timestamp_utc);
     atomic_write(out_env, &env_body)?;
     if let Some(path) = out_provenance {
@@ -709,6 +654,59 @@ mod tests {
         assert_eq!(ceil_apply(u64::MAX, 1.5), u64::MAX);
         assert_eq!(ceil_apply(1000, 1.25), 1250);
         assert_eq!(ceil_apply(101, 1.25), 127); // ceiling rounds up
+    }
+
+    #[test]
+    fn margin_for_metric_matches_core_constants() {
+        // Pin `Margin::for_metric` against the canonical metric names from the
+        // core trait so a future rename/additions on either side cannot drift
+        // silently and leave derivation without a margin.
+        use soroban_budget_assert_core::traits::{
+            METRIC_CPU_INSTRUCTIONS, METRIC_MEMORY_BYTES, METRIC_READ_BYTES, METRIC_WASM_BYTES,
+            METRIC_WRITE_BYTES,
+        };
+
+        let margin = Margin::new(1.1, 1.2, 1.3, 1.4).unwrap();
+
+        assert_eq!(margin.for_metric(METRIC_CPU_INSTRUCTIONS), Some(1.1));
+        assert_eq!(margin.for_metric(METRIC_MEMORY_BYTES), Some(1.2));
+        assert_eq!(margin.for_metric(METRIC_READ_BYTES), Some(1.3));
+        assert_eq!(margin.for_metric(METRIC_WRITE_BYTES), Some(1.4));
+
+        // WASM binary size is unmetered, so it deliberately has no margin.
+        assert_eq!(margin.for_metric(METRIC_WASM_BYTES), None);
+
+        // Lookup is exact-match; unknown or differently-cased labels are not
+        // silently coerced to a metric.
+        assert_eq!(margin.for_metric(""), None);
+        assert_eq!(margin.for_metric("cpu instructions"), None);
+        assert_eq!(margin.for_metric("Unknown Bytes"), None);
+    }
+
+    #[test]
+    fn ceil_apply_boundary_and_saturation_tests() {
+        // Identity boundaries: zero stays zero and a 1.0 margin is a no-op.
+        assert_eq!(ceil_apply(0, 1.0), 0);
+        assert_eq!(ceil_apply(1, 1.0), 1);
+
+        // 100 * 1.0001 = 100.01 -> the ceiling rounds up to 101.
+        assert_eq!(ceil_apply(100, 1.0001), 101);
+
+        // Saturation: scaling beyond u64::MAX caps instead of wrapping.
+        assert_eq!(ceil_apply(u64::MAX, 1.5), u64::MAX);
+        assert_eq!(ceil_apply(u64::MAX, f64::MAX), u64::MAX);
+
+        // `Margin::new` rejects these, but `ceil_apply` is an independent
+        // function and must stay panic-free: non-finite or negative margins
+        // preserve the measured value rather than overflowing or unwinding.
+        for margin in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -1.0] {
+            assert_eq!(
+                ceil_apply(100, margin),
+                100,
+                "margin {margin} must not panic"
+            );
+        }
+        assert_eq!(ceil_apply(u64::MAX, f64::NAN), u64::MAX);
     }
 
     #[test]
@@ -994,45 +992,6 @@ mod tests {
     }
 
     #[test]
-    fn load_tier_b_report_rejects_row_with_no_value() {
-        // A row with no `value` field (or null value) should be rejected
-        // with an error naming the package, function, and metric.
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let json = serde_json::json!([{
-            "package": "p",
-            "function": "f",
-            "metric": "CPU Instructions",
-            // "value" is intentionally missing
-        }]);
-        std::fs::write(tmp.path(), json.to_string()).unwrap();
-        let err = load_tier_b_report(tmp.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("p"), "err should name the package, got: {msg}");
-        assert!(
-            msg.contains("f"),
-            "err should name the function, got: {msg}"
-        );
-        assert!(
-            msg.contains("CPU Instructions"),
-            "err should name the metric, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn load_tier_b_report_rejects_empty_snapshots_array() {
-        // An empty snapshots array should be rejected and not write the output file.
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let json = serde_json::json!([]);
-        std::fs::write(tmp.path(), json.to_string()).unwrap();
-        let err = load_tier_b_report(tmp.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("no derivable rows"),
-            "err should mention no derivable rows, got: {msg}"
-        );
-    }
-
-    #[test]
     fn load_tier_b_report_accepts_writer_render_json_round_trip() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let cost_report = crate::CostReport {
@@ -1053,8 +1012,65 @@ mod tests {
         assert_eq!(loaded[0].value, 42000);
     }
 
-    // -- build_profile rendering in env file and provenance markdown ------
+    /// A `--check --json` report writes a row for a function whose simulation
+    /// failed with no `value` key at all (`CostReport::value` is
+    /// `skip_serializing_if = "Option::is_none"`). Deriving must name that row
+    /// rather than surface serde's bare ``missing field `value` ``, which names
+    /// nothing (#968).
+    #[test]
+    fn load_tier_b_report_names_a_value_less_row() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let missing = serde_json::json!({
+            "schema_version": 1,
+            "snapshots": [
+                {"package": "p", "function": "ok_fn", "metric": "CPU Instructions", "value": 1000},
+                {"package": "amm-pool-contract", "function": "retired_fn", "metric": "CPU Instructions"}
+            ]
+        });
+        std::fs::write(tmp.path(), missing.to_string()).unwrap();
+        let err = load_tier_b_report(tmp.path()).unwrap_err().to_string();
+        for needle in [
+            "amm-pool-contract",
+            "retired_fn",
+            "CPU Instructions",
+            "no `value`",
+        ] {
+            assert!(err.contains(needle), "error {err:?} should name {needle:?}");
+        }
 
+        // `--check` also renders the failure as an explicit `null`; both
+        // shapes mean the same thing to the derive step.
+        let null_value = serde_json::json!({
+            "schema_version": 1,
+            "snapshots": [{"package": "p", "function": "f", "metric": "Memory Bytes", "value": null}]
+        });
+        std::fs::write(tmp.path(), null_value.to_string()).unwrap();
+        let err = load_tier_b_report(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("p::f [Memory Bytes]"), "got: {err}");
+    }
+
+    /// An empty `snapshots` array parses — it simply has no rows — so the
+    /// refusal to rewrite the limits file from nothing is the derive step's
+    /// job, where the output path is known.
+    #[test]
+    fn load_tier_b_report_reads_an_empty_snapshot_array_as_no_rows() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let empty = serde_json::json!({"schema_version": 1, "snapshots": []});
+        std::fs::write(tmp.path(), empty.to_string()).unwrap();
+
+        let loaded = load_tier_b_report(tmp.path()).expect("an empty report is well-formed");
+        assert!(loaded.is_empty(), "got: {loaded:?}");
+
+        let derivation = Derivation::from_report(&loaded, &DerivationConfig::margin_only(margin()))
+            .expect("no rows means no scenario to compose");
+        assert!(
+            derivation.limits.is_empty(),
+            "an empty report must yield no limits, so the caller can refuse to write: {:?}",
+            derivation.limits
+        );
+    }
+
+    // -- build_profile rendering in env file and provenance markdown ------
     fn derivation() -> Derivation {
         Derivation::default()
     }

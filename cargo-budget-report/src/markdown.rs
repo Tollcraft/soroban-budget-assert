@@ -80,9 +80,9 @@ pub(crate) fn render_markdown(reports: &[CostReport]) -> String {
 
     for r in reports {
         out.push_str("| ");
-        out.push_str(&r.package);
+        push_cell_text(&mut out, &r.package);
         out.push_str(" | ");
-        out.push_str(&r.function);
+        push_cell_text(&mut out, &r.function);
         out.push_str(" | ");
         out.push_str(r.metric);
         out.push_str(" | ");
@@ -109,6 +109,39 @@ pub(crate) fn render_markdown(reports: &[CostReport]) -> String {
 
     out.push_str(FOOTER);
     out
+}
+
+/// Appends one text column's content, escaping the characters that would
+/// otherwise corrupt the surrounding GFM table row (issue #1048).
+///
+/// A raw `|` is the table's column delimiter, so it is emitted as the GFM
+/// escape `\|`. Embedded line breaks are collapsed to a single space — a `\r\n`
+/// pair and a run of consecutive breaks all become one space — so a multi-line
+/// package or function name cannot split one logical row into two. Trailing
+/// breaks are dropped rather than left as trailing whitespace. Every other
+/// character is copied verbatim, so ordinary identifiers render exactly as
+/// they did before.
+fn push_cell_text(out: &mut String, text: &str) {
+    let mut pending_break = false;
+    for ch in text.chars() {
+        match ch {
+            '|' => {
+                if pending_break {
+                    out.push(' ');
+                    pending_break = false;
+                }
+                out.push_str("\\|");
+            }
+            '\n' | '\r' => pending_break = true,
+            _ => {
+                if pending_break {
+                    out.push(' ');
+                    pending_break = false;
+                }
+                out.push(ch);
+            }
+        }
+    }
 }
 
 /// Appends `n` in decimal with a comma between each group of three digits
@@ -314,10 +347,30 @@ _Simulated resource amounts from local WASM test harness. Network-dependent bill
     }
 
     #[test]
-    fn render_markdown_does_not_escape_or_alter_cell_text() {
-        // Behaviour preserved from the original: names are emitted verbatim.
-        let md = render_markdown(&[report("a|b", "c d", "CPU Instructions", Some(1))]);
-        assert!(md.contains("| a|b | c d | CPU Instructions | 1 |\n"));
+    fn render_markdown_escapes_pipes_in_names() {
+        // A raw `|` would be parsed as a column delimiter (issue #1048).
+        let md = render_markdown(&[report("a|b", "c|d", "CPU Instructions", Some(1))]);
+        assert!(
+            md.contains("| a\\|b | c\\|d | CPU Instructions | 1 |\n"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_collapses_newlines_in_names() {
+        let md = render_markdown(&[report("a\nb", "c\r\nd\n\ne", "CPU Instructions", Some(1))]);
+        assert!(
+            md.contains("| a b | c d e | CPU Instructions | 1 |\n"),
+            "{md}"
+        );
+        assert_eq!(md.lines().filter(|l| l.starts_with("| a")).count(), 1);
+    }
+
+    #[test]
+    fn push_cell_text_leaves_ordinary_text_untouched() {
+        let mut out = String::new();
+        push_cell_text(&mut out, "amm-pool-contract::transfer");
+        assert_eq!(out, "amm-pool-contract::transfer");
     }
 
     #[test]

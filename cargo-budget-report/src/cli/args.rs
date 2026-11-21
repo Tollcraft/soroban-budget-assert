@@ -178,15 +178,6 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "OUT", conflicts_with_all = ["record_baseline", "check_baseline"])]
     pub derive_limits: Option<String>,
 
-    /// Allow dropping TIER_A__ keys that are present in the existing
-    /// `tier-a-limits.env` but not in the newly derived output.
-    /// Use this when you intentionally remove a contract function
-    /// or metric and want the env file to reflect that change.
-    /// Without this flag, the derive step will error if any
-    /// TIER_A__ key would be lost, listing the dropped keys.
-    #[arg(long)]
-    pub allow_dropped_limits: bool,
-
     /// Source Tier B JSON report for `--derive-limits`. Use `-` to
     /// read JSON from stdin (so `cargo budget-report --json | cargo
     /// budget-report --derive-limits tier-a-limits.env` composes).
@@ -218,6 +209,18 @@ pub struct BudgetReportArgs {
     /// `tier-a-limits.provenance.md` for `tier-a-limits.env`).
     #[arg(long, value_name = "PATH")]
     pub provenance_out: Option<String>,
+
+    /// Accept the removal of `TIER_A__…` keys that already exist in the
+    /// output env file but cannot be re-derived from the report.
+    ///
+    /// By default `--derive-limits` refuses to write when a key present in
+    /// the file it replaces is missing from the new output: the usual cause
+    /// is a partial measurement run (a failed simulation emits no row), and
+    /// silently dropping the key turns into a compile error later, far from
+    /// the cause. Pass this flag when the removal is deliberate, e.g. after
+    /// deleting the contract function the limit belonged to.
+    #[arg(long, default_value_t = false)]
+    pub allow_dropped_limits: bool,
 
     // -----------------------------------------------------------------
     // Retry policy

@@ -7,13 +7,16 @@
 //! [`crate::transport::deploy_key`] and friends), so a recorded run saved as a
 //! [`FixtureFile`] can later be replayed offline, response for response.
 //!
-//! Two properties callers can rely on:
+//! Three properties callers can rely on:
 //!
 //! * **Errors are not recorded.** A failed inner call is returned as-is and
 //!   leaves the fixture untouched, so a replay of that key reports
 //!   "Fixture not found" instead of serving a stale or partial value.
-//! * **Last write wins.** Keys are per package / function, not per call, so
-//!   repeating a call overwrites the earlier response.
+//! * **Last write wins.** Keys are per network / source / package / function,
+//!   not per call, so repeating a call overwrites the earlier response.
+//! * **Keys carry the network context.** Every key includes the network and
+//!   source account, so a fixture recorded on one network or as one source
+//!   account is refused when replayed for another.
 
 use crate::fixture::FixtureFile;
 use crate::transport::{deploy_key, invoke_key, simulate_key, Transport};
@@ -68,8 +71,8 @@ impl<T: Transport> RecordingTransport<T> {
 /// copy.
 impl<T: Transport> Transport for RecordingTransport<T> {
     /// Forward the deploy and record the returned contract ID under
-    /// `deploy:<package_name>`. The WASM path, source, and network are not
-    /// part of the key; replay only needs the package to find the ID.
+    /// `deploy:<network>:<source>:<package_name>`. The WASM path is not part
+    /// of the key.
     fn deploy_contract(
         &mut self,
         wasm_path: &Path,
@@ -80,14 +83,15 @@ impl<T: Transport> Transport for RecordingTransport<T> {
         let result = self
             .inner
             .deploy_contract(wasm_path, source, network, package_name)?;
-        let key = deploy_key(package_name);
+        let key = deploy_key(network, source, package_name);
         self.entries.insert(key, Value::String(result.clone()));
         Ok(result)
     }
 
     /// Forward the XDR build and record the base64 envelope under
-    /// `invoke:<package>:<function>`. Arguments are not part of the key, so
-    /// two invocations of one function with different args share an entry.
+    /// `invoke:<network>:<source>:<package>:<function>`. Arguments are not
+    /// part of the key, so two invocations of one function with different
+    /// args share an entry.
     fn build_invoke_xdr(
         &mut self,
         contract_id: &str,
@@ -105,24 +109,27 @@ impl<T: Transport> Transport for RecordingTransport<T> {
             func_args,
             package,
         )?;
-        let key = invoke_key(package, function);
+        let key = invoke_key(network, source, package, function);
         self.entries.insert(key, Value::String(result.clone()));
         Ok(result)
     }
 
     /// Forward the simulation and record the raw RPC JSON response under
-    /// `simulate:<package>:<function>`. The XDR is not part of the key; the
-    /// package / function pair already identifies the simulated call.
+    /// `simulate:<network>:<source>:<package>:<function>`. The XDR is not
+    /// part of the key; the context and package / function already identify
+    /// the simulated call.
     fn simulate_transaction(
         &mut self,
         b64_xdr: &str,
+        source: &str,
+        network: &str,
         package: &str,
         function: &str,
     ) -> Result<Value> {
         let result = self
             .inner
-            .simulate_transaction(b64_xdr, package, function)?;
-        let key = simulate_key(package, function);
+            .simulate_transaction(b64_xdr, source, network, package, function)?;
+        let key = simulate_key(network, source, package, function);
         self.entries.insert(key, result.clone());
         Ok(result)
     }
@@ -163,6 +170,8 @@ mod tests {
         fn simulate_transaction(
             &mut self,
             _b64_xdr: &str,
+            _source: &str,
+            _network: &str,
             _package: &str,
             function: &str,
         ) -> anyhow::Result<Value> {
@@ -183,7 +192,7 @@ mod tests {
             .build_invoke_xdr("C1", "alice", "testnet", "do_work", &[], "pkg")
             .unwrap();
         let sim = recording
-            .simulate_transaction(&xdr, "pkg", "do_work")
+            .simulate_transaction(&xdr, "alice", "testnet", "pkg", "do_work")
             .unwrap();
 
         let fixture = recording.into_fixture();
@@ -207,9 +216,52 @@ mod tests {
             xdr
         );
         assert_eq!(
-            replay.simulate_transaction(&xdr, "pkg", "do_work").unwrap(),
+            replay
+                .simulate_transaction(&xdr, "alice", "testnet", "pkg", "do_work")
+                .unwrap(),
             sim
         );
+    }
+
+    /// A fixture recorded on testnet as `alice` is refused, not served, when
+    /// replayed for mainnet or for another source account.
+    #[test]
+    fn recorded_fixture_is_refused_in_another_network_context() {
+        let mut recording = RecordingTransport::new(MockTransport);
+        recording
+            .deploy_contract(Path::new("c.wasm"), "alice", "testnet", "pkg")
+            .unwrap();
+        recording
+            .build_invoke_xdr("C1", "alice", "testnet", "do_work", &[], "pkg")
+            .unwrap();
+        recording
+            .simulate_transaction("XDR", "alice", "testnet", "pkg", "do_work")
+            .unwrap();
+        let mut replay = ReplayTransport::new(recording.into_fixture());
+
+        for (source, network) in [("alice", "mainnet"), ("bob", "testnet")] {
+            let deploy = replay
+                .deploy_contract(Path::new("c.wasm"), source, network, "pkg")
+                .unwrap_err();
+            assert!(
+                deploy.to_string().contains("Refusing to replay"),
+                "{deploy}"
+            );
+            let invoke = replay
+                .build_invoke_xdr("C1", source, network, "do_work", &[], "pkg")
+                .unwrap_err();
+            assert!(
+                invoke.to_string().contains("Refusing to replay"),
+                "{invoke}"
+            );
+            let simulate = replay
+                .simulate_transaction("XDR", source, network, "pkg", "do_work")
+                .unwrap_err();
+            assert!(
+                simulate.to_string().contains("Refusing to replay"),
+                "{simulate}"
+            );
+        }
     }
 
     struct FailingMockTransport;
@@ -240,6 +292,8 @@ mod tests {
         fn simulate_transaction(
             &mut self,
             _b64_xdr: &str,
+            _source: &str,
+            _network: &str,
             _package: &str,
             _function: &str,
         ) -> anyhow::Result<Value> {
@@ -258,7 +312,7 @@ mod tests {
             .build_invoke_xdr("C1", "alice", "testnet", "do_work", &[], "pkg")
             .is_err());
         assert!(recording
-            .simulate_transaction("XDR", "pkg", "do_work")
+            .simulate_transaction("XDR", "alice", "testnet", "pkg", "do_work")
             .is_err());
 
         let fixture = recording.into_fixture();
@@ -292,6 +346,8 @@ mod tests {
             fn simulate_transaction(
                 &mut self,
                 _b64_xdr: &str,
+                _source: &str,
+                _network: &str,
                 _package: &str,
                 function: &str,
             ) -> anyhow::Result<Value> {
@@ -315,24 +371,164 @@ mod tests {
             .unwrap();
 
         let _ = recording
-            .simulate_transaction("XDR1", "pkg", "fn1")
+            .simulate_transaction("XDR1", "alice", "testnet", "pkg", "fn1")
             .unwrap();
         let _ = recording
-            .simulate_transaction("XDR2", "pkg", "fn1")
+            .simulate_transaction("XDR2", "alice", "testnet", "pkg", "fn1")
             .unwrap();
 
         let fixture = recording.into_fixture();
         // deploy_key("pkg2") and deploy_key("pkg1") are different keys, so check last write for invoke/simulate sharing same key
-        let invoke_k = crate::transport::invoke_key("pkg", "func2");
+        let invoke_k = crate::transport::invoke_key("testnet", "alice", "pkg", "func2");
         assert_eq!(
             fixture.entries.get(&invoke_k).unwrap().as_str().unwrap(),
             "func2"
         );
 
-        let sim_k = crate::transport::simulate_key("pkg", "fn1");
+        let sim_k = crate::transport::simulate_key("testnet", "alice", "pkg", "fn1");
         assert_eq!(
             fixture.entries.get(&sim_k).unwrap()["fn"].as_str().unwrap(),
             "fn1"
+        );
+    }
+
+    /// Inner transport that returns one scripted JSON payload, so the
+    /// recorder can be exercised against values the fixed mock never emits.
+    struct ValueTransport {
+        response: Value,
+    }
+
+    impl Transport for ValueTransport {
+        fn deploy_contract(
+            &mut self,
+            _wasm_path: &Path,
+            _source: &str,
+            _network: &str,
+            _package_name: &str,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        fn build_invoke_xdr(
+            &mut self,
+            _contract_id: &str,
+            _source: &str,
+            _network: &str,
+            _function: &str,
+            _func_args: &[String],
+            _package: &str,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        fn simulate_transaction(
+            &mut self,
+            _b64_xdr: &str,
+            _source: &str,
+            _network: &str,
+            _package: &str,
+            _function: &str,
+        ) -> anyhow::Result<Value> {
+            Ok(self.response.clone())
+        }
+    }
+
+    /// A simulation is recorded verbatim whatever its JSON shape. Null and
+    /// error-bearing payloads are not filtered: the recorder's contract is
+    /// "errors are not recorded", and an `Ok(Value::Null)` is not an error.
+    #[test]
+    fn recording_transport_stores_simulate_entry_for_any_payload() {
+        for payload in [
+            json!(null),
+            json!({}),
+            json!([]),
+            json!([1, 2, 3]),
+            json!({ "error": { "message": "boom" } }),
+        ] {
+            let mut recording = RecordingTransport::new(ValueTransport {
+                response: payload.clone(),
+            });
+            let returned = recording
+                .simulate_transaction("xdr", "alice", "testnet", "pkg", "f")
+                .unwrap();
+            assert_eq!(returned, payload);
+
+            let fixture = recording.into_fixture();
+            assert_eq!(fixture.fixture_version, crate::fixture::FIXTURE_VERSION);
+            let key = simulate_key("testnet", "alice", "pkg", "f");
+            assert_eq!(fixture.entries.len(), 1, "{payload}");
+            assert_eq!(fixture.entries.get(&key), Some(&payload), "{key}");
+        }
+    }
+
+    /// Deploy and invoke keys are also last-write-wins for the same
+    /// (package, function) pair, not just simulate.
+    #[test]
+    fn recording_transport_overwrites_repeated_deploy_and_invoke() {
+        struct CounterTransport {
+            n: usize,
+        }
+
+        impl Transport for CounterTransport {
+            fn deploy_contract(
+                &mut self,
+                _wasm_path: &Path,
+                _source: &str,
+                _network: &str,
+                _package_name: &str,
+            ) -> anyhow::Result<String> {
+                self.n += 1;
+                Ok(format!("C{}", self.n))
+            }
+
+            fn build_invoke_xdr(
+                &mut self,
+                _contract_id: &str,
+                _source: &str,
+                _network: &str,
+                _function: &str,
+                _func_args: &[String],
+                _package: &str,
+            ) -> anyhow::Result<String> {
+                self.n += 1;
+                Ok(format!("XDR{}", self.n))
+            }
+
+            fn simulate_transaction(
+                &mut self,
+                _b64_xdr: &str,
+                _source: &str,
+                _network: &str,
+                _package: &str,
+                _function: &str,
+            ) -> anyhow::Result<Value> {
+                Ok(json!(null))
+            }
+        }
+
+        let mut recording = RecordingTransport::new(CounterTransport { n: 0 });
+        recording
+            .deploy_contract(Path::new("one.wasm"), "alice", "testnet", "pkg")
+            .unwrap();
+        let deploy = recording
+            .deploy_contract(Path::new("two.wasm"), "alice", "testnet", "pkg")
+            .unwrap();
+        recording
+            .build_invoke_xdr("C1", "alice", "testnet", "f", &[], "pkg")
+            .unwrap();
+        let invoke = recording
+            .build_invoke_xdr("C1", "alice", "testnet", "f", &["a".to_string()], "pkg")
+            .unwrap();
+
+        let entries = recording.into_fixture().entries;
+        assert_eq!(entries.len(), 2, "only one entry per key survives");
+        assert_eq!(
+            entries[&deploy_key("testnet", "alice", "pkg")],
+            json!(deploy)
+        );
+        assert_eq!(
+            entries[&invoke_key("testnet", "alice", "pkg", "f")],
+            json!(invoke)
         );
     }
 
@@ -340,7 +536,7 @@ mod tests {
     fn replay_reports_missing_entry() {
         let mut replay = ReplayTransport::new(FixtureFile::new());
         let err = replay
-            .simulate_transaction("xdr", "pkg", "missing")
+            .simulate_transaction("xdr", "alice", "testnet", "pkg", "missing")
             .unwrap_err();
         assert!(err.to_string().contains("Fixture not found"));
     }
@@ -374,6 +570,8 @@ mod tests {
         fn simulate_transaction(
             &mut self,
             _b64_xdr: &str,
+            _source: &str,
+            _network: &str,
             _package: &str,
             _function: &str,
         ) -> anyhow::Result<Value> {
@@ -393,7 +591,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(invoke.to_string(), "invoke failed");
         let simulate = recording
-            .simulate_transaction("xdr", "pkg", "f")
+            .simulate_transaction("xdr", "alice", "testnet", "pkg", "f")
             .unwrap_err();
         assert_eq!(simulate.to_string(), "simulate failed");
 
@@ -403,11 +601,15 @@ mod tests {
     #[test]
     fn repeated_call_overwrites_the_earlier_response() {
         let mut recording = RecordingTransport::new(MockTransport);
-        recording.simulate_transaction("x1", "pkg", "f").unwrap();
-        let second = recording.simulate_transaction("x2", "pkg", "f").unwrap();
+        recording
+            .simulate_transaction("x1", "alice", "testnet", "pkg", "f")
+            .unwrap();
+        let second = recording
+            .simulate_transaction("x2", "alice", "testnet", "pkg", "f")
+            .unwrap();
         let entries = recording.into_fixture().entries;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries["simulate:pkg:f"], second);
+        assert_eq!(entries["simulate:testnet:alice:pkg:f"], second);
     }
 
     #[test]
@@ -423,13 +625,24 @@ mod tests {
         let deploy = replay
             .deploy_contract(Path::new("c.wasm"), "alice", "testnet", "pkg")
             .unwrap_err();
-        assert_eq!(deploy.to_string(), "Fixture not found for deploy:pkg");
+        assert_eq!(
+            deploy.to_string(),
+            "Fixture not found for deploy:testnet:alice:pkg"
+        );
         let invoke = replay
             .build_invoke_xdr("C1", "alice", "testnet", "f", &[], "pkg")
             .unwrap_err();
-        assert_eq!(invoke.to_string(), "Fixture not found for invoke:pkg:f");
-        let simulate = replay.simulate_transaction("xdr", "pkg", "f").unwrap_err();
-        assert_eq!(simulate.to_string(), "Fixture not found for simulate:pkg:f");
+        assert_eq!(
+            invoke.to_string(),
+            "Fixture not found for invoke:testnet:alice:pkg:f"
+        );
+        let simulate = replay
+            .simulate_transaction("xdr", "alice", "testnet", "pkg", "f")
+            .unwrap_err();
+        assert_eq!(
+            simulate.to_string(),
+            "Fixture not found for simulate:testnet:alice:pkg:f"
+        );
     }
 
     #[test]
@@ -441,12 +654,14 @@ mod tests {
         recording
             .build_invoke_xdr("C1", "alice", "testnet", "f", &[], "pkg")
             .unwrap();
-        recording.simulate_transaction("x", "pkg", "f").unwrap();
+        recording
+            .simulate_transaction("x", "alice", "testnet", "pkg", "f")
+            .unwrap();
         let entries = recording.into_fixture().entries;
         assert_eq!(entries.len(), 3);
-        assert!(entries.contains_key(&crate::transport::deploy_key("pkg")));
-        assert!(entries.contains_key(&crate::transport::invoke_key("pkg", "f")));
-        assert!(entries.contains_key(&crate::transport::simulate_key("pkg", "f")));
+        assert!(entries.contains_key(&deploy_key("testnet", "alice", "pkg")));
+        assert!(entries.contains_key(&invoke_key("testnet", "alice", "pkg", "f")));
+        assert!(entries.contains_key(&simulate_key("testnet", "alice", "pkg", "f")));
     }
 
     #[test]
