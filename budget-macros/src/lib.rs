@@ -207,6 +207,25 @@ fn peeks_limit_source_key(input: ParseStream) -> bool {
         .unwrap_or(false)
 }
 
+/// Rejects a property the attribute already carries, at the second key's span
+/// (#987).
+///
+/// Every guarded field is a single `Option`, so without this the last value
+/// written quietly replaced the first and `cpu = 1, cpu = 2` compiled as though
+/// it had said `cpu = 2`. `BudgetLimit` already rejects its own repeated source
+/// keys (`env_file`, `pct`, `env`, `config`); this covers the properties that
+/// sit outside a limit, which is where a repeat is a mistake rather than a
+/// reading of two different sources.
+fn reject_repeated<T>(held: &Option<T>, key: &Ident) -> syn::Result<()> {
+    if held.is_some() {
+        return Err(syn::Error::new(
+            key.span(),
+            format!("`{key}` cannot be specified more than once"),
+        ));
+    }
+    Ok(())
+}
+
 /// Parses the attribute arguments for `budget_cpu_lt` / `budget_mem_lt`
 /// into a concrete [`BudgetLimit`] value.
 ///
@@ -534,15 +553,20 @@ impl Parse for BudgetSpec {
             let ident_str = ident.to_string();
 
             if ident_str == "env_ident" {
+                reject_repeated(&spec.env_ident, &ident)?;
                 spec.env_ident = Some(input.parse()?);
             } else if ident_str == "cpu" {
+                reject_repeated(&spec.cpu, &ident)?;
                 spec.cpu = Some(input.parse()?);
             } else if ident_str == "mem" {
+                reject_repeated(&spec.mem, &ident)?;
                 spec.mem = Some(input.parse()?);
             } else if ident_str == "cpu_baseline" {
+                reject_repeated(&spec.cpu_baseline, &ident)?;
                 cpu_baseline_span = Some(ident.span());
                 spec.cpu_baseline = Some(input.parse()?);
             } else if ident_str == "mem_baseline" {
+                reject_repeated(&spec.mem_baseline, &ident)?;
                 mem_baseline_span = Some(ident.span());
                 spec.mem_baseline = Some(input.parse()?);
             } else if is_limit_source_key(&ident_str) {
@@ -1939,6 +1963,7 @@ impl Parse for ScalingConfig {
 
             match ident.to_string().as_str() {
                 "sizes" => {
+                    reject_repeated(&sizes, &ident)?;
                     // Span of the `[` token, so length errors point at the
                     // sizes list instead of the whole attribute.
                     let bracket_span = input.span();
@@ -1957,9 +1982,11 @@ impl Parse for ScalingConfig {
                     sizes = Some((values, bracket_span));
                 }
                 "model" => {
+                    reject_repeated(&model, &ident)?;
                     model = Some(input.parse()?);
                 }
                 "tolerance" => {
+                    reject_repeated(&tolerance, &ident)?;
                     // Accept an optional leading `-` so a negative tolerance
                     // reaches the range check below (with the literal's span)
                     // instead of failing as "expected floating point literal".
