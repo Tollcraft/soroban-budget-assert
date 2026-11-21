@@ -8,6 +8,9 @@ members = [
 ]
 resolver = "2"
 
+# Internal groundwork, deliberately unpublished (#827): no shipped artifact links
+# this crate yet. See the crate-level status note in `src/lib.rs`; taking it as a
+# normal dependency of any shipped crate is the signal to promote it.
 [package]
 name = "soroban-budget-assert-core"
 version.workspace = true
