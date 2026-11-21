@@ -91,7 +91,7 @@ which only holds if the baseline comes off before the file's limit is compared
 
 ## Compile-fail fixtures
 
-All 75 compile-fail fixtures appear here, one row per fixture. The last column is a
+All 76 compile-fail fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's `.stderr` and asserted by
 `fixture_inventory.rs` to still appear there.
 
@@ -163,6 +163,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 | `tests/ui/scaling_missing_sizes.rs` | scaling configuration with no `sizes` | unexpected end of input, missing required field `sizes` |
 | `tests/ui/scaling_missing_tolerance.rs` | scaling configuration with no `tolerance` | unexpected end of input, missing required field `tolerance` |
 | `tests/ui/scaling_model_case.rs` | a model name differing only by case, since matching is case-sensitive | unknown growth model `Linear`, expected `linear` or `quadratic` |
+| `tests/ui/scaling_no_args.rs` | a `#[budget_scaling]` attribute written with no arguments at all expanding into an unchecked function (#1003) | unexpected end of input, missing required field `sizes` |
 | `tests/ui/scaling_single_size.rs` | `sizes` with one element, no ratio to compare | `sizes` must contain at least two elements for ratio comparison |
 | `tests/ui/scaling_too_few_sizes.rs` | `sizes` below the two-element minimum for ratio comparison | `sizes` must contain at least two elements for ratio comparison |
 | `tests/ui/scaling_unknown_model.rs` | a growth model that is neither `linear` nor `quadratic` | unknown growth model `exponential`, expected `linear` or `quadratic` |
@@ -175,7 +176,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 
 ## Pass fixtures
 
-All 30 pass fixtures appear here, one row per fixture. The last column is a
+All 32 pass fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's own source: the diagnostic text it
 asserts at runtime, or the attribute form it exercises.
 
@@ -193,6 +194,7 @@ asserts at runtime, or the attribute form it exercises.
 | `tests/ui/pass/pass_env_ident_standalone.rs` | `env_ident` on the six standalone attributes, before or after `baseline` (#989) | #[budget_cpu_lt(1_000, baseline = floor(), env_ident = e)] |
 | `tests/ui/pass/pass_env_var_limit.rs` | the `env = "VAR"` form, resolved at expansion and re-read at runtime | #[budget_cpu_lt(env = "UI_TEST_MAX_CPU")] |
 | `tests/ui/pass/pass_events.rs` | the events attribute across every supported body shape | #[budget_events_lt(10)] |
+| `tests/ui/pass/pass_events_baseline.rs` | `baseline = …` on the events attribute, where the marginal count is what the limit compares and what the message names (#1001) | Event count 10 exceeded limit 10 (marginal: 15 measured - 5 baseline) |
 | `tests/ui/pass/pass_events_env_file.rs` | the events attribute reading its limit from an env file, the `EnvFile` arm outside the CPU path | #[budget_events_lt(env_file = ENV_FILE, env = "TINY_LIMIT")] |
 | `tests/ui/pass/pass_events_ledger_impl_block.rs` | the events and ledger-entry attributes at `impl`-block level, method overrides included (#988) | Ledger entry count (read: 7, write: 4, total: 11) exceeded limit 6 |
 | `tests/ui/pass/pass_impl_block.rs` | an attribute on an `impl` block instruments every method in it | #[budget_cpu_lt(18446744073709551615)] |
@@ -201,6 +203,7 @@ asserts at runtime, or the attribute form it exercises.
 | `tests/ui/pass/pass_ledger_breakdown.rs` | the exact ledger failure text, including the read/write breakdown (issue #1000) | Ledger entry count (read: 7, write: 3, total: 10) exceeded limit 9 |
 | `tests/ui/pass/pass_ledger_entries.rs` | the ledger-entry attribute across every supported body shape | #[budget_ledger_entries_lt(50)] |
 | `tests/ui/pass/pass_mem.rs` | the memory attribute shares the CPU expansion, so it gets the same body shapes | #[budget_mem_lt(4_096)] |
+| `tests/ui/pass/pass_mem_percentage.rs` | a `pct = N, of = M` limit on the memory attribute, where the resolved figure and the percentage suffix both have to be right (#1002) | Memory bytes cost 1 exceeded limit 0 (1% of network limit) |
 | `tests/ui/pass/pass_nested_pct.rs` | a nested `cpu = pct = N, of = …` beside a sibling literal `mem` limit | cpu = pct = 25, |
 | `tests/ui/pass/pass_percentage_limit.rs` | `pct = N, of = …` resolves the limit from a reference read at runtime | pct = 25, of = env_file = PCT_ENV_FILE |
 | `tests/ui/pass/pass_read_bytes.rs` | the read-bytes attribute body shapes, reported through `memory_bytes_cost()` | #[budget_read_bytes_lt(4_096)] |
