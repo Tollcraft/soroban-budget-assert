@@ -92,7 +92,11 @@ const CPU_CONFIG: &[&str] = &["pass_config_limit.rs"];
 const CPU_PCT: &[&str] = &["pass_percentage_limit.rs"];
 const EVENTS_ENV: &[&str] = &["pass_events.rs", "pass_events_env_file.rs"];
 const EVENTS_PCT: &[&str] = &["pass_events.rs"];
-const LT_LIMITED: &[&str] = &["pass_budget_lt.rs", "pass_nested_pct.rs"];
+const LT_LIMITED: &[&str] = &[
+    "pass_budget_lt.rs",
+    "pass_budget_lt_mixed_sources.rs",
+    "pass_nested_pct.rs",
+];
 const LT_CONFIG: &[&str] = &["pass_budget_lt.rs"];
 const READ_BYTES_ENV: &[&str] = &["pass_read_bytes_env_file_baseline.rs"];
 const READ_BYTES_ENV_FILE: &[&str] = &["pass_read_bytes_env_file_baseline.rs"];
@@ -161,6 +165,7 @@ const BASELINE_CELLS: [(&str, &[&str]); 8] = [
         "budget_ledger_entries_lt",
         &[
             "pass_ledger_baseline.rs",
+            "pass_ledger_breakdown.rs",
             "pass_events_ledger_impl_block.rs",
         ],
     ),
