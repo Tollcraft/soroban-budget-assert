@@ -75,12 +75,16 @@ impl Cell {
 const NONE: &[&str] = &[];
 const CPU_ENV: &[&str] = &[
     "pass_env_file.rs",
+    "pass_env_file_duplicate_key.rs",
+    "pass_env_file_hash_suffix.rs",
     "pass_env_file_malformed.rs",
     "pass_env_var_limit.rs",
     "pass_percentage_limit.rs",
 ];
 const CPU_ENV_FILE: &[&str] = &[
     "pass_env_file.rs",
+    "pass_env_file_duplicate_key.rs",
+    "pass_env_file_hash_suffix.rs",
     "pass_env_file_malformed.rs",
     "pass_percentage_limit.rs",
 ];
@@ -88,7 +92,8 @@ const CPU_CONFIG: &[&str] = &["pass_config_limit.rs"];
 const CPU_PCT: &[&str] = &["pass_percentage_limit.rs"];
 const EVENTS_ENV: &[&str] = &["pass_events.rs", "pass_events_env_file.rs"];
 const EVENTS_PCT: &[&str] = &["pass_events.rs"];
-const NESTED_PCT: &[&str] = &["pass_nested_pct.rs"];
+const LT_LIMITED: &[&str] = &["pass_budget_lt.rs", "pass_nested_pct.rs"];
+const LT_CONFIG: &[&str] = &["pass_budget_lt.rs"];
 
 const MATRIX: [Cell; 32] = {
     // `budget_scaling` takes `sizes`/`model`/`tolerance` and no limit source at
@@ -100,7 +105,7 @@ const MATRIX: [Cell; 32] = {
         [EVENTS_ENV, EVENTS_ENV, NONE, EVENTS_PCT],
         [NONE, NONE, NONE, NONE],
         [NONE, NONE, NONE, NONE],
-        [NESTED_PCT, NESTED_PCT, NONE, NESTED_PCT],
+        [LT_LIMITED, LT_LIMITED, LT_CONFIG, LT_LIMITED],
         [NONE, NONE, NONE, NONE],
     ];
     let mut cells = [Cell {
@@ -130,11 +135,27 @@ const MATRIX: [Cell; 32] = {
 /// `mem_baseline` rather than a single `baseline`, which is a different argument
 /// and not this axis.
 const BASELINE_CELLS: [(&str, &[&str]); 8] = [
-    ("budget_cpu_lt", &["pass_baseline.rs", "pass_impl_block.rs"]),
+    (
+        "budget_cpu_lt",
+        &[
+            "pass_baseline.rs",
+            "pass_env_ident_standalone.rs",
+            "pass_impl_block.rs",
+        ],
+    ),
     ("budget_write_bytes_lt", &["pass_baseline.rs"]),
     ("budget_read_bytes_lt", &["pass_read_bytes_baseline.rs"]),
-    ("budget_events_lt", &["pass_events.rs"]),
-    ("budget_ledger_entries_lt", &["pass_ledger_baseline.rs"]),
+    (
+        "budget_events_lt",
+        &["pass_events.rs", "pass_events_ledger_impl_block.rs"],
+    ),
+    (
+        "budget_ledger_entries_lt",
+        &[
+            "pass_ledger_baseline.rs",
+            "pass_events_ledger_impl_block.rs",
+        ],
+    ),
     ("budget_mem_lt", &["pass_baseline.rs"]),
     ("budget_lt", &[]),
     ("budget_scaling", &[]),
@@ -431,23 +452,35 @@ fn every_named_fixture_still_expands_its_own_cell() {
 /// an unrecorded cell, which is what this table exists to prevent.
 #[test]
 fn no_cell_gains_or_loses_a_fixture_without_updating_the_matrix() {
+    // Every drifted cell at once: whoever adds a fixture gets the whole list to
+    // paste into the table, instead of one cell per compile.
+    let mut drift: Vec<String> = Vec::new();
     for cell in MATRIX.iter() {
-        let derived = fixtures_for(cell.attribute, cell.form);
-        assert_eq!(
-            derived,
+        let (derived, claimed) = (
+            fixtures_for(cell.attribute, cell.form),
             declared(cell.fixtures),
-            "{}: the fixtures on disk no longer match the matrix",
-            cell.label()
         );
+        if derived != claimed {
+            drift.push(format!(
+                "{}: on disk {derived:?}, matrix claims {claimed:?}",
+                cell.label()
+            ));
+        }
     }
     for &(attribute, fixtures) in BASELINE_CELLS.iter() {
-        let derived = fixtures_for(attribute, BASELINE_KEY);
-        assert_eq!(
-            derived,
-            declared(fixtures),
-            "{attribute} × {BASELINE_KEY}: the fixtures on disk no longer match the matrix"
-        );
+        let (derived, claimed) = (fixtures_for(attribute, BASELINE_KEY), declared(fixtures));
+        if derived != claimed {
+            drift.push(format!(
+                "{attribute} × {BASELINE_KEY}: on disk {derived:?}, matrix claims {claimed:?}"
+            ));
+        }
     }
+    assert!(
+        drift.is_empty(),
+        "{} cell(s) drifted from the table, so MATRIX/BASELINE_CELLS must be updated:\n{}",
+        drift.len(),
+        drift.join("\n")
+    );
 }
 
 /// Issue #990 named two open cells. They stay filled, and each new fixture has
