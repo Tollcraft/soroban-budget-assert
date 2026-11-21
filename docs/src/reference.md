@@ -852,8 +852,19 @@ Summary: 2 check(s) passed, 1 failed
 
 ### JSON output example (`--check --json`)
 
+Every document is wrapped in an envelope carrying `schema_version` (currently `1`) plus the
+additive metadata `generated_at` (ISO-8601 UTC timestamp) and `generator_version` (the
+`cargo-budget-report` version that produced it); `snapshots` holds the report rows. Readers
+reject unknown top-level keys, so a misspelled `snapshots` fails loudly instead of parsing as
+an empty report. A free-form `_metadata` block (used by the checked-in sample fixtures) is
+tolerated and ignored. Adding metadata fields does not bump `schema_version`.
+
 ```json
-[
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-21T04:27:00Z",
+  "generator_version": "0.1.0",
+  "snapshots": [
   {
     "package": "amm-pool-contract",
     "function": "do_expensive_work",
@@ -878,7 +889,8 @@ Summary: 2 check(s) passed, 1 failed
     "limit": 1000,
     "pass": false
   }
-]
+  ]
+}
 ```
 
 For a function declared in `budget.toml` whose simulation fails, an entry still appears with `value` omitted and `pass: false`:
@@ -957,17 +969,23 @@ Each simulated function produces four rows (or four JSON objects) when its simul
 
 Table output ends with a note that the values are simulated resource amounts rather than fees,
 what is not measured, and that testnet simulations vary slightly with ledger state — see
-[Measurement scope](#measurement-scope). JSON output (`--json`) is an array suited to CI:
+[Measurement scope](#measurement-scope). JSON output (`--json`) is a versioned envelope suited
+to CI: `schema_version`, `generated_at`, `generator_version`, and a `snapshots` array of rows.
 
 ```json
-[
-  {
-    "package": "amm-pool-contract",
-    "function": "do_expensive_work",
-    "metric": "CPU Instructions",
-    "value": 756678
-  }
-]
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-21T04:27:00Z",
+  "generator_version": "0.1.0",
+  "snapshots": [
+    {
+      "package": "amm-pool-contract",
+      "function": "do_expensive_work",
+      "metric": "CPU Instructions",
+      "value": 756678
+    }
+  ]
+}
 ```
 
 When `--check --json` is used, configured functions gain `limit` and `pass` (see [the `--check` section above](#check-enforcing-regression-limits-against-network-verified-costs)); the shape for unconfigured functions is unchanged.
