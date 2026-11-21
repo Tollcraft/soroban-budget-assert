@@ -174,7 +174,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 
 ## Pass fixtures
 
-All 29 pass fixtures appear here, one row per fixture. The last column is a
+All 30 pass fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's own source: the diagnostic text it
 asserts at runtime, or the attribute form it exercises.
 
