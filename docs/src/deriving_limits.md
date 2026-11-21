@@ -69,7 +69,12 @@ cargo budget-report \
   --derive-limits tier-a-limits.env \
   --from build/budget-report.json
 
-# (Or pipe straight from --json into the derive step.)
+# (Or pipe straight from --json into the derive step. `set -o pipefail` makes
+# the pipeline fail when the measuring step fails: by default a shell reports
+# only the exit status of the LAST command, so `cargo budget-report --json`
+# dying after one failed simulation would still feed the derive step whatever
+# rows it managed to print.)
+set -o pipefail
 cargo budget-report --json | cargo budget-report \
   --derive-limits tier-a-limits.env --from -
 
@@ -78,6 +83,16 @@ cargo budget-report --json | cargo budget-report \
 #    `env_file = "PATH"` + `env = "VAR"` form.
 cargo test --workspace
 ```
+
+`--derive-limits` refuses to lose limits it cannot re-derive. Before writing,
+it compares the `TIER_A__…` key names in the file it is about to replace with
+the keys the report produces, and if any existing key would disappear it exits
+non-zero, lists every dropped key, and leaves both `<OUT>` and its provenance
+sidecar untouched — a partial measurement run (a failed simulation emits no
+row) therefore cannot silently delete a limit. A report with no rows at all is
+refused the same way. When the removal is deliberate — the contract function
+was deleted, for example — re-run with `--allow-dropped-limits`, which writes
+the new file and prints the keys it removed.
 
 `--derive-limits` cannot be combined with `--record-baseline` or `--check-baseline`; each flag selects a different mode, so the combination is rejected as an argument conflict.
 

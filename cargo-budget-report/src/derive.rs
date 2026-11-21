@@ -147,6 +147,23 @@ pub struct TierBMeasurement {
     pub value: u64,
 }
 
+/// A `snapshots` row exactly as the writer emitted it, before the `value`
+/// check.
+///
+/// `--check --json` omits the `value` key for a function whose simulation
+/// failed (`CostReport::value` is an `Option` with
+/// `skip_serializing_if = "Option::is_none"`), so deserializing straight into
+/// `TierBMeasurement` aborts with serde's bare ``missing field `value` `` and
+/// names nothing. `null` is accepted the same way.
+#[derive(Deserialize)]
+struct TierBRow {
+    package: String,
+    function: String,
+    metric: String,
+    #[serde(default)]
+    value: Option<u64>,
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
@@ -171,6 +188,12 @@ fn default_schema_version() -> u32 {
 /// budget-report --json` currently emits an array, but the
 /// `json_output::render_json` helper wraps it; either is consumed
 /// without further massaging.
+///
+/// A row that carries no `value` — because `--check --json` omits the key for
+/// a function whose simulation failed — is rejected by name rather than
+/// through serde's bare ``missing field `value` ``, so the caller sees which
+/// package/function/metric is missing from the report instead of which field
+/// serde wanted (#968).
 pub fn load_tier_b_report(path: &Path) -> Result<Vec<TierBMeasurement>> {
     let contents = if path == Path::new("-") {
         use std::io::Read;
@@ -185,11 +208,31 @@ pub fn load_tier_b_report(path: &Path) -> Result<Vec<TierBMeasurement>> {
     };
     let value: serde_json::Value = serde_json::from_str(&contents).map_err(Error::Json)?;
     let snapshots_opt = crate::json_output::validate_report_schema(&value, path)?;
-    let measurements: Vec<TierBMeasurement> = match snapshots_opt {
+    let rows: Vec<TierBRow> = match snapshots_opt {
         Some(snapshots) => serde_json::from_value(serde_json::Value::Array(snapshots.clone()))
             .map_err(Error::Json)?,
         None => serde_json::from_value(value).map_err(Error::Json)?,
     };
+    let mut measurements = Vec::with_capacity(rows.len());
+    for row in rows {
+        let value = row.value.ok_or_else(|| {
+            Error::Message(format!(
+                "{}: snapshot row {}::{} [{}] has no `value` (missing or null); a function \
+                 that failed to simulate yields no Tier B measurement, so it cannot be \
+                 derived into a Tier A limit",
+                path.display(),
+                row.package,
+                row.function,
+                row.metric
+            ))
+        })?;
+        measurements.push(TierBMeasurement {
+            package: row.package,
+            function: row.function,
+            metric: row.metric,
+            value,
+        });
+    }
     Ok(measurements)
 }
 
@@ -224,8 +267,11 @@ pub struct Derivation {
 /// always panics — this is intentional: a Tier B report that records
 /// zero for a metric (e.g. `extend_instance_ttl - Write Bytes`)
 /// means "no charge recorded" and the test author should either drop
-/// the macro on that assertion or use `env = "VAR"` and leave the
-/// variable unset (which the macro falls back to `u64::MAX`).
+/// the macro on that assertion or bind the limit to a variable that is
+/// not defined. Note that an unset `env = "VAR"` is not a way to opt
+/// out: `budget-macros` reads it at macro-expansion time and fails to
+/// compile with "env var `VAR` is not set at macro-expansion time"
+/// rather than falling back to `u64::MAX`.
 fn ceil_apply(value: u64, margin: f64) -> u64 {
     let scaled = (value as f64) * margin;
     if !scaled.is_finite() || scaled < 0.0 {
@@ -966,8 +1012,65 @@ mod tests {
         assert_eq!(loaded[0].value, 42000);
     }
 
-    // -- build_profile rendering in env file and provenance markdown ------
+    /// A `--check --json` report writes a row for a function whose simulation
+    /// failed with no `value` key at all (`CostReport::value` is
+    /// `skip_serializing_if = "Option::is_none"`). Deriving must name that row
+    /// rather than surface serde's bare ``missing field `value` ``, which names
+    /// nothing (#968).
+    #[test]
+    fn load_tier_b_report_names_a_value_less_row() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let missing = serde_json::json!({
+            "schema_version": 1,
+            "snapshots": [
+                {"package": "p", "function": "ok_fn", "metric": "CPU Instructions", "value": 1000},
+                {"package": "amm-pool-contract", "function": "retired_fn", "metric": "CPU Instructions"}
+            ]
+        });
+        std::fs::write(tmp.path(), missing.to_string()).unwrap();
+        let err = load_tier_b_report(tmp.path()).unwrap_err().to_string();
+        for needle in [
+            "amm-pool-contract",
+            "retired_fn",
+            "CPU Instructions",
+            "no `value`",
+        ] {
+            assert!(err.contains(needle), "error {err:?} should name {needle:?}");
+        }
 
+        // `--check` also renders the failure as an explicit `null`; both
+        // shapes mean the same thing to the derive step.
+        let null_value = serde_json::json!({
+            "schema_version": 1,
+            "snapshots": [{"package": "p", "function": "f", "metric": "Memory Bytes", "value": null}]
+        });
+        std::fs::write(tmp.path(), null_value.to_string()).unwrap();
+        let err = load_tier_b_report(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("p::f [Memory Bytes]"), "got: {err}");
+    }
+
+    /// An empty `snapshots` array parses — it simply has no rows — so the
+    /// refusal to rewrite the limits file from nothing is the derive step's
+    /// job, where the output path is known.
+    #[test]
+    fn load_tier_b_report_reads_an_empty_snapshot_array_as_no_rows() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let empty = serde_json::json!({"schema_version": 1, "snapshots": []});
+        std::fs::write(tmp.path(), empty.to_string()).unwrap();
+
+        let loaded = load_tier_b_report(tmp.path()).expect("an empty report is well-formed");
+        assert!(loaded.is_empty(), "got: {loaded:?}");
+
+        let derivation = Derivation::from_report(&loaded, &DerivationConfig::margin_only(margin()))
+            .expect("no rows means no scenario to compose");
+        assert!(
+            derivation.limits.is_empty(),
+            "an empty report must yield no limits, so the caller can refuse to write: {:?}",
+            derivation.limits
+        );
+    }
+
+    // -- build_profile rendering in env file and provenance markdown ------
     fn derivation() -> Derivation {
         Derivation::default()
     }

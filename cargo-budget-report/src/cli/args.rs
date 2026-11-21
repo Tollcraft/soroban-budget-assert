@@ -210,6 +210,18 @@ pub struct BudgetReportArgs {
     #[arg(long, value_name = "PATH")]
     pub provenance_out: Option<String>,
 
+    /// Accept the removal of `TIER_A__…` keys that already exist in the
+    /// output env file but cannot be re-derived from the report.
+    ///
+    /// By default `--derive-limits` refuses to write when a key present in
+    /// the file it replaces is missing from the new output: the usual cause
+    /// is a partial measurement run (a failed simulation emits no row), and
+    /// silently dropping the key turns into a compile error later, far from
+    /// the cause. Pass this flag when the removal is deliberate, e.g. after
+    /// deleting the contract function the limit belonged to.
+    #[arg(long, default_value_t = false)]
+    pub allow_dropped_limits: bool,
+
     // -----------------------------------------------------------------
     // Retry policy
     // -----------------------------------------------------------------

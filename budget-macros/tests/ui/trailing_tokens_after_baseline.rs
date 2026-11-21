@@ -1,9 +1,9 @@
-//! Unexpected tokens after `baseline = …` in a standalone attribute.
+//! Unexpected key after `baseline = …` in a standalone attribute.
 //!
-//! `budget_cpu_lt` accepts an integer literal with exactly one optional
-//! trailing key, `, baseline = <expr>`. Once that baseline has been consumed
-//! the attribute must be at its end — anything still following (here the bogus
-//! `, extra = "bad"`) is rejected while the `StandaloneSpec` is parsed, and the
+//! `budget_cpu_lt` accepts an integer literal followed by the optional
+//! `baseline` and `env_ident` keys. Once a baseline has been consumed, only
+//! those two keys may follow — anything else (here the bogus `, extra =
+//! "bad"`) is rejected while the `StandaloneSpec` is parsed, and the
 //! annotated function is replaced by the emitted `compile_error!` before it is
 //! ever type-checked.
 //!
