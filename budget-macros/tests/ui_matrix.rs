@@ -98,6 +98,8 @@ const LT_LIMITED: &[&str] = &[
     "pass_nested_pct.rs",
 ];
 const LT_CONFIG: &[&str] = &["pass_budget_lt.rs"];
+const READ_BYTES_ENV: &[&str] = &["pass_read_bytes_env_file_baseline.rs"];
+const READ_BYTES_ENV_FILE: &[&str] = &["pass_read_bytes_env_file_baseline.rs"];
 
 const MATRIX: [Cell; 32] = {
     // `budget_scaling` takes `sizes`/`model`/`tolerance` and no limit source at
@@ -105,7 +107,7 @@ const MATRIX: [Cell; 32] = {
     let forms = [
         [CPU_ENV, CPU_ENV_FILE, CPU_CONFIG, CPU_PCT],
         [NONE, NONE, NONE, NONE],
-        [NONE, NONE, NONE, NONE],
+        [READ_BYTES_ENV, READ_BYTES_ENV_FILE, NONE, NONE],
         [EVENTS_ENV, EVENTS_ENV, NONE, EVENTS_PCT],
         [NONE, NONE, NONE, NONE],
         [NONE, NONE, NONE, NONE],
@@ -148,7 +150,13 @@ const BASELINE_CELLS: [(&str, &[&str]); 8] = [
         ],
     ),
     ("budget_write_bytes_lt", &["pass_baseline.rs"]),
-    ("budget_read_bytes_lt", &["pass_read_bytes_baseline.rs"]),
+    (
+        "budget_read_bytes_lt",
+        &[
+            "pass_read_bytes_baseline.rs",
+            "pass_read_bytes_env_file_baseline.rs",
+        ],
+    ),
     (
         "budget_events_lt",
         &["pass_events.rs", "pass_events_ledger_impl_block.rs"],

@@ -19,6 +19,7 @@ keeps its shape and only a generated tail checks the cost.
 | `tests/ui/pass/*.rs` | pass fixtures: they must compile *and* run |
 | `tests/ui/support/mock_env.rs` | the stand-in `Env` and `soroban_sdk` the pass fixtures build against |
 | `tests/ui/support/pass_env_file*.env` | the env files the `env_file` fixtures read, one per lookup case |
+| `tests/ui/support/pass_read_bytes_env_file_baseline.env` | the two read-bytes limits the baseline-plus-env-file fixture compares against |
 
 ## Running the fixtures
 
@@ -81,6 +82,12 @@ first-match semantics (#997). `tests/ui/support/pass_env_file_hash_suffix.env`
 writes each value with and without a space before its inline `#`, which is the
 separator the generated reader looks for (#998). `tests/ui/env_file_malformed.env`
 carries the lines with no `=` at all that the lookup is expected to skip (#952).
+`tests/ui/support/pass_read_bytes_env_file_baseline.env` carries
+`READ_BYTES_LOOSE_LIMIT=500` and `READ_BYTES_TIGHT_LIMIT=100`, read alongside a
+`baseline = 1_000`: the loose key passes a marginal 200 and fails a marginal 900,
+while the tight key fails that same marginal 200 and passes a measured 1_050 —
+which only holds if the baseline comes off before the file's limit is compared
+(#1007).
 
 ## Compile-fail fixtures
 
@@ -165,7 +172,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 
 ## Pass fixtures
 
-All 28 pass fixtures appear here, one row per fixture. The last column is a
+All 29 pass fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's own source: the diagnostic text it
 asserts at runtime, or the attribute form it exercises.
 
@@ -195,6 +202,7 @@ asserts at runtime, or the attribute form it exercises.
 | `tests/ui/pass/pass_percentage_limit.rs` | `pct = N, of = …` resolves the limit from a reference read at runtime | pct = 25, of = env_file = PCT_ENV_FILE |
 | `tests/ui/pass/pass_read_bytes.rs` | the read-bytes attribute body shapes, reported through `memory_bytes_cost()` | #[budget_read_bytes_lt(4_096)] |
 | `tests/ui/pass/pass_read_bytes_baseline.rs` | `baseline = …` on the read-bytes attribute, so the marginal cost is asserted | Read bytes cost (memory proxy) 900 exceeded limit 500 |
+| `tests/ui/pass/pass_read_bytes_env_file_baseline.rs` | an env-file limit *and* a `baseline` on one read-bytes attribute, with the subtraction applied before the file's limit (issue #1007) | #[budget_read_bytes_lt(env_file = ENV_FILE, env = "READ_BYTES_LOOSE_LIMIT", baseline = floor())] |
 | `tests/ui/pass/pass_result.rs` | a `Result` body keeps its tail value and its `?` operators | let value = doubled(21)?; |
 | `tests/ui/pass/pass_scaling.rs` | `#[budget_scaling]` on a function whose cost grows with its size parameter | #[budget_scaling(sizes = [100, 1000, 10000], model = linear, tolerance = 1.0)] |
 | `tests/ui/pass/pass_unit.rs` | a plain `()` body: the assertion runs after the last statement | CPU instruction cost 1000 exceeded limit 1000 |
