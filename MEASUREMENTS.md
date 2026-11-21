@@ -659,6 +659,112 @@ record:
   ledger setting can be raised by validator vote. All three fixtures sit well
   under it (largest is 29,906 B ≈ 46 %).
 
+## Map operations
+
+`Map` is the container contract authors reach for whenever a storage value has
+more than one entry, so its per-operation cost is the one most likely to be
+misjudged. This section measures the four operations that matter — insert,
+get, remove, iterate — at three map sizes, comparing a WASM-registered local
+estimate against a testnet `simulateTransaction` figure for the same call.
+
+The complete capture record is checked in at
+[`cargo-budget-report/fixtures/map_operations_benchmark.json`](cargo-budget-report/fixtures/map_operations_benchmark.json).
+It records the fixture contract, both capture commands, every local and network
+figure, the calculated deltas, and the per-operation marginal costs derived
+from them.
+
+### Methodology
+
+Each `map_*` function in `host-function-contract` builds a size-entry
+`Map<u32, u32>` with `map_insert`, then performs the named operation over the
+same keys. Insert is measured directly; the other three subtract the
+`map_insert(size)` cost and divide by `size` to get a per-operation figure, so
+the map-construction cost is not attributed to the operation under test.
+
+```bash
+cargo build --target wasm32v1-none --release -p host-function-contract
+cargo test -p host-function-contract --test measure_map_gap -- --nocapture
+```
+
+Network figures come from the same WASM via `simulateTransaction` on Soroban
+testnet. Build profile: size-opt (`opt-level="z"`, LTO, `codegen-units=1`);
+toolchain `rustc 1.91.0`; recorded 2026-08-27.
+
+### Figures
+
+| Operation | Size (entries) | Local CPU | Network CPU | Delta | Local per-op | Network per-op |
+|---|---:|---:|---:|---:|---:|---:|
+| insert | 100 | 755,807 | 846,437 | −10.7% | — | — |
+| insert | 500 | 3,285,855 | 3,452,056 | −4.8% | — | — |
+| insert | 1,000 | 8,475,569 | 8,839,998 | −4.1% | — | — |
+| get | 100 | 1,104,263 | 1,190,352 | −7.2% | 3,485 | 3,439 |
+| get | 500 | 5,031,111 | 5,248,256 | −4.1% | 3,491 | 3,592 |
+| get | 1,000 | 11,971,325 | 12,439,038 | −3.8% | 3,496 | 3,599 |
+| remove | 100 | 1,297,233 | 1,387,737 | −6.5% | 5,414 | 5,413 |
+| remove | 500 | 6,894,789 | 7,187,147 | −4.1% | 7,218 | 7,470 |
+| remove | 1,000 | 17,948,187 | 18,655,121 | −3.8% | 9,473 | 9,815 |
+| iterate | 100 | 1,117,331 | 1,204,544 | −7.2% | 3,615 | 3,581 |
+| iterate | 500 | 5,078,579 | 5,298,791 | −4.2% | 3,585 | 3,694 |
+| iterate | 1,000 | 12,057,293 | 12,529,614 | −3.8% | 3,582 | 3,690 |
+
+### Findings
+
+- **The local estimate underestimates every map operation**, by −3.8% to
+  −10.7%. The direction is consistent across operation and size, unlike the
+  profile-dependent flips in the mixed compute + storage series above.
+- **The gap narrows as the map grows.** The delta is −10.7% at 100 inserts but
+  −4.1% at 1,000: the fixed per-invocation floor that the local VM charges less
+  for is a larger share of a small map's total. A margin sized on the small-map
+  delta therefore covers the large-map case too.
+- **Per-operation marginal cost is close to flat on both sides.** `get` costs
+  ~3.5 k CPU per entry locally and on the network; `iterate` ~3.6 k; `remove`
+  rises with size on both sides (5.4 k → 9.5 k locally) because each removal
+  rebalances the host map. Because the two per-op columns agree to within a few
+  percent, gating on the local marginal cost is defensible for `get` and
+  `iterate`, and only mildly optimistic for `remove`.
+
+## Cross-contract calls
+
+Contract composition (`router → pool → token`) is priced per dispatch, so a
+single-hop measurement is the unit the rest of a design multiplies. This section
+records the isolated cross-contract call: `do_cross_contract_work` in
+`amm-pool-contract` calls a separately deployed helper contract's `multiply`,
+with 100 forwarded calls and nothing else, so the measurement captures dispatch
+plus `Val` conversion rather than local compute.
+
+The complete capture record — fixture arguments, both capture commands, and the
+figure slots as they are filled in — is checked in at
+[`cargo-budget-report/fixtures/cross_contract_benchmark.json`](cargo-budget-report/fixtures/cross_contract_benchmark.json).
+
+### Methodology
+
+```bash
+cargo build --target wasm32v1-none --release -p amm-pool-contract
+cargo test -p amm-pool-contract test_cross_contract_wasm -- --exact --nocapture
+```
+
+On-chain reproduction needs the WASM deployed twice — once as the caller, once
+as the helper — because both `do_cross_contract_work` and `HelperContract::multiply`
+are exported from the same module. The fixture's `capture.network_command`
+records the exact `stellar contract deploy` and `budget.toml` steps, including
+the `--other <helper_address> --n 100` argument order that matches
+`do_cross_contract_work(env, other, n)`.
+
+Build profile: size-opt (`opt-level="z"`, LTO, `codegen-units=1`); toolchain
+`rustc 1.85.0`.
+
+### Figures
+
+| Operation type | Local CPU | Network CPU | Delta | Fixture | Build profile | Toolchain | Date |
+|---|---:|---:|---:|---|---|---|---|
+| Cross-contract call (100 forwarded calls) | TBD | TBD | TBD | `amm-pool-contract::do_cross_contract_work(100)` | size-opt (`opt-level="z"`, LTO, `codegen-units=1`) | `rustc 1.85.0` | 2026-Q3 |
+
+The local and network columns are still `TBD` in the capture record: the figure
+requires two deployed testnet contract ids and a populated `budget.toml`, which
+are not reproducible in every development environment. Until they are filled
+in, use the [cross-contract call depth](#cross-contract-call-depth) section for
+the local per-frame baseline, and do not treat this row as network-verified.
+
 ## Operation-type coverage
 
 | Operation type | Issue | Status |
@@ -672,6 +778,8 @@ record:
 | Token transfers | [#415](https://github.com/Tollcraft/soroban-budget-assert/issues/415) | Local measured — `measure_token_transfer_gap.rs`; network pending |
 | Cross-contract call depth | [#416](https://github.com/Tollcraft/soroban-budget-assert/issues/416) | Local measured — `measure_call_depth_gap.rs`; network pending |
 | Wasm size vs. deploy cost | [#417](https://github.com/Tollcraft/soroban-budget-assert/issues/417) | Local measured — `measure_deploy_cost_gap.rs`; network pending |
+| Map operations | [#1083](https://github.com/Tollcraft/soroban-budget-assert/issues/1083) | Network-verified — see [Map operations](#map-operations) |
+| Cross-contract calls | [#1083](https://github.com/Tollcraft/soroban-budget-assert/issues/1083) | Fixture linked — figures pending, see [Cross-contract calls](#cross-contract-calls) |
 | Storage-write operations | #44 | Measured in the existing mixed-operation fixtures |
 | Host-function-call operations | #86 | Measured in the host-function-contract fixture |
 | VM-instruction-heavy operations | #87 | Measured above |

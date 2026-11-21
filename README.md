@@ -72,11 +72,11 @@ The workspace pins `soroban-sdk` and `stellar-xdr` in its manifests. The manifes
 
 | Crate                                                                    | Manifest dependency                                                                                                 |
 | :----------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------ |
-| `amm-pool-contract` ([manifest](amm-pool-contract/Cargo.toml))           | `soroban-sdk` = `"27.0.3"` (also as a dev-dependency with the `testutils` feature) |
-| `host-function-contract` ([manifest](host-function-contract/Cargo.toml)) | `soroban-sdk` = `"27.0.3"` |
-| `cargo-budget-report` ([manifest](cargo-budget-report/Cargo.toml))       | `stellar-xdr` = `"27.0.0"` (used for decoding transaction simulation responses) |
+| `amm-pool-contract` ([manifest](amm-pool-contract/Cargo.toml))           | `soroban-sdk` = `"29.0.1"` (also as a dev-dependency with the `testutils` feature) |
+| `host-function-contract` ([manifest](host-function-contract/Cargo.toml)) | `soroban-sdk` = `"29.0.1"` |
+| `cargo-budget-report` ([manifest](cargo-budget-report/Cargo.toml))       | `stellar-xdr` = `"28.0.0"` (used for decoding transaction simulation responses) |
 
-- **Corresponding Stellar Protocol**: **Protocol 27**
+- **Corresponding Stellar Protocol**: **Protocol 28**
 
 ### What "Supported" means here
 
@@ -87,7 +87,7 @@ A row marked **Supported** means: every workspace crate builds and passes `cargo
 | SDK Version     | Protocol Version | Status        | Notes                                                                                                                                                                                                                                                                                                                                                                                                               |
 | :-------------- | :--------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Older than the pinned line** | Older protocol | **Untested**  | Older protocols may use different transaction/resource schemas. |
-| **`27.0.x`**    | `27`             | **Supported** | Matches the pinned `soroban-sdk` `27.0.3` and `stellar-xdr` `27.0.0` manifest dependencies. |
+| **`29.0.x`**    | `28`             | **Supported** | Matches the pinned `soroban-sdk` `29.0.1` and `stellar-xdr` `28.0.0` manifest dependencies. |
 | **Future SDK/XDR versions** | Future protocol | **Untested**  | Future protocol upgrades or XDR schema changes may break parsing. |
 
 ---

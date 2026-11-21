@@ -78,6 +78,14 @@ pub(crate) fn render_args(specs: &[ArgSpec], function: &str) -> anyhow::Result<V
 }
 
 fn render_typed(arg: &TypedArg) -> anyhow::Result<String> {
+    if arg.generate && arg.ty != "address" {
+        bail!(
+            "`generate = true` is only supported for `address` arguments, but argument `{}` has type `{}`",
+            arg.name,
+            arg.ty
+        );
+    }
+
     let scalar = || -> anyhow::Result<String> {
         match arg.value.as_ref() {
             Some(toml::Value::String(s)) => Ok(s.clone()),

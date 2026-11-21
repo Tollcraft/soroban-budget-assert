@@ -178,6 +178,21 @@ impl Baseline {
 
         let mut entries: BTreeMap<String, BaselineEntry> = BTreeMap::new();
         for (key, val) in root_table {
+            let (_pkg, _fn_) = match split_key(key) {
+                Some((p, f))
+                    if !p.is_empty()
+                        && !f.is_empty()
+                        && !key.contains('.')
+                        && !f.contains(KEY_SEPARATOR) =>
+                {
+                    (p, f)
+                }
+                _ => {
+                    anyhow::bail!(
+                        "invalid baseline header '{key}': expected '\"package::function\"' format (e.g. '[\"my-contract::my_function\"]')"
+                    );
+                }
+            };
             if !val.is_table() {
                 anyhow::bail!("expected a table for key '{key}', got {}", value_kind(val));
             }
@@ -516,8 +531,10 @@ pub fn check_against_baseline(
             }
         };
 
+        let qualified = format!("{package}::{function}");
         let tolerance = tolerance_overrides
-            .get(&function)
+            .get(&qualified)
+            .or_else(|| tolerance_overrides.get(&function))
             .copied()
             .unwrap_or(default_tolerance);
 
@@ -898,6 +915,35 @@ pub fn build_baseline(current: &BTreeMap<String, BTreeMap<String, Measurement>>)
 mod tests {
     use super::*;
 
+    /// `derive.rs` builds limit keys with the literal `"{}::{}"` format and
+    /// splits them back with `split_once("::")`. Pin the shared separator so
+    /// a change here cannot silently break that round trip.
+    #[test]
+    fn function_key_format_and_split_roundtrip() {
+        assert_eq!(KEY_SEPARATOR, "::");
+        assert_eq!(
+            function_key("amm-pool-contract", "swap"),
+            "amm-pool-contract::swap"
+        );
+
+        for (pkg, func) in [
+            ("amm-pool-contract", "swap"),
+            ("pkg", "do_work"),
+            ("pkg-with-dash", "fn_with_underscore"),
+        ] {
+            let key = function_key(pkg, func);
+            let (recovered_pkg, recovered_func) = key
+                .split_once(KEY_SEPARATOR)
+                .expect("key contains the separator");
+            assert_eq!(recovered_pkg, pkg, "{key}");
+            assert_eq!(recovered_func, func, "{key}");
+
+            // No ambiguity: a package name never absorbs the first colon.
+            assert_eq!(key.matches(KEY_SEPARATOR).count(), 1, "{key}");
+            assert_eq!(split_key(&key), Some((pkg.to_string(), func.to_string())));
+        }
+    }
+
     fn m(cpu: u64, read: u64, write: u64) -> Measurement {
         Measurement {
             cpu_instructions: cpu,
@@ -971,6 +1017,49 @@ mod tests {
         assert!((t.value - 0.10).abs() < f64::EPSILON);
     }
 
+    #[test]
+    fn parse_tolerance_edge_cases_and_rejections() {
+        // The inclusive ends of the percentage range: "0%" disables headroom
+        // while "100%" allows the measurement to double.
+        assert!((parse_tolerance("0%").unwrap().value - 0.0).abs() < 1e-9);
+        assert!((parse_tolerance("100%").unwrap().value - 1.0).abs() < 1e-9);
+
+        // Decimal and scientific notation describe the same fraction.
+        assert!((parse_tolerance("0.001").unwrap().value - 0.001).abs() < 1e-9);
+        assert!((parse_tolerance("1e-3").unwrap().value - 0.001).abs() < 1e-9);
+        assert!((parse_tolerance("1e-2").unwrap().value - 0.01).abs() < 1e-9);
+
+        // Surrounding whitespace is trimmed, including between the number and
+        // the `%` suffix.
+        assert!((parse_tolerance(" 15% ").unwrap().value - 0.15).abs() < 1e-9);
+        assert!((parse_tolerance(" 10 % ").unwrap().value - 0.10).abs() < 1e-9);
+        assert!((parse_tolerance("\t5%\n").unwrap().value - 0.05).abs() < 1e-9);
+
+        // Every malformed input is rejected rather than silently defaulting.
+        for input in [
+            "",
+            "%",
+            "abc",
+            "-5%",
+            "-0.5",
+            "NaN",
+            "inf",
+            "5%%",
+            "5 percent",
+        ] {
+            assert!(
+                parse_tolerance(input).is_err(),
+                "expected rejection for {input:?}"
+            );
+        }
+
+        // Error classes stay distinguishable for callers that surface them.
+        let negative = parse_tolerance("-5%").unwrap_err().to_string();
+        assert!(negative.contains("non-negative"), "got: {negative}");
+        let non_finite = parse_tolerance("inf").unwrap_err().to_string();
+        assert!(non_finite.contains("finite"), "got: {non_finite}");
+    }
+
     // -- Tolerance::allows / classify boundary math --------------------------
 
     #[test]
@@ -991,6 +1080,30 @@ mod tests {
         // (and the `classify` flow) report it as accepted. The math boundary
         // is `current > max_allowed`, not `current != baseline`.
         assert!(t.allows(1000, 999));
+    }
+
+    #[test]
+    fn zero_baseline_max_allowed_is_always_zero() {
+        // `max_allowed` scales the baseline itself, so a zero baseline has
+        // nothing to scale: 0 * (1 + tol) == 0 for every tolerance.
+        for tol in [0.0, 0.10, 1.0, 10.0] {
+            assert_eq!(max_allowed(0, tol), 0, "tolerance {tol} must not help");
+        }
+    }
+
+    #[test]
+    fn zero_baseline_allows_only_zero() {
+        // Mathematical consequence: when a baseline metric is zero, any
+        // non-zero measurement is a regression no matter how high the
+        // tolerance is — even 1000 %. Contract test authors whose baseline
+        // records zero for a metric (e.g. `extend_instance_ttl` writes) must
+        // keep the metric at zero or override it explicitly; a percentage
+        // tolerance cannot create headroom from a zero baseline.
+        for tol in [0.0, 0.10, 1.0, 10.0] {
+            let t = Tolerance::new(tol);
+            assert!(t.allows(0, 0), "tolerance {tol} must allow no change");
+            assert!(!t.allows(0, 1), "tolerance {tol} cannot allow +1");
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ clap_mangen = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tabled = "0.22"
-stellar-xdr = { version = "27.0.0", features = ["std", "base64", "serde"] }
+stellar-xdr = { version = "28.0.0", features = ["std", "base64", "serde"] }
 anyhow = "1.0.103"
 toml = "1.1"
 cargo_metadata = "0.23"
@@ -26,6 +26,7 @@ notify = "8.0"
 stellar-strkey = "1.0.0"
 
 [dev-dependencies]
+soroban-budget-assert-core = { path = ".." }
 tempfile = "3.10"
 assert_cmd = "2.0"
 predicates = "3.1"

@@ -1,0 +1,5 @@
+error: unknown property: baseline
+  --> tests/ui/budget_lt_baseline_property.rs:11:47
+   |
+11 | #[budget_lt(cpu = 1_000_000, mem = 1_000_000, baseline = 1_000)]
+   |                                               ^^^^^^^^
