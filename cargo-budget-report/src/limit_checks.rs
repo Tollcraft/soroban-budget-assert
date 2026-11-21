@@ -17,13 +17,18 @@
 /// works for both `u32` and `u64` comparisons without duplicating logic.
 /// All callers widen their `u32` inputs to `u64` before calling this function
 /// to keep the comparisons consistent and avoid silent truncation.
-fn check_bounds<T: PartialOrd + std::fmt::Display>(
-    value: T,
-    max: T,
-    name: &str,
-) -> Result<(), String> {
+fn check_bounds(value: u64, max: u64, name: &str) -> Result<(), String> {
     if value > max {
-        Err(format!("{} {} exceeds limit {}", name, value, max))
+        let delta = value - max;
+        let pct = if max == 0 {
+            "+inf%".to_string()
+        } else {
+            format!("+{:.1}%", (delta as f64 / max as f64) * 100.0)
+        };
+        Err(format!(
+            "{} {} exceeds limit {} by {} ({})",
+            name, value, max, delta, pct
+        ))
     } else {
         Ok(())
     }
@@ -54,6 +59,17 @@ pub fn check_read_bytes(bytes: u32, limit: u64) -> Result<(), String> {
 /// ensures the comparison is lossless even when `limit` exceeds `u32::MAX`.
 pub fn check_write_bytes(bytes: u32, limit: u64) -> Result<(), String> {
     check_bounds(u64::from(bytes), limit, "Write Bytes")
+}
+
+/// Check that the number of memory bytes consumed by the transaction is
+/// within `limit`.
+///
+/// `SimulationOutcome::Metrics` models memory as `Option<u32>`, so callers
+/// pass the measured value straight through. The widening from `u32` to `u64`
+/// mirrors [`check_cpu_instructions`] and ensures the comparison is lossless
+/// even when `limit` exceeds `u32::MAX`.
+pub fn check_memory_bytes(bytes: u32, limit: u64) -> Result<(), String> {
+    check_bounds(u64::from(bytes), limit, "Memory Bytes")
 }
 
 #[cfg(test)]
@@ -99,6 +115,28 @@ mod tests {
     }
 
     #[test]
+    fn memory_under_limit_passes() {
+        assert!(check_memory_bytes(1_441_165, 2_000_000).is_ok());
+    }
+
+    #[test]
+    fn memory_at_limit_passes() {
+        assert!(check_memory_bytes(2_000_000, 2_000_000).is_ok());
+    }
+
+    #[test]
+    fn memory_over_limit_fails() {
+        let err = check_memory_bytes(2_000_001, 2_000_000).unwrap_err();
+        assert_eq!(err, "Memory Bytes 2000001 exceeds limit 2000000");
+    }
+
+    #[test]
+    fn zero_memory_limit_accepts_zero_bytes_only() {
+        assert!(check_memory_bytes(0, 0).is_ok());
+        assert!(check_memory_bytes(1, 0).is_err());
+    }
+
+    #[test]
     fn u32_max_at_u64_limit_passes() {
         assert!(check_cpu_instructions(u32::MAX, u64::from(u32::MAX)).is_ok());
     }
@@ -113,7 +151,10 @@ mod tests {
     #[test]
     fn error_message_format() {
         let err = check_cpu_instructions(500, 100).unwrap_err();
-        assert_eq!(err, "CPU Instructions 500 exceeds limit 100");
+        assert_eq!(
+            err,
+            "CPU Instructions 500 exceeds limit 100 by 400 (+400.0%)"
+        );
     }
 
     #[test]

@@ -1,0 +1,5 @@
+error: `cpu` cannot be specified more than once
+ --> tests/ui/budget_lt_duplicate_metric.rs:7:26
+  |
+7 | #[budget_lt(cpu = 1_000, cpu = 2_000)]
+  |                          ^^^

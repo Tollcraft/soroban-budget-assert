@@ -42,6 +42,10 @@ jobs:
         run: bash scripts/check-cli-docs.sh
       - name: Check documented compatibility pins
         run: .github/scripts/check-compatibility-docs.sh
+      - name: Check documentation anchors
+        # Fail if a `page.md#heading` link points at a heading that no longer
+        # exists, so renaming a section cannot silently ship a dead link.
+        run: bash scripts/check-docs-anchors.sh
       - name: Check for unused dependencies
         run: |
           cargo install cargo-machete --version 0.6.2 --locked

@@ -37,6 +37,24 @@ pub(crate) const SCHEMA_VERSION: u32 = 1;
 /// disagree on compatibility.
 pub(crate) const ACCEPTED_SCHEMA_VERSIONS: &[u32] = &[SCHEMA_VERSION];
 
+/// The complete set of top-level keys a wrapped report may carry.
+///
+/// A key outside this set is a typo in a hand-written or third-party report
+/// (for example `snapshot` for `snapshots`). Rejecting it names the offending
+/// key instead of silently parsing the report as having zero measurements
+/// (issue #1046). Adding a key to the envelope means adding it here too.
+///
+/// `_metadata` is the free-form annotation block checked-in report fixtures
+/// carry (for example `fixtures/tier_b_report_sample.json`); it is tolerated
+/// but never interpreted.
+pub(crate) const ALLOWED_TOP_LEVEL_KEYS: &[&str] = &[
+    "schema_version",
+    "snapshots",
+    "generated_at",
+    "generator_version",
+    "_metadata",
+];
+
 /// Validate a JSON report document's schema version.
 ///
 /// Returns `Ok(Option<&'a Vec<serde_json::Value>>)` where:
@@ -80,6 +98,16 @@ pub(crate) fn validate_report_schema<'a>(
         if let Some(n) = version_val.as_u64() {
             if let Ok(v32) = u32::try_from(n) {
                 if ACCEPTED_SCHEMA_VERSIONS.contains(&v32) {
+                    if let Some(unknown) = obj
+                        .keys()
+                        .find(|key| !ALLOWED_TOP_LEVEL_KEYS.contains(&key.as_str()))
+                    {
+                        return Err(Error::Json(serde::de::Error::custom(format!(
+                            "unknown top-level key `{unknown}` in wrapped report {}; allowed keys are {:?}",
+                            path.display(),
+                            ALLOWED_TOP_LEVEL_KEYS
+                        ))));
+                    }
                     let snapshots =
                         obj.get("snapshots")
                             .and_then(|s| s.as_array())
@@ -123,6 +151,8 @@ pub(crate) fn validate_report_schema<'a>(
 /// ```json
 /// {
 ///   "schema_version": 1,
+///   "generated_at": "2026-11-21T04:27:00Z",
+///   "generator_version": "0.1.0",
 ///   "snapshots": [
 ///     {
 ///       "package": "amm-pool-contract",
@@ -143,6 +173,15 @@ pub(crate) struct BudgetReportJson<'a> {
     /// Schema version of the document being emitted; always
     /// [`SCHEMA_VERSION`] for as long as this type is the only writer.
     schema_version: u32,
+    /// UTC time the report was generated, as an ISO-8601
+    /// (`YYYY-MM-DDTHH:MM:SSZ`) string. Lets archived reports be ordered and
+    /// attributed to a CI run; `None` only if the system clock is unreadable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_at: Option<String>,
+    /// Version of the `cargo-budget-report` crate that produced the document,
+    /// so a reader can tell which release generated an archived report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generator_version: Option<&'static str>,
     /// The report rows, borrowed rather than owned: rendering only serializes
     /// them, so cloning each row into the envelope would allocate for nothing.
     snapshots: &'a [crate::CostReport],
@@ -165,6 +204,8 @@ pub(crate) fn render_json(reports: &[crate::CostReport]) -> String {
     // allocation here is the output `String` itself.
     let wrapper = BudgetReportJson {
         schema_version: SCHEMA_VERSION,
+        generated_at: crate::build_utc_timestamp(std::time::SystemTime::now()).ok(),
+        generator_version: Some(env!("CARGO_PKG_VERSION")),
         snapshots: reports,
     };
     serde_json::to_string_pretty(&wrapper).expect("report serialization should not fail")
@@ -226,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn envelope_carries_only_the_schema_version_and_snapshots() {
+    fn envelope_carries_schema_version_snapshots_and_generation_metadata() {
         // Adding a top-level field is a schema change, so it should show up as
         // a deliberate edit to this assertion rather than as a side effect.
         let json_str = render_json(&[report("pkg", "fn")]);
@@ -237,7 +278,40 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys, vec!["schema_version", "snapshots"]);
+        assert_eq!(
+            keys,
+            vec![
+                "generated_at",
+                "generator_version",
+                "schema_version",
+                "snapshots"
+            ]
+        );
+        assert_iso8601_utc(
+            json["generated_at"]
+                .as_str()
+                .expect("generated_at must be a string"),
+        );
+        assert_eq!(json["generator_version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Assert `ts` is exactly `YYYY-MM-DDTHH:MM:SSZ`: 20 characters, digits
+    /// everywhere except the fixed separators.
+    fn assert_iso8601_utc(ts: &str) {
+        assert_eq!(ts.len(), 20, "expected a second-precision UTC stamp: {ts}");
+        for (index, byte) in ts.bytes().enumerate() {
+            let expected = match index {
+                4 | 7 => Some(b'-'),
+                10 => Some(b'T'),
+                13 | 16 => Some(b':'),
+                19 => Some(b'Z'),
+                _ => None,
+            };
+            match expected {
+                Some(sep) => assert_eq!(byte, sep, "unexpected separator in {ts}"),
+                None => assert!(byte.is_ascii_digit(), "non-digit in {ts}"),
+            }
+        }
     }
 
     #[test]
@@ -287,6 +361,39 @@ mod tests {
         let res = validate_report_schema(&val, Path::new("report.json")).unwrap();
         assert!(res.is_some());
         assert_eq!(res.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn validate_report_schema_accepts_generation_metadata_keys() {
+        let val = serde_json::json!({
+            "_metadata": {"description": "fixture annotation"},
+            "schema_version": 1,
+            "generated_at": "2026-11-21T04:27:00Z",
+            "generator_version": "0.1.0",
+            "snapshots": []
+        });
+        let res = validate_report_schema(&val, Path::new("report.json")).unwrap();
+        assert_eq!(res.map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn validate_report_schema_rejects_unknown_top_level_key() {
+        let val = serde_json::json!({
+            "schema_version": 1,
+            "snapshot": [],
+            "snapshots": []
+        });
+        let err = validate_report_schema(&val, Path::new("typo.json")).unwrap_err();
+        assert_eq!(err.exit_code(), crate::error::EXIT_CONFIG_ERROR);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown top-level key `snapshot` in wrapped report typo.json"),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("generated_at") && msg.contains("snapshots"),
+            "got: {msg}"
+        );
     }
 
     #[test]

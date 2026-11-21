@@ -1,0 +1,5 @@
+error: `config` names a limit source, not a property — use `cpu = config = …` or `mem = config = …`
+ --> tests/ui/budget_lt_config_source.rs:9:13
+  |
+9 | #[budget_lt(config = "generic_budget")]
+  |             ^^^^^^
