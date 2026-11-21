@@ -1137,6 +1137,11 @@ pub(crate) fn resolve_tolerance(
         return parse_tolerance(raw).map_err(|e| Error::Message(e.to_string()));
     }
     if let Some(t) = config.tolerance {
+        if !t.is_finite() || t < 0.0 {
+            return Err(Error::Message(format!(
+                "invalid tolerance in budget.toml: key 'tolerance' has invalid value '{t}'; tolerance must be non-negative and finite"
+            )));
+        }
         return Ok(Tolerance::new(t));
     }
     Ok(Tolerance::default())
@@ -2858,6 +2863,32 @@ fn run() -> Result<i32> {
                             ])
                             .context("Failed to write CSV record")?;
                     }
+                }
+                for entry in &report.new {
+                    csv_writer
+                        .write_record([
+                            entry.package.as_str(),
+                            entry.function.as_str(),
+                            "",
+                            "",
+                            "",
+                            "",
+                            "new",
+                        ])
+                        .context("Failed to write CSV record for new function")?;
+                }
+                for entry in &report.stale {
+                    csv_writer
+                        .write_record([
+                            entry.package.as_str(),
+                            entry.function.as_str(),
+                            "",
+                            "",
+                            "",
+                            "",
+                            "stale",
+                        ])
+                        .context("Failed to write CSV record for stale function")?;
                 }
                 csv_writer.flush().context("Failed to flush CSV writer")?;
             } else if args.json {
