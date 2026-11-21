@@ -17,13 +17,18 @@
 /// works for both `u32` and `u64` comparisons without duplicating logic.
 /// All callers widen their `u32` inputs to `u64` before calling this function
 /// to keep the comparisons consistent and avoid silent truncation.
-fn check_bounds<T: PartialOrd + std::fmt::Display>(
-    value: T,
-    max: T,
-    name: &str,
-) -> Result<(), String> {
+fn check_bounds(value: u64, max: u64, name: &str) -> Result<(), String> {
     if value > max {
-        Err(format!("{} {} exceeds limit {}", name, value, max))
+        let delta = value - max;
+        let pct = if max == 0 {
+            "+inf%".to_string()
+        } else {
+            format!("+{:.1}%", (delta as f64 / max as f64) * 100.0)
+        };
+        Err(format!(
+            "{} {} exceeds limit {} by {} ({})",
+            name, value, max, delta, pct
+        ))
     } else {
         Ok(())
     }
@@ -146,7 +151,10 @@ mod tests {
     #[test]
     fn error_message_format() {
         let err = check_cpu_instructions(500, 100).unwrap_err();
-        assert_eq!(err, "CPU Instructions 500 exceeds limit 100");
+        assert_eq!(
+            err,
+            "CPU Instructions 500 exceeds limit 100 by 400 (+400.0%)"
+        );
     }
 
     #[test]
