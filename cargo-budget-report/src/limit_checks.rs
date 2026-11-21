@@ -127,7 +127,10 @@ mod tests {
     #[test]
     fn memory_over_limit_fails() {
         let err = check_memory_bytes(2_000_001, 2_000_000).unwrap_err();
-        assert_eq!(err, "Memory Bytes 2000001 exceeds limit 2000000");
+        assert_eq!(
+            err,
+            "Memory Bytes 2000001 exceeds limit 2000000 by 1 (+0.0%)"
+        );
     }
 
     #[test]
