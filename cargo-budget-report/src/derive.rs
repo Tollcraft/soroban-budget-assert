@@ -324,7 +324,7 @@ impl Derivation {
                     "unsupported metric label `{}` encountered for function {}::{} — unknown metrics cannot be derived into Tier A limit keys",
                     m.metric,
                     m.package,
-                    m.function
+                    m.function,
                 )))?;
             let limit_key = format!("{}::{}", m.package, m.function);
             let scaled = ceil_apply(m.value, margin);
