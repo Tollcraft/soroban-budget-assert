@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`env_file` path diagnostics pinned by a compile-fail fixture (issue #991).** `budget-macros/tests/ui/env_file_non_string.rs` pins the two ways a bad `env_file` path fails: a non-string value reaches the generated `&str` binding and is rejected by the compiler, while an empty string literal is refused during expansion as a file that was not found. The snapshot keeps each caret on the offending argument rather than on the whole attribute.
+
 - **JSON envelope generation metadata (issue #1047).** `--json` documents now carry `generated_at` (an ISO-8601 UTC timestamp) and `generator_version` (the `cargo-budget-report` version, from `CARGO_PKG_VERSION`) beside `schema_version` and `snapshots`, so archived reports can be ordered and attributed to the release that produced them. The fields are additive under the documented schema-evolution policy, so `schema_version` stays `1` and existing consumers keep working; `cargo-budget-report/tests/json_envelope_metadata.rs` covers the writer and the read-back round trip.
 - **Deploy-cache version-invalidation coverage (issue #1044).** `cargo-budget-report/tests/deploy_cache_version.rs` pins that loading a `.budget-cache.toml` written by an unknown schema version discards its entries rather than migrating them, and that a subsequent save rewrites the file as version `1`.
 
