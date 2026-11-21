@@ -157,6 +157,7 @@ const BASELINE_CELLS: [(&str, &[&str]); 8] = [
         "budget_ledger_entries_lt",
         &[
             "pass_ledger_baseline.rs",
+            "pass_ledger_breakdown.rs",
             "pass_events_ledger_impl_block.rs",
         ],
     ),
