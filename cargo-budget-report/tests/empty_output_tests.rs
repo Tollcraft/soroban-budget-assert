@@ -159,16 +159,25 @@ fn json_empty_output_produces_valid_envelope() {
         "an empty run must emit an empty snapshots array: {stdout}"
     );
 
-    // The envelope has no other top-level keys to confuse a consumer.
-    let keys: Vec<&str> = json
+    // The envelope has no other top-level keys to confuse a consumer. The set
+    // is the documented one: `schema_version` and `snapshots` plus the
+    // `generated_at` / `generator_version` stamping issue #1047 added, so this
+    // asserts membership, not map iteration order.
+    let mut keys: Vec<&str> = json
         .as_object()
         .expect("envelope must be an object")
         .keys()
         .map(String::as_str)
         .collect();
+    keys.sort_unstable();
     assert_eq!(
         keys,
-        vec!["schema_version", "snapshots"],
+        vec![
+            "generated_at",
+            "generator_version",
+            "schema_version",
+            "snapshots"
+        ],
         "stdout: {stdout}"
     );
 
