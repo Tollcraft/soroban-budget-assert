@@ -46,7 +46,9 @@ fn args_source() -> String {
 ///
 /// `--features` is cargo's own flag: the `scripts/regenerate-measurements.sh`
 /// entry quotes that script's invocation, not a `cargo budget-report` flag.
-const FOREIGN_FLAGS: &[&str] = &["--features"];
+/// `--connect-timeout` and `--max-time` are curl's: the `#825` entry quotes the
+/// curl invocation that `run_simulation_request` now bounds.
+const FOREIGN_FLAGS: &[&str] = &["--features", "--connect-timeout", "--max-time"];
 
 /// A flag-shaped token found in the changelog.
 ///

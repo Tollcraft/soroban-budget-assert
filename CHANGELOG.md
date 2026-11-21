@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **Dead `config.rs` removed; simulate `curl` is time-bounded (issue #825).** The never-called `cargo-budget-report/src/config.rs` (a second copy of runtime configuration) is deleted along with its `mod config;`. `run_simulation_request` now passes `--connect-timeout 30 --max-time 30` to curl, so a silent endpoint exits non-zero and is classified `RetryFailure::Transient` and retried per the existing policy; covered by `silent_endpoint_times_out_as_transient_failure` in `live.rs`.
+
 ### Added
 
 - **JSON envelope generation metadata (issue #1047).** `--json` documents now carry `generated_at` (an ISO-8601 UTC timestamp) and `generator_version` (the `cargo-budget-report` version, from `CARGO_PKG_VERSION`) beside `schema_version` and `snapshots`, so archived reports can be ordered and attributed to the release that produced them. The fields are additive under the documented schema-evolution policy, so `schema_version` stays `1` and existing consumers keep working; `cargo-budget-report/tests/json_envelope_metadata.rs` covers the writer and the read-back round trip.
