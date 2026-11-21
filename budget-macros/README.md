@@ -84,7 +84,7 @@ carries the lines with no `=` at all that the lookup is expected to skip (#952).
 
 ## Compile-fail fixtures
 
-All 72 compile-fail fixtures appear here, one row per fixture. The last column is a
+All 74 compile-fail fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's `.stderr` and asserted by
 `fixture_inventory.rs` to still appear there.
 
@@ -96,6 +96,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 | `tests/ui/budget_lt_duplicate_config.rs` | the same `config` key twice in one limit | `config` cannot be specified more than once |
 | `tests/ui/budget_lt_duplicate_env.rs` | the same `env` key twice in one limit | `env` cannot be specified more than once |
 | `tests/ui/budget_lt_duplicate_env_file.rs` | the same `env_file` path twice in one limit | `env_file` cannot be specified more than once |
+| `tests/ui/budget_lt_duplicate_metric.rs` | the same `cpu` metric twice in one limit, where the later value quietly won (#987) | `cpu` cannot be specified more than once |
 | `tests/ui/budget_lt_env_file_source.rs` | a top-level `env_file =` + `env =` pair where the metric nesting was expected | `env_file` names a limit source, not a property |
 | `tests/ui/budget_lt_env_source.rs` | a bare `env = …` where a `cpu` or `mem` property was expected | `env` names a limit source, not a property — use `cpu = env = …` or `mem = env = …` |
 | `tests/ui/budget_lt_mem_baseline_no_mem.rs` | `mem_baseline` with no `mem` limit, same rationale as the CPU side | `mem_baseline` requires a `mem` limit |
@@ -150,6 +151,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 | `tests/ui/scaling_bad_sizes_duplicate.rs` | `sizes` with a repeated value, giving a trivial ratio of one | `sizes` must be strictly ascending with distinct values, got 10 after 10 |
 | `tests/ui/scaling_bad_sizes_zero.rs` | a zero in `sizes`, making the expected ratio infinite | `sizes` must contain only strictly positive values, got 0 |
 | `tests/ui/scaling_bad_tolerance.rs` | a negative tolerance, failing every check for the wrong reason | `tolerance` must be a finite value greater than or equal to zero, got -0.5 |
+| `tests/ui/scaling_duplicate_model.rs` | `model` given twice in one scaling block, where the later value quietly won (#987) | `model` cannot be specified more than once |
 | `tests/ui/scaling_missing_model.rs` | scaling configuration with no `model` | unexpected end of input, missing required field `model` |
 | `tests/ui/scaling_missing_sizes.rs` | scaling configuration with no `sizes` | unexpected end of input, missing required field `sizes` |
 | `tests/ui/scaling_missing_tolerance.rs` | scaling configuration with no `tolerance` | unexpected end of input, missing required field `tolerance` |
@@ -165,7 +167,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 
 ## Pass fixtures
 
-All 28 pass fixtures appear here, one row per fixture. The last column is a
+All 29 pass fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's own source: the diagnostic text it
 asserts at runtime, or the attribute form it exercises.
 
@@ -197,6 +199,7 @@ asserts at runtime, or the attribute form it exercises.
 | `tests/ui/pass/pass_read_bytes_baseline.rs` | `baseline = …` on the read-bytes attribute, so the marginal cost is asserted | Read bytes cost (memory proxy) 900 exceeded limit 500 |
 | `tests/ui/pass/pass_result.rs` | a `Result` body keeps its tail value and its `?` operators | let value = doubled(21)?; |
 | `tests/ui/pass/pass_scaling.rs` | `#[budget_scaling]` on a function whose cost grows with its size parameter | #[budget_scaling(sizes = [100, 1000, 10000], model = linear, tolerance = 1.0)] |
+| `tests/ui/pass/pass_stacked_metrics.rs` | two budget attributes stacked on one function, each still catching its own breach (#994) | Memory bytes cost 90000 exceeded limit 8192 |
 | `tests/ui/pass/pass_unit.rs` | a plain `()` body: the assertion runs after the last statement | CPU instruction cost 1000 exceeded limit 1000 |
 | `tests/ui/pass/pass_write_bytes.rs` | the write-bytes attribute body shapes, reported through `memory_bytes_cost()` | #[budget_write_bytes_lt(4_096)] |
 
