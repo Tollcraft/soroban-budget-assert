@@ -144,7 +144,7 @@ fn crate_note_records_the_keep_decision() {
     for needle in [
         "internal groundwork",
         "not published to crates.io",
-        "[`BudgetAssert`] / [`BudgetBounds`]",
+        "[`BudgetAssert`] / [`impls::BudgetBounds`]",
         "onto [`CostMeasurer`]",
         "normal dependency",
     ] {

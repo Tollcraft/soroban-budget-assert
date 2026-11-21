@@ -23,7 +23,7 @@
 //! artifacts are expected to need. It becomes load-bearing — and this note must
 //! be revised — as soon as any of the following happens:
 //!
-//! 1. the macros emit assertions against [`BudgetAssert`] / [`BudgetBounds`];
+//! 1. the macros emit assertions against [`BudgetAssert`] / [`impls::BudgetBounds`];
 //! 2. the CLI moves a measurement or reporting path onto [`CostMeasurer`] /
 //!    [`ResourceReportable`];
 //! 3. any shipped crate takes this crate as a normal dependency.
