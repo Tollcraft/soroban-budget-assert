@@ -178,6 +178,22 @@ impl Baseline {
 
         let mut entries: BTreeMap<String, BaselineEntry> = BTreeMap::new();
         for (key, val) in root_table {
+            if key == "schema_version" {
+                match val {
+                    toml::Value::Integer(v) => {
+                        if *v != 1 {
+                            anyhow::bail!("unsupported schema_version {v}, expected 1");
+                        }
+                    }
+                    other => {
+                        anyhow::bail!(
+                            "schema_version must be an integer, got {}",
+                            value_kind(other)
+                        );
+                    }
+                }
+                continue;
+            }
             let (_pkg, _fn_) = match split_key(key) {
                 Some((p, f))
                     if !p.is_empty()
@@ -216,7 +232,8 @@ impl Baseline {
              # bytes, and write bytes from `simulateTransaction`. Compare against\n\
              # this file with `cargo budget-report --check-baseline`. Tolerance\n\
              # for regressions is configured in `budget.toml` (top-level plus\n\
-             # per-function overrides) and defaults to 10%.\n",
+             # per-function overrides) and defaults to 10%.\n\n\
+             schema_version = 1\n",
         );
 
         for (key, entry) in &self.entries {
@@ -253,6 +270,14 @@ impl Baseline {
 
 impl BaselineEntry {
     fn parse(table: &toml::value::Table) -> Result<Self> {
+        for key in table.keys() {
+            if !matches!(
+                key.as_str(),
+                "cpu_instructions" | "read_bytes" | "write_bytes"
+            ) {
+                anyhow::bail!("unknown metric key '{key}'");
+            }
+        }
         let get_unsigned = |key: &str| -> Result<u64> {
             let value = table
                 .get(key)

@@ -401,7 +401,14 @@ impl Derivation {
                         component.clone(),
                         metric_label.to_string(),
                     )) {
-                        Some(v) => total_tier_b = total_tier_b.saturating_add(*v),
+                        Some(v) => match total_tier_b.checked_add(*v) {
+                            Some(sum) => total_tier_b = sum,
+                            None => {
+                                return Err(Error::Message(format!(
+                                    "scenario {scenario_full_key} metric {metric_label} sum overflowed u64::MAX when adding component `{component}` with value {v} to current total {total_tier_b}"
+                                )));
+                            }
+                        },
                         None => missing.push(component.clone()),
                     }
                 }
