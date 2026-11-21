@@ -544,8 +544,9 @@ observed ratios, deviation, and all measurements.
 ### Applying a budget attribute to an `impl` block
 
 `#[budget_cpu_lt]`, `#[budget_mem_lt]`, `#[budget_write_bytes_lt]`,
-`#[budget_read_bytes_lt]` and `#[budget_lt]` may be placed on an `impl` block.
-The limit then applies to **every** `fn` in the block:
+`#[budget_read_bytes_lt]`, `#[budget_events_lt]`,
+`#[budget_ledger_entries_lt]` and `#[budget_lt]` may be placed on an `impl`
+block. The limit then applies to **every** `fn` in the block:
 
 ```rust
 struct Contract;

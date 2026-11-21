@@ -769,6 +769,18 @@ fn is_budget_attr(attr: &Attribute) -> bool {
         .unwrap_or(false)
 }
 
+/// The `` [fn `name`] `` suffix appended to a failure message for a method
+/// reached through a budget-annotated `impl` block.
+///
+/// Empty for a bare `fn`, which keeps every existing diagnostic byte-identical.
+fn fn_context(fn_label: &str) -> String {
+    if fn_label.is_empty() {
+        String::new()
+    } else {
+        format!(" [fn `{fn_label}`]")
+    }
+}
+
 /// Builds the `(plain, marginal)` assertion-failure format strings for one
 /// metric.
 ///
@@ -782,11 +794,7 @@ fn assert_messages(
     limit: &BudgetLimit,
     fn_label: &str,
 ) -> (String, String) {
-    let ctx = if fn_label.is_empty() {
-        String::new()
-    } else {
-        format!(" [fn `{fn_label}`]")
-    };
+    let ctx = fn_context(fn_label);
 
     let pct_str = match limit {
         BudgetLimit::Percentage { pct, .. } => format!(" ({pct}% of network limit)"),
@@ -951,12 +959,18 @@ fn generate_metric_assert(
 ///
 /// `ContractCostType` is referenced through its fully-qualified SDK path, so
 /// the call site needs no import for it.
+///
+/// `fn_label` is the method name when this expansion came from a
+/// budget-annotated `impl` block and empty for a bare `fn`, so a breach inside
+/// a block names its method.
 fn generate_ledger_assert(
     cost_ident: &proc_macro2::Ident,
     env_ident: &proc_macro2::Ident,
     limit_expr: &proc_macro2::TokenStream,
     baseline: Option<&Expr>,
+    fn_label: &str,
 ) -> proc_macro2::TokenStream {
+    let ctx = fn_context(fn_label);
     let read_entries = quote! {
         #env_ident.cost_estimate().budget().tracker(soroban_sdk::testutils::budget::ContractCostType::DiskReadEntries).iterations()
     };
@@ -971,12 +985,13 @@ fn generate_ledger_assert(
             let limit_u64: u64 = #limit_expr;
             assert!(
                 #cost_ident < limit_u64,
-                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {} \
+                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {}{} \
                  - local estimate, real network entry counts may differ",
                 __read_entries,
                 __write_entries,
                 #cost_ident,
-                limit_u64
+                limit_u64,
+                #ctx
             );
         },
         Some(baseline_expr) => quote! {
@@ -988,13 +1003,14 @@ fn generate_ledger_assert(
             let limit_u64: u64 = #limit_expr;
             assert!(
                 __budget_marginal < limit_u64,
-                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {} \
+                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {}{} \
                  (marginal: {} measured - {} baseline) \
                  - local estimate, real network entry counts may differ",
                 __read_entries,
                 __write_entries,
                 #cost_ident,
                 limit_u64,
+                #ctx,
                 __budget_marginal,
                 __budget_baseline
             );
@@ -1608,19 +1624,26 @@ pub fn budget_read_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream
 /// Supports the same limit forms as the other macros — literal, `env = "VAR"`,
 /// `env_file = "PATH", env = "KEY"`, `config = "KEY"`, and `pct = N, of = …`.
 ///
-/// Must be placed on a test function that has a local `env` variable (a
-/// `soroban_sdk::Env`).
+/// Must be placed on a test function (or a budget-annotated `impl` block) that
+/// has a local `env` variable (a `soroban_sdk::Env`).
 #[proc_macro_attribute]
 pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let spec = match syn::parse::<StandaloneSpec>(attr) {
         Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
-    let mut input_fn = match syn::parse::<ItemFn>(item) {
-        Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
-    };
+    expand_targets(item, |input_fn, fn_label| {
+        generate_events_assert(spec.clone(), input_fn, fn_label)
+    })
+}
 
+/// Shared expansion for `#[budget_events_lt]` on one `fn` (a bare test function
+/// or a method lifted out of a budget-annotated `impl` block).
+fn generate_events_assert(
+    spec: StandaloneSpec,
+    mut input_fn: ItemFn,
+    fn_label: &str,
+) -> TokenStream {
     if let Err(error) = validate_env_vars(&spec.limit) {
         return TokenStream::from(error.to_compile_error());
     }
@@ -1633,7 +1656,7 @@ pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
         "Event count",
         "local estimate, real network event counts may differ",
         &spec.limit,
-        "",
+        fn_label,
     );
     let assert_tokens = generate_metric_assert(
         &cost_ident,
@@ -1680,19 +1703,26 @@ pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Supports the same limit forms as the other macros.
 ///
-/// Must be placed on a test function that has a local `env` variable (a
-/// `soroban_sdk::Env`).
+/// Must be placed on a test function (or a budget-annotated `impl` block) that
+/// has a local `env` variable (a `soroban_sdk::Env`).
 #[proc_macro_attribute]
 pub fn budget_ledger_entries_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let spec = match syn::parse::<StandaloneSpec>(attr) {
         Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
-    let mut input_fn = match syn::parse::<ItemFn>(item) {
-        Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
-    };
+    expand_targets(item, |input_fn, fn_label| {
+        generate_ledger_entries_assert(spec.clone(), input_fn, fn_label)
+    })
+}
 
+/// Shared expansion for `#[budget_ledger_entries_lt]` on one `fn` (a bare test
+/// function or a method lifted out of a budget-annotated `impl` block).
+fn generate_ledger_entries_assert(
+    spec: StandaloneSpec,
+    mut input_fn: ItemFn,
+    fn_label: &str,
+) -> TokenStream {
     if let Err(error) = validate_env_vars(&spec.limit) {
         return TokenStream::from(error.to_compile_error());
     }
@@ -1701,8 +1731,13 @@ pub fn budget_ledger_entries_lt(attr: TokenStream, item: TokenStream) -> TokenSt
 
     let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
     let cost_ident = proc_macro2::Ident::new("ledger_entries", proc_macro2::Span::call_site());
-    let assert_tokens =
-        generate_ledger_assert(&cost_ident, &env_ident, &limit_expr, spec.baseline.as_ref());
+    let assert_tokens = generate_ledger_assert(
+        &cost_ident,
+        &env_ident,
+        &limit_expr,
+        spec.baseline.as_ref(),
+        fn_label,
+    );
 
     let prelude = generate_prelude();
     let assertion = quote! {
