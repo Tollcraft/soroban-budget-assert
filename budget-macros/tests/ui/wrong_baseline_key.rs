@@ -1,6 +1,6 @@
-//! `budget_cpu_lt` takes an integer literal with exactly one optional
-//! trailing key: `, baseline = <expr>`. Any other key after the comma — here
-//! the plural typo `baselines` — is rejected while the standalone spec is
+//! `budget_cpu_lt` takes an integer literal followed by the optional
+//! `baseline` and `env_ident` keys. Any other key after the comma — here the
+//! plural typo `baselines` — is rejected while the standalone spec is
 //! parsed, and the annotated function is replaced by the emitted
 //! `compile_error!` before it is ever type-checked, so its body never runs.
 //!
