@@ -92,7 +92,11 @@ const CPU_CONFIG: &[&str] = &["pass_config_limit.rs"];
 const CPU_PCT: &[&str] = &["pass_percentage_limit.rs"];
 const EVENTS_ENV: &[&str] = &["pass_events.rs", "pass_events_env_file.rs"];
 const EVENTS_PCT: &[&str] = &["pass_events.rs"];
-const LT_LIMITED: &[&str] = &["pass_budget_lt.rs", "pass_nested_pct.rs"];
+const LT_LIMITED: &[&str] = &[
+    "pass_budget_lt.rs",
+    "pass_budget_lt_mixed_sources.rs",
+    "pass_nested_pct.rs",
+];
 const LT_CONFIG: &[&str] = &["pass_budget_lt.rs"];
 
 const MATRIX: [Cell; 32] = {
