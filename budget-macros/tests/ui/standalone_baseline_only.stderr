@@ -1,0 +1,5 @@
+error: expected `env`, `env_file`, `config`, or `pct`, got `baseline`
+  --> tests/ui/standalone_baseline_only.rs:15:17
+   |
+15 | #[budget_cpu_lt(baseline = 5)]
+   |                 ^^^^^^^^

@@ -91,7 +91,7 @@ which only holds if the baseline comes off before the file's limit is compared
 
 ## Compile-fail fixtures
 
-All 74 compile-fail fixtures appear here, one row per fixture. The last column is a
+All 75 compile-fail fixtures appear here, one row per fixture. The last column is a
 substring taken verbatim from the fixture's `.stderr` and asserted by
 `fixture_inventory.rs` to still appear there.
 
@@ -167,6 +167,7 @@ substring taken verbatim from the fixture's `.stderr` and asserted by
 | `tests/ui/scaling_too_few_sizes.rs` | `sizes` below the two-element minimum for ratio comparison | `sizes` must contain at least two elements for ratio comparison |
 | `tests/ui/scaling_unknown_model.rs` | a growth model that is neither `linear` nor `quadratic` | unknown growth model `exponential`, expected `linear` or `quadratic` |
 | `tests/ui/scaling_unknown_property.rs` | a scaling key outside `sizes`, `model`, `tolerance` | unknown scaling property `steps`, expected `sizes`, `model`, or `tolerance` |
+| `tests/ui/standalone_baseline_only.rs` | a standalone attribute with a baseline but no limit | expected `env`, `env_file`, `config`, or `pct`, got `baseline` |
 | `tests/ui/standalone_missing_comma.rs` | a standalone limit and its `baseline` run together, which is not valid syntax | expected `,` |
 | `tests/ui/trailing_tokens_after_baseline.rs` | a key other than `baseline` / `env_ident` following a standalone `baseline = …` | expected `baseline` or `env_ident`, got `extra` |
 | `tests/ui/unreachable_still_reported.rs` | genuine dead code after a `return` stays reported | unreachable statement |
