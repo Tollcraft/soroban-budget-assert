@@ -1,0 +1,14 @@
+error: env_file "" was not found at macro-expansion time (looked relative to CARGO_MANIFEST_DIR and the build's working directory). Create the file, fix the path, or pass it as a `const` if it is generated during the build.
+  --> tests/ui/env_file_non_string.rs:23:28
+   |
+23 | #[budget_cpu_lt(env_file = "", env = "SOME_LIMIT")]
+   |                            ^^
+
+error[E0308]: mismatched types
+  --> tests/ui/env_file_non_string.rs:15:28
+   |
+15 | #[budget_cpu_lt(env_file = 42, env = "SOME_LIMIT")]
+   | ---------------------------^^----------------------
+   | |                          |
+   | |                          expected `&str`, found integer
+   | expected due to this

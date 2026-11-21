@@ -211,6 +211,23 @@ mod tests {
     }
 
     #[test]
+    fn classify_whitespace_only_is_unknown() {
+        // A child process that exits non-zero without emitting stderr leaves
+        // whitespace behind; it must not be mistaken for a known class.
+        for text in [" ", " \n\t", "\n\n\t\r\n", "   \t   "] {
+            assert_eq!(classify(text), DeployFailureClass::Unknown, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_guidance_contains_account_and_network() {
+        let g = DeployFailureClass::Unknown.guidance("alice", "testnet");
+        assert!(!g.is_empty(), "guidance must not be blank");
+        assert!(g.contains("alice"), "names the source account: {g}");
+        assert!(g.contains("testnet"), "names the network: {g}");
+    }
+
+    #[test]
     fn rate_limit_guidance_says_how_long_to_wait() {
         let g = DeployFailureClass::RateLimited.guidance("alice", "testnet");
         assert!(

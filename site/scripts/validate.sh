@@ -5,6 +5,7 @@
 #   1. HTML files parse without errors
 #   2. JavaScript files have valid syntax
 #   3. Internal links and asset references resolve to existing files
+#   4. Link fragments resolve to an id/name in the destination document
 #
 # Exit code is non-zero if any check fails.
 
@@ -168,6 +169,18 @@ for f in "$SITE_DIR"/*.css "$SITE_DIR"/assets/*.css; do
     ERRORS=$((ERRORS + 1))
   fi
 done
+
+# ── 4. Anchor fragment resolution ──────────────────────────────────────
+# Step 3 stops each reference at `#`, so `#section` links were only ever
+# checked for file existence. This resolves the fragment itself.
+echo ""
+echo "==> Checking link anchors..."
+
+if bash "$SCRIPT_DIR/validate-anchors.sh" "$SITE_DIR"; then
+  :
+else
+  ERRORS=$((ERRORS + 1))
+fi
 
 # ── Summary ─────────────────────────────────────────────────────────────
 echo ""

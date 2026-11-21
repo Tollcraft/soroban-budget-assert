@@ -67,8 +67,9 @@ struct BudgetSpec {
     env_ident: Option<Ident>,
 }
 
-/// A limit plus an optional baseline, for the single-metric attributes
-/// (`budget_cpu_lt`, `budget_mem_lt`, `budget_write_bytes_lt`, `budget_read_bytes_lt`).
+/// A limit plus optional `baseline` and `env_ident` keys, for the single-metric
+/// attributes (`budget_cpu_lt`, `budget_mem_lt`, `budget_write_bytes_lt`,
+/// `budget_read_bytes_lt`, `budget_events_lt`, `budget_ledger_entries_lt`).
 ///
 /// `budget_lt` takes its baselines as the separate `cpu_baseline` /
 /// `mem_baseline` keys instead, because it carries two metrics at once.
@@ -76,57 +77,70 @@ struct BudgetSpec {
 struct StandaloneSpec {
     limit: BudgetLimit,
     baseline: Option<Expr>,
+    /// The local binding to read costs from, defaulting to `env`.
+    env_ident: Option<Ident>,
+}
+
+impl StandaloneSpec {
+    /// The ident the emitters read costs through: the explicit `env_ident`, or
+    /// `env` when the key is absent.
+    fn env_ident(&self) -> Ident {
+        self.env_ident
+            .clone()
+            .unwrap_or_else(|| Ident::new("env", proc_macro2::Span::call_site()))
+    }
 }
 
 impl Parse for StandaloneSpec {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let limit: BudgetLimit = input.parse()?;
-
-        if input.is_empty() {
-            return Ok(StandaloneSpec {
-                limit,
-                baseline: None,
-            });
-        }
-
-        input.parse::<Token![,]>()?;
-
-        // If nothing after the comma, treat as limit-only (no baseline).
-        if input.is_empty() {
-            return Ok(StandaloneSpec {
-                limit,
-                baseline: None,
-            });
-        }
-
-        let ident: Ident = input.parse()?;
-        if ident != "baseline" {
-            return Err(syn::Error::new(
-                ident.span(),
-                format!("expected `baseline`, got `{ident}`"),
-            ));
-        }
-        input.parse::<Token![=]>()?;
-        let baseline: Expr = input.parse()?;
-
-        // Allow optional trailing comma after `baseline = …`.
-        // Consume a comma if present; ignore if absent.
-        let _ = input.parse::<Token![,]>();
-
-        if !input.is_empty() {
-            return Err(syn::Error::new(
-                input.span(),
-                format!(
-                    "unexpected token(s) after `baseline = …` — expected end of attribute, got `{}`",
-                    input
-                ),
-            ));
-        }
-
-        Ok(StandaloneSpec {
+        let mut spec = StandaloneSpec {
             limit,
-            baseline: Some(baseline),
-        })
+            baseline: None,
+            env_ident: None,
+        };
+
+        // Any number of trailing keys, in either order, each optionally
+        // followed by a trailing comma.
+        while !input.is_empty() {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+
+            let ident: Ident = input.parse()?;
+            let key = ident.to_string();
+            match key.as_str() {
+                "baseline" => {
+                    if spec.baseline.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "`baseline` is supplied more than once",
+                        ));
+                    }
+                    input.parse::<Token![=]>()?;
+                    spec.baseline = Some(input.parse()?);
+                }
+                "env_ident" => {
+                    if spec.env_ident.is_some() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "`env_ident` is supplied more than once",
+                        ));
+                    }
+                    input.parse::<Token![=]>()?;
+                    spec.env_ident = Some(input.parse()?);
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("expected `baseline` or `env_ident`, got `{other}`"),
+                    ));
+                }
+            }
+        }
+
+        Ok(spec)
     }
 }
 
@@ -191,6 +205,25 @@ fn peeks_limit_source_key(input: ParseStream) -> bool {
         .parse::<Ident>()
         .map(|i| is_limit_source_key(&i.to_string()))
         .unwrap_or(false)
+}
+
+/// Rejects a property the attribute already carries, at the second key's span
+/// (#987).
+///
+/// Every guarded field is a single `Option`, so without this the last value
+/// written quietly replaced the first and `cpu = 1, cpu = 2` compiled as though
+/// it had said `cpu = 2`. `BudgetLimit` already rejects its own repeated source
+/// keys (`env_file`, `pct`, `env`, `config`); this covers the properties that
+/// sit outside a limit, which is where a repeat is a mistake rather than a
+/// reading of two different sources.
+fn reject_repeated<T>(held: &Option<T>, key: &Ident) -> syn::Result<()> {
+    if held.is_some() {
+        return Err(syn::Error::new(
+            key.span(),
+            format!("`{key}` cannot be specified more than once"),
+        ));
+    }
+    Ok(())
 }
 
 /// Parses the attribute arguments for `budget_cpu_lt` / `budget_mem_lt`
@@ -520,15 +553,20 @@ impl Parse for BudgetSpec {
             let ident_str = ident.to_string();
 
             if ident_str == "env_ident" {
+                reject_repeated(&spec.env_ident, &ident)?;
                 spec.env_ident = Some(input.parse()?);
             } else if ident_str == "cpu" {
+                reject_repeated(&spec.cpu, &ident)?;
                 spec.cpu = Some(input.parse()?);
             } else if ident_str == "mem" {
+                reject_repeated(&spec.mem, &ident)?;
                 spec.mem = Some(input.parse()?);
             } else if ident_str == "cpu_baseline" {
+                reject_repeated(&spec.cpu_baseline, &ident)?;
                 cpu_baseline_span = Some(ident.span());
                 spec.cpu_baseline = Some(input.parse()?);
             } else if ident_str == "mem_baseline" {
+                reject_repeated(&spec.mem_baseline, &ident)?;
                 mem_baseline_span = Some(ident.span());
                 spec.mem_baseline = Some(input.parse()?);
             } else if is_limit_source_key(&ident_str) {
@@ -769,6 +807,18 @@ fn is_budget_attr(attr: &Attribute) -> bool {
         .unwrap_or(false)
 }
 
+/// The `` [fn `name`] `` suffix appended to a failure message for a method
+/// reached through a budget-annotated `impl` block.
+///
+/// Empty for a bare `fn`, which keeps every existing diagnostic byte-identical.
+fn fn_context(fn_label: &str) -> String {
+    if fn_label.is_empty() {
+        String::new()
+    } else {
+        format!(" [fn `{fn_label}`]")
+    }
+}
+
 /// Builds the `(plain, marginal)` assertion-failure format strings for one
 /// metric.
 ///
@@ -782,11 +832,7 @@ fn assert_messages(
     limit: &BudgetLimit,
     fn_label: &str,
 ) -> (String, String) {
-    let ctx = if fn_label.is_empty() {
-        String::new()
-    } else {
-        format!(" [fn `{fn_label}`]")
-    };
+    let ctx = fn_context(fn_label);
 
     let pct_str = match limit {
         BudgetLimit::Percentage { pct, .. } => format!(" ({pct}% of network limit)"),
@@ -951,12 +997,18 @@ fn generate_metric_assert(
 ///
 /// `ContractCostType` is referenced through its fully-qualified SDK path, so
 /// the call site needs no import for it.
+///
+/// `fn_label` is the method name when this expansion came from a
+/// budget-annotated `impl` block and empty for a bare `fn`, so a breach inside
+/// a block names its method.
 fn generate_ledger_assert(
     cost_ident: &proc_macro2::Ident,
     env_ident: &proc_macro2::Ident,
     limit_expr: &proc_macro2::TokenStream,
     baseline: Option<&Expr>,
+    fn_label: &str,
 ) -> proc_macro2::TokenStream {
+    let ctx = fn_context(fn_label);
     let read_entries = quote! {
         #env_ident.cost_estimate().budget().tracker(soroban_sdk::testutils::budget::ContractCostType::DiskReadEntries).iterations()
     };
@@ -971,12 +1023,13 @@ fn generate_ledger_assert(
             let limit_u64: u64 = #limit_expr;
             assert!(
                 #cost_ident < limit_u64,
-                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {} \
+                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {}{} \
                  - local estimate, real network entry counts may differ",
                 __read_entries,
                 __write_entries,
                 #cost_ident,
-                limit_u64
+                limit_u64,
+                #ctx
             );
         },
         Some(baseline_expr) => quote! {
@@ -988,13 +1041,14 @@ fn generate_ledger_assert(
             let limit_u64: u64 = #limit_expr;
             assert!(
                 __budget_marginal < limit_u64,
-                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {} \
+                "Ledger entry count (read: {}, write: {}, total: {}) exceeded limit {}{} \
                  (marginal: {} measured - {} baseline) \
                  - local estimate, real network entry counts may differ",
                 __read_entries,
                 __write_entries,
                 #cost_ident,
                 limit_u64,
+                #ctx,
                 __budget_marginal,
                 __budget_baseline
             );
@@ -1435,7 +1489,7 @@ pub fn budget_cpu_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
                 mem: None,
                 cpu_baseline: spec.baseline.clone(),
                 mem_baseline: None,
-                env_ident: None,
+                env_ident: spec.env_ident.clone(),
             },
             input_fn,
             fn_label,
@@ -1460,7 +1514,7 @@ fn generate_bytes_proxy_assert(
 
     let limit_expr = generate_limit_expr(&spec.limit, metric_label);
 
-    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let env_ident = spec.env_ident();
     let cost_ident = proc_macro2::Ident::new("bytes_proxy_cost", proc_macro2::Span::call_site());
     let (plain, marginal) = assert_messages(
         metric_phrase,
@@ -1608,32 +1662,39 @@ pub fn budget_read_bytes_lt(attr: TokenStream, item: TokenStream) -> TokenStream
 /// Supports the same limit forms as the other macros — literal, `env = "VAR"`,
 /// `env_file = "PATH", env = "KEY"`, `config = "KEY"`, and `pct = N, of = …`.
 ///
-/// Must be placed on a test function that has a local `env` variable (a
-/// `soroban_sdk::Env`).
+/// Must be placed on a test function (or a budget-annotated `impl` block) that
+/// has a local `env` variable (a `soroban_sdk::Env`).
 #[proc_macro_attribute]
 pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let spec = match syn::parse::<StandaloneSpec>(attr) {
         Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
-    let mut input_fn = match syn::parse::<ItemFn>(item) {
-        Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
-    };
+    expand_targets(item, |input_fn, fn_label| {
+        generate_events_assert(spec.clone(), input_fn, fn_label)
+    })
+}
 
+/// Shared expansion for `#[budget_events_lt]` on one `fn` (a bare test function
+/// or a method lifted out of a budget-annotated `impl` block).
+fn generate_events_assert(
+    spec: StandaloneSpec,
+    mut input_fn: ItemFn,
+    fn_label: &str,
+) -> TokenStream {
     if let Err(error) = validate_env_vars(&spec.limit) {
         return TokenStream::from(error.to_compile_error());
     }
 
     let limit_expr = generate_limit_expr(&spec.limit, "budget_events_lt");
 
-    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let env_ident = spec.env_ident();
     let cost_ident = proc_macro2::Ident::new("event_count", proc_macro2::Span::call_site());
     let (plain, marginal) = assert_messages(
         "Event count",
         "local estimate, real network event counts may differ",
         &spec.limit,
-        "",
+        fn_label,
     );
     let assert_tokens = generate_metric_assert(
         &cost_ident,
@@ -1680,29 +1741,41 @@ pub fn budget_events_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Supports the same limit forms as the other macros.
 ///
-/// Must be placed on a test function that has a local `env` variable (a
-/// `soroban_sdk::Env`).
+/// Must be placed on a test function (or a budget-annotated `impl` block) that
+/// has a local `env` variable (a `soroban_sdk::Env`).
 #[proc_macro_attribute]
 pub fn budget_ledger_entries_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
     let spec = match syn::parse::<StandaloneSpec>(attr) {
         Ok(s) => s,
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
-    let mut input_fn = match syn::parse::<ItemFn>(item) {
-        Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
-    };
+    expand_targets(item, |input_fn, fn_label| {
+        generate_ledger_entries_assert(spec.clone(), input_fn, fn_label)
+    })
+}
 
+/// Shared expansion for `#[budget_ledger_entries_lt]` on one `fn` (a bare test
+/// function or a method lifted out of a budget-annotated `impl` block).
+fn generate_ledger_entries_assert(
+    spec: StandaloneSpec,
+    mut input_fn: ItemFn,
+    fn_label: &str,
+) -> TokenStream {
     if let Err(error) = validate_env_vars(&spec.limit) {
         return TokenStream::from(error.to_compile_error());
     }
 
     let limit_expr = generate_limit_expr(&spec.limit, "budget_ledger_entries_lt");
 
-    let env_ident = proc_macro2::Ident::new("env", proc_macro2::Span::call_site());
+    let env_ident = spec.env_ident();
     let cost_ident = proc_macro2::Ident::new("ledger_entries", proc_macro2::Span::call_site());
-    let assert_tokens =
-        generate_ledger_assert(&cost_ident, &env_ident, &limit_expr, spec.baseline.as_ref());
+    let assert_tokens = generate_ledger_assert(
+        &cost_ident,
+        &env_ident,
+        &limit_expr,
+        spec.baseline.as_ref(),
+        fn_label,
+    );
 
     let prelude = generate_prelude();
     let assertion = quote! {
@@ -1799,7 +1872,7 @@ pub fn budget_mem_lt(attr: TokenStream, item: TokenStream) -> TokenStream {
                 mem: Some(spec.limit.clone()),
                 cpu_baseline: None,
                 mem_baseline: spec.baseline.clone(),
-                env_ident: None,
+                env_ident: spec.env_ident.clone(),
             },
             input_fn,
             fn_label,
@@ -1890,6 +1963,7 @@ impl Parse for ScalingConfig {
 
             match ident.to_string().as_str() {
                 "sizes" => {
+                    reject_repeated(&sizes, &ident)?;
                     // Span of the `[` token, so length errors point at the
                     // sizes list instead of the whole attribute.
                     let bracket_span = input.span();
@@ -1908,9 +1982,11 @@ impl Parse for ScalingConfig {
                     sizes = Some((values, bracket_span));
                 }
                 "model" => {
+                    reject_repeated(&model, &ident)?;
                     model = Some(input.parse()?);
                 }
                 "tolerance" => {
+                    reject_repeated(&tolerance, &ident)?;
                     // Accept an optional leading `-` so a negative tolerance
                     // reaches the range check below (with the literal's span)
                     // instead of failing as "expected floating point literal".
@@ -2484,7 +2560,7 @@ mod tests {
             .expect("the plural `baselines` must be rejected")
             .to_string();
         assert!(
-            err.contains("expected `baseline`, got `baselines`"),
+            err.contains("expected `baseline` or `env_ident`, got `baselines`"),
             "diagnostic {err:?} should name the offending key"
         );
     }
@@ -2535,8 +2611,48 @@ mod tests {
             .expect("tokens trailing a baseline must be rejected")
             .to_string();
         assert!(
-            err.contains("unexpected token(s) after `baseline = …`"),
-            "diagnostic {err:?} should flag the trailing tokens"
+            err.contains("expected `baseline` or `env_ident`, got `bogus`"),
+            "diagnostic {err:?} should name the unrecognised key"
+        );
+    }
+
+    // ── issue #989: `env_ident` on the standalone attributes ───────────────
+
+    #[test]
+    fn a_standalone_spec_without_env_ident_defaults_to_env() {
+        let spec = parse_str::<StandaloneSpec>("1000").expect("a bare limit parses");
+        assert!(spec.env_ident.is_none());
+        assert_eq!(spec.env_ident().to_string(), "env");
+    }
+
+    #[test]
+    fn a_standalone_spec_accepts_an_env_ident() {
+        let spec = parse_str::<StandaloneSpec>("1000, env_ident = e")
+            .expect("`env_ident` is a supported trailing key");
+        assert_eq!(spec.env_ident.expect("stored").to_string(), "e");
+    }
+
+    #[test]
+    fn a_standalone_spec_accepts_the_two_keys_in_either_order() {
+        let forward = parse_str::<StandaloneSpec>("1000, baseline = 2, env_ident = e")
+            .expect("`baseline` then `env_ident` parses");
+        let reversed = parse_str::<StandaloneSpec>("1000, env_ident = e, baseline = 2")
+            .expect("`env_ident` then `baseline` parses");
+        for spec in [forward, reversed] {
+            assert_eq!(spec.env_ident.expect("stored").to_string(), "e");
+            assert!(spec.baseline.is_some());
+        }
+    }
+
+    #[test]
+    fn a_standalone_spec_rejects_a_repeated_env_ident() {
+        let err = parse_str::<StandaloneSpec>("1000, env_ident = a, env_ident = b")
+            .err()
+            .expect("a key must not be supplied twice")
+            .to_string();
+        assert!(
+            err.contains("`env_ident` is supplied more than once"),
+            "diagnostic {err:?} should flag the duplicate"
         );
     }
 

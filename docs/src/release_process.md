@@ -66,6 +66,7 @@ Before creating a release tag, complete the following steps on `main`:
    bash scripts/check-module-reachability.sh
    bash scripts/check-cli-docs.sh
    bash .github/scripts/check-compatibility-docs.sh
+   bash scripts/check-docs-anchors.sh
    cargo install cargo-machete --version 0.6.2 --locked
    cargo machete
    ```

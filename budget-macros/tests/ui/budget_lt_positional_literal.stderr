@@ -1,0 +1,5 @@
+error: expected identifier
+  --> tests/ui/budget_lt_positional_literal.rs:10:13
+   |
+10 | #[budget_lt(1_000_000)]
+   |             ^^^^^^^^^

@@ -51,8 +51,13 @@ fn compatibility_matrix_has_one_canonical_source() {
 
     let contributing =
         fs::read_to_string(docs_dir.join("contributing.md")).expect("read contributing guide");
+    // The exact fragment depends on the heading's emoji prefix, so only the
+    // destination and section are pinned here; `scripts/check-docs-anchors.sh`
+    // is what guarantees the fragment itself resolves.
     assert!(
-        contributing.contains("reference.md#supported-versions-compatibility"),
+        contributing
+            .lines()
+            .any(|line| line.contains("reference.md#") && line.contains("supported-versions")),
         "contributing guide must link to the canonical compatibility reference"
     );
 }
