@@ -266,7 +266,7 @@ pub(crate) fn validate_budget_toml(
                     ));
                 }
             }
-        }
+                        }
 
         // Function existence: every key under `[functions.*]` must be an
         // exported function of the workspace. Skipped when we have no exported
