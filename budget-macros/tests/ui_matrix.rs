@@ -100,6 +100,7 @@ const LT_LIMITED: &[&str] = &[
 const LT_CONFIG: &[&str] = &["pass_budget_lt.rs"];
 const READ_BYTES_ENV: &[&str] = &["pass_read_bytes_env_file_baseline.rs"];
 const READ_BYTES_ENV_FILE: &[&str] = &["pass_read_bytes_env_file_baseline.rs"];
+const MEM_LIMITED: &[&str] = &["pass_mem_percentage.rs"];
 
 const MATRIX: [Cell; 32] = {
     // `budget_scaling` takes `sizes`/`model`/`tolerance` and no limit source at
@@ -110,7 +111,7 @@ const MATRIX: [Cell; 32] = {
         [READ_BYTES_ENV, READ_BYTES_ENV_FILE, NONE, NONE],
         [EVENTS_ENV, EVENTS_ENV, NONE, EVENTS_PCT],
         [NONE, NONE, NONE, NONE],
-        [NONE, NONE, NONE, NONE],
+        [MEM_LIMITED, MEM_LIMITED, NONE, MEM_LIMITED],
         [LT_LIMITED, LT_LIMITED, LT_CONFIG, LT_LIMITED],
         [NONE, NONE, NONE, NONE],
     ];
@@ -159,7 +160,11 @@ const BASELINE_CELLS: [(&str, &[&str]); 8] = [
     ),
     (
         "budget_events_lt",
-        &["pass_events.rs", "pass_events_ledger_impl_block.rs"],
+        &[
+            "pass_events.rs",
+            "pass_events_baseline.rs",
+            "pass_events_ledger_impl_block.rs",
+        ],
     ),
     (
         "budget_ledger_entries_lt",
@@ -169,7 +174,10 @@ const BASELINE_CELLS: [(&str, &[&str]); 8] = [
             "pass_events_ledger_impl_block.rs",
         ],
     ),
-    ("budget_mem_lt", &["pass_baseline.rs"]),
+    (
+        "budget_mem_lt",
+        &["pass_baseline.rs", "pass_mem_percentage.rs"],
+    ),
     ("budget_lt", &[]),
     ("budget_scaling", &[]),
 ];
