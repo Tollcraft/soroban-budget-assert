@@ -231,6 +231,88 @@ pub trait MemoryCost {
 /// let exceeded = SwapMetrics { cpu: 3_000_000, mem: 100_000 };
 /// assert!(!exceeded.is_within_bounds());
 /// ```
+/// Describes which [`BudgetBounds`] limit(s) a measurement breached.
+///
+/// Returned by [`BudgetBounds::check_bounds`], this distinguishes a CPU-only
+/// breach, a memory-only breach, and a breach of both limits, carrying the
+/// measured value and the configured limit for each failing metric.
+///
+/// # Example
+///
+/// ```rust
+/// use soroban_budget_assert_core::impls::{CpuCost, MemoryCost, BudgetBounds};
+///
+/// struct Op { cpu: u64, mem: u64 }
+///
+/// impl CpuCost for Op {
+///     fn cpu_instruction_cost(&self) -> u64 { self.cpu }
+/// }
+/// impl MemoryCost for Op {
+///     fn memory_bytes_cost(&self) -> u64 { self.mem }
+/// }
+/// impl BudgetBounds for Op {
+///     fn label(&self) -> &str { "op" }
+///     fn cpu_limit(&self) -> Option<u64> { Some(100) }
+///     fn memory_limit(&self) -> Option<u64> { Some(50) }
+/// }
+///
+/// let breach = Op { cpu: 150, mem: 10 }.check_bounds().unwrap_err();
+/// assert_eq!(breach.to_string(), "CPU Instructions exceeded limit: value=150, limit=100");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundsViolation {
+    /// The CPU instruction cost met or exceeded its limit.
+    CpuExceeded {
+        /// Measured CPU instruction cost.
+        actual: u64,
+        /// Configured CPU instruction limit.
+        limit: u64,
+    },
+    /// The memory byte cost met or exceeded its limit.
+    MemoryExceeded {
+        /// Measured memory byte cost.
+        actual: u64,
+        /// Configured memory byte limit.
+        limit: u64,
+    },
+    /// Both the CPU instruction cost and the memory byte cost met or exceeded
+    /// their limits.
+    BothExceeded {
+        /// Measured CPU instruction cost.
+        cpu_actual: u64,
+        /// Configured CPU instruction limit.
+        cpu_limit: u64,
+        /// Measured memory byte cost.
+        mem_actual: u64,
+        /// Configured memory byte limit.
+        mem_limit: u64,
+    },
+}
+
+impl std::fmt::Display for BoundsViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BoundsViolation::CpuExceeded { actual, limit } => {
+                write!(f, "CPU Instructions exceeded limit: value={actual}, limit={limit}")
+            }
+            BoundsViolation::MemoryExceeded { actual, limit } => {
+                write!(f, "Memory Bytes exceeded limit: value={actual}, limit={limit}")
+            }
+            BoundsViolation::BothExceeded {
+                cpu_actual,
+                cpu_limit,
+                mem_actual,
+                mem_limit,
+            } => write!(
+                f,
+                "CPU Instructions and Memory Bytes exceeded limits: CPU value={cpu_actual}, limit={cpu_limit}; Memory value={mem_actual}, limit={mem_limit}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BoundsViolation {}
+
 pub trait BudgetBounds: CpuCost + MemoryCost {
     /// A human-readable label identifying this budget measurement.
     ///
@@ -301,15 +383,64 @@ pub trait BudgetBounds: CpuCost + MemoryCost {
     /// assert!(NoLimits.is_within_bounds());
     /// ```
     fn is_within_bounds(&self) -> bool {
-        let cpu_ok = match self.cpu_limit() {
-            Some(limit) => self.cpu_instruction_cost() < limit,
-            None => true,
-        };
-        let mem_ok = match self.memory_limit() {
-            Some(limit) => self.memory_bytes_cost() < limit,
-            None => true,
-        };
-        cpu_ok && mem_ok
+        self.check_bounds().is_ok()
+    }
+
+    /// Checks both measured costs against their configured bounds and reports
+    /// which metric(s) breached.
+    ///
+    /// For each metric, a limit of `None` means the metric is not enforced. A
+    /// metric breaches when its measured cost is greater than or equal to its
+    /// configured limit, matching [`is_within_bounds`](Self::is_within_bounds).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` — both costs are within bounds (or unenforced).
+    /// * `Err(BoundsViolation)` — naming the breached metric(s), with the
+    ///   measured value and limit for each.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use soroban_budget_assert_core::impls::{CpuCost, MemoryCost, BudgetBounds, BoundsViolation};
+    ///
+    /// struct Op { cpu: u64, mem: u64 }
+    ///
+    /// impl CpuCost for Op {
+    ///     fn cpu_instruction_cost(&self) -> u64 { self.cpu }
+    /// }
+    /// impl MemoryCost for Op {
+    ///     fn memory_bytes_cost(&self) -> u64 { self.mem }
+    /// }
+    /// impl BudgetBounds for Op {
+    ///     fn label(&self) -> &str { "op" }
+    ///     fn cpu_limit(&self) -> Option<u64> { Some(100) }
+    ///     fn memory_limit(&self) -> Option<u64> { Some(50) }
+    /// }
+    ///
+    /// assert!(Op { cpu: 50, mem: 25 }.check_bounds().is_ok());
+    /// assert_eq!(
+    ///     Op { cpu: 50, mem: 75 }.check_bounds(),
+    ///     Err(BoundsViolation::MemoryExceeded { actual: 75, limit: 50 })
+    /// );
+    /// ```
+    fn check_bounds(&self) -> Result<(), BoundsViolation> {
+        let cpu = self.cpu_instruction_cost();
+        let mem = self.memory_bytes_cost();
+        let cpu_breach = self.cpu_limit().filter(|&limit| cpu >= limit);
+        let mem_breach = self.memory_limit().filter(|&limit| mem >= limit);
+
+        match (cpu_breach, mem_breach) {
+            (None, None) => Ok(()),
+            (Some(limit), None) => Err(BoundsViolation::CpuExceeded { actual: cpu, limit }),
+            (None, Some(limit)) => Err(BoundsViolation::MemoryExceeded { actual: mem, limit }),
+            (Some(cpu_limit), Some(mem_limit)) => Err(BoundsViolation::BothExceeded {
+                cpu_actual: cpu,
+                cpu_limit,
+                mem_actual: mem,
+                mem_limit,
+            }),
+        }
     }
 }
 
@@ -577,6 +708,177 @@ mod tests {
             mem: u64::MAX
         }
         .is_within_bounds());
+    }
+
+    struct Bounds {
+        cpu: u64,
+        mem: u64,
+        cpu_limit: Option<u64>,
+        mem_limit: Option<u64>,
+    }
+
+    impl CpuCost for Bounds {
+        fn cpu_instruction_cost(&self) -> u64 {
+            self.cpu
+        }
+    }
+
+    impl MemoryCost for Bounds {
+        fn memory_bytes_cost(&self) -> u64 {
+            self.mem
+        }
+    }
+
+    impl BudgetBounds for Bounds {
+        fn label(&self) -> &str {
+            "test"
+        }
+        fn cpu_limit(&self) -> Option<u64> {
+            self.cpu_limit
+        }
+        fn memory_limit(&self) -> Option<u64> {
+            self.mem_limit
+        }
+    }
+
+    #[test]
+    fn check_bounds_ok_when_within_limits() {
+        let b = Bounds {
+            cpu: 500,
+            mem: 200,
+            cpu_limit: Some(1000),
+            mem_limit: Some(500),
+        };
+        assert_eq!(b.check_bounds(), Ok(()));
+    }
+
+    #[test]
+    fn check_bounds_reports_cpu_exceeded() {
+        let b = Bounds {
+            cpu: 1500,
+            mem: 200,
+            cpu_limit: Some(1000),
+            mem_limit: Some(500),
+        };
+        assert_eq!(
+            b.check_bounds(),
+            Err(BoundsViolation::CpuExceeded {
+                actual: 1500,
+                limit: 1000
+            })
+        );
+    }
+
+    #[test]
+    fn check_bounds_reports_memory_exceeded() {
+        let b = Bounds {
+            cpu: 500,
+            mem: 700,
+            cpu_limit: Some(1000),
+            mem_limit: Some(500),
+        };
+        assert_eq!(
+            b.check_bounds(),
+            Err(BoundsViolation::MemoryExceeded {
+                actual: 700,
+                limit: 500
+            })
+        );
+    }
+
+    #[test]
+    fn check_bounds_reports_both_exceeded() {
+        let b = Bounds {
+            cpu: 1500,
+            mem: 700,
+            cpu_limit: Some(1000),
+            mem_limit: Some(500),
+        };
+        assert_eq!(
+            b.check_bounds(),
+            Err(BoundsViolation::BothExceeded {
+                cpu_actual: 1500,
+                cpu_limit: 1000,
+                mem_actual: 700,
+                mem_limit: 500
+            })
+        );
+    }
+
+    #[test]
+    fn check_bounds_ignores_metrics_without_limits() {
+        let b = Bounds {
+            cpu: u64::MAX,
+            mem: 700,
+            cpu_limit: None,
+            mem_limit: Some(500),
+        };
+        assert_eq!(
+            b.check_bounds(),
+            Err(BoundsViolation::MemoryExceeded {
+                actual: 700,
+                limit: 500
+            })
+        );
+    }
+
+    #[test]
+    fn is_within_bounds_matches_check_bounds() {
+        let within = Bounds {
+            cpu: 500,
+            mem: 200,
+            cpu_limit: Some(1000),
+            mem_limit: Some(500),
+        };
+        let breach = Bounds {
+            cpu: 500,
+            mem: 700,
+            cpu_limit: Some(1000),
+            mem_limit: Some(500),
+        };
+        assert_eq!(within.is_within_bounds(), within.check_bounds().is_ok());
+        assert_eq!(breach.is_within_bounds(), breach.check_bounds().is_ok());
+    }
+
+    #[test]
+    fn bounds_violation_display_names_breached_metrics() {
+        let cpu = BoundsViolation::CpuExceeded {
+            actual: 1500,
+            limit: 1000,
+        };
+        assert_eq!(
+            cpu.to_string(),
+            "CPU Instructions exceeded limit: value=1500, limit=1000"
+        );
+
+        let mem = BoundsViolation::MemoryExceeded {
+            actual: 700,
+            limit: 500,
+        };
+        assert_eq!(
+            mem.to_string(),
+            "Memory Bytes exceeded limit: value=700, limit=500"
+        );
+
+        let both = BoundsViolation::BothExceeded {
+            cpu_actual: 1500,
+            cpu_limit: 1000,
+            mem_actual: 700,
+            mem_limit: 500,
+        };
+        let msg = both.to_string();
+        assert!(msg.contains("CPU Instructions"));
+        assert!(msg.contains("Memory Bytes"));
+    }
+
+    #[test]
+    fn bounds_violation_is_error() {
+        use std::error::Error;
+        let violation = BoundsViolation::CpuExceeded {
+            actual: 2,
+            limit: 1,
+        };
+        assert!(violation.source().is_none());
     }
 
     // ── CostReportable tests ───────────────────────────────────────────────
