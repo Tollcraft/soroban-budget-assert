@@ -25,6 +25,11 @@ fn check_bounds(value: u64, max: u64, name: &str) -> Result<(), String> {
         } else {
             format!("+{:.1}%", (delta as f64 / max as f64) * 100.0)
         };
+        let pct = if max == 0 {
+            "+inf%".to_string()
+        } else {
+            format!("+{:.1}%", (delta as f64 / max as f64) * 100.0)
+        };
         Err(format!(
             "{} {} exceeds limit {} by {} ({})",
             name, value, max, delta, pct
