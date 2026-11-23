@@ -295,8 +295,8 @@ impl Derivation {
         measurements: &[TierBMeasurement],
         config: &DerivationConfig,
     ) -> Result<Self> {
-        let (per_function, raw_measurements) = Self::collect_measurements(measurements, config);
-        let mut limits = Self::derive_function_limits(&per_function, &raw_measurements, config);
+        let (per_function, raw_measurements) = Self::collect_measurements(measurements, config)?;
+        let mut limits = Self::derive_function_limits(&per_function, &raw_measurements, config)?;
         Self::derive_scenario_limits(&mut limits, &raw_measurements, config)?;
 
         // Stable sort by key so emitted diffs stay bounded.
@@ -309,11 +309,24 @@ impl Derivation {
     fn collect_measurements(
         measurements: &[TierBMeasurement],
         config: &DerivationConfig,
-    ) -> (FunctionMetricMap, RawMetricMap) {
+    ) -> Result<(FunctionMetricMap, RawMetricMap)> {
         let mut per_function: FunctionMetricMap = BTreeMap::new();
         let mut raw_measurements: RawMetricMap = BTreeMap::new();
 
         for m in measurements {
+            // WASM Bytes is a reported build artifact, not a runtime resource,
+            // and has no Tier A limit. Skip it silently rather than erroring.
+            if m.metric == "WASM Bytes" {
+                continue;
+            }
+            // Validate metric label explicitly via metric_to_env_segment first so unknown metrics fail
+            metric_to_env_segment(&m.metric)
+                .map_err(|_| Error::Message(format!(
+                    "unsupported metric label `{}` encountered for function {}::{} — unknown metrics cannot be derived into Tier A limit keys",
+                    m.metric,
+                    m.package,
+                    m.function,
+                )))?;
             let margin = match config.margin.for_metric(&m.metric) {
                 Some(m) => m,
                 None => continue,
@@ -330,7 +343,7 @@ impl Derivation {
             );
         }
 
-        (per_function, raw_measurements)
+        Ok((per_function, raw_measurements))
     }
 
     /// Derive function-level Tier A limits from collected measurement maps.
@@ -338,14 +351,14 @@ impl Derivation {
         per_function: &BTreeMap<String, BTreeMap<String, u64>>,
         raw_measurements: &BTreeMap<(String, String, String), u64>,
         config: &DerivationConfig,
-    ) -> Vec<DerivedLimit> {
+    ) -> Result<Vec<DerivedLimit>> {
         let mut limits = Vec::new();
         for (func_key, by_metric) in per_function {
             for (metric, tier_a_limit) in by_metric {
                 let (pkg, fn_name) = func_key
                     .split_once("::")
                     .map(|(p, f)| (p.to_string(), f.to_string()))
-                    .unwrap_or_else(|| ("".to_string(), func_key.clone()));
+                    .unwrap_or_else(|| ("__UNNAMED__".to_string(), func_key.clone()));
                 let margin = config
                     .margin
                     .for_metric(metric)
@@ -355,7 +368,7 @@ impl Derivation {
                     .copied()
                     .unwrap_or(0);
                 limits.push(DerivedLimit {
-                key: env_var_key(&pkg, &fn_name, metric),
+                key: env_var_key(&pkg, &fn_name, metric)?,
                 tier_b_value,
                 margin,
                 tier_a_limit: *tier_a_limit,
@@ -365,7 +378,7 @@ impl Derivation {
             });
             }
         }
-        limits
+        Ok(limits)
     }
 
     /// Derive scenario-level Tier A limits across configured scenario groupings.
@@ -429,7 +442,7 @@ impl Derivation {
                 }
                 let tier_a_limit = ceil_apply(total_tier_b, margin);
                 limits.push(DerivedLimit {
-                    key: env_var_scenario_key(&scenario_pkg, &scenario_name, metric_label),
+                    key: env_var_scenario_key(&scenario_pkg, &scenario_name, metric_label)?,
                     tier_b_value: total_tier_b,
                     margin,
                     tier_a_limit,
@@ -543,8 +556,8 @@ impl Derivation {
 /// key the test annotations will use. The double-underscore separator
 /// survives both shell- and `.env`-style parsing cleanly, while a
 /// single-colon (`::`) separator collides with shell PATH semantics.
-fn env_var_key(package: &str, function: &str, metric_label: &str) -> String {
-    let metric_segment = metric_to_env_segment(metric_label);
+fn env_var_key(package: &str, function: &str, metric_label: &str) -> Result<String> {
+    let metric_segment = metric_to_env_segment(metric_label)?;
     let pkg = package.replace('-', "_").to_ascii_uppercase();
     let fn_ = function.to_ascii_uppercase();
     // Scenario keys use the same prefix with `SCENARIO__<name>`; for
@@ -552,26 +565,30 @@ fn env_var_key(package: &str, function: &str, metric_label: &str) -> String {
     // function name in place of `<name>` so consumers can grep
     // uniformly.
     if fn_.is_empty() {
-        format!("TIER_A__{pkg}__{metric_segment}")
+        Ok(format!("TIER_A__{pkg}__{metric_segment}"))
     } else {
-        format!("TIER_A__{pkg}__{fn_}__{metric_segment}")
+        Ok(format!("TIER_A__{pkg}__{fn_}__{metric_segment}"))
     }
 }
 
-fn env_var_scenario_key(package: &str, scenario: &str, metric_label: &str) -> String {
-    let metric_segment = metric_to_env_segment(metric_label);
+fn env_var_scenario_key(package: &str, scenario: &str, metric_label: &str) -> Result<String> {
+    let metric_segment = metric_to_env_segment(metric_label)?;
     let pkg = package.replace('-', "_").to_ascii_uppercase();
     let scenario_u = scenario.to_ascii_uppercase();
-    format!("TIER_A__{pkg}__SCENARIO__{scenario_u}__{metric_segment}")
+    Ok(format!(
+        "TIER_A__{pkg}__SCENARIO__{scenario_u}__{metric_segment}"
+    ))
 }
 
-fn metric_to_env_segment(metric_label: &str) -> &'static str {
+fn metric_to_env_segment(metric_label: &str) -> Result<&'static str> {
     match metric_label {
-        "CPU Instructions" => "CPU",
-        "Memory Bytes" | "Memory bytes" | "memory_bytes" => "MEM",
-        "Read Bytes" => "READ",
-        "Write Bytes" => "WRITE",
-        _ => "UNKNOWN",
+        "CPU Instructions" => Ok("CPU"),
+        "Memory Bytes" | "Memory bytes" | "memory_bytes" => Ok("MEM"),
+        "Read Bytes" => Ok("READ"),
+        "Write Bytes" => Ok("WRITE"),
+        other => Err(Error::Message(format!(
+            "unsupported metric label `{other}`: unknown metric labels cannot be mapped to an env key segment"
+        ))),
     }
 }
 
@@ -898,28 +915,33 @@ mod tests {
 
     #[test]
     fn metric_to_env_segment_handles_label_variants() {
-        assert_eq!(metric_to_env_segment("CPU Instructions"), "CPU");
-        assert_eq!(metric_to_env_segment("Memory Bytes"), "MEM");
-        assert_eq!(metric_to_env_segment("memory_bytes"), "MEM");
-        assert_eq!(metric_to_env_segment("Read Bytes"), "READ");
-        assert_eq!(metric_to_env_segment("Write Bytes"), "WRITE");
-        // Unknown metrics keep their literal segment — emitting a key
-        // would still be useful for callers to grep, but the parser
-        // for the env form will skip unknown metrics so the value is
-        // effectively ignored at test runtime. Better than silently
-        // dropping a metric with no warning.
-        assert_eq!(metric_to_env_segment("WASM Bytes"), "UNKNOWN");
+        assert_eq!(metric_to_env_segment("CPU Instructions").unwrap(), "CPU");
+        assert_eq!(metric_to_env_segment("Memory Bytes").unwrap(), "MEM");
+        assert_eq!(metric_to_env_segment("memory_bytes").unwrap(), "MEM");
+        assert_eq!(metric_to_env_segment("Read Bytes").unwrap(), "READ");
+        assert_eq!(metric_to_env_segment("Write Bytes").unwrap(), "WRITE");
+        assert!(metric_to_env_segment("WASM Bytes").is_err());
+    }
+
+    #[test]
+    fn test_metric_to_env_segment_unknown() {
+        let res = metric_to_env_segment("Unknown Metric");
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Unknown Metric"));
     }
 
     #[test]
     fn env_var_key_uppercases_and_double_underscores() {
-        let key = env_var_key("amm-pool-contract", "require_auth_only", "CPU Instructions");
+        let key =
+            env_var_key("amm-pool-contract", "require_auth_only", "CPU Instructions").unwrap();
         assert_eq!(key, "TIER_A__AMM_POOL_CONTRACT__REQUIRE_AUTH_ONLY__CPU");
     }
 
     #[test]
     fn env_var_scenario_key_inserts_scenario_marker() {
-        let key = env_var_scenario_key("amm-pool-contract", "full_workflow", "CPU Instructions");
+        let key =
+            env_var_scenario_key("amm-pool-contract", "full_workflow", "CPU Instructions").unwrap();
         assert_eq!(
             key,
             "TIER_A__AMM_POOL_CONTRACT__SCENARIO__FULL_WORKFLOW__CPU"
