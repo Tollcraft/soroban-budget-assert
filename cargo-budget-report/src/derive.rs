@@ -314,11 +314,7 @@ impl Derivation {
         let mut raw_measurements: RawMetricMap = BTreeMap::new();
 
         for m in measurements {
-            let margin = match config.margin.for_metric(&m.metric) {
-                Some(m) => m,
-                None => continue,
-            };
-            // Validate metric label explicitly via metric_to_env_segment
+            // Validate metric label explicitly via metric_to_env_segment first so unknown metrics fail
             metric_to_env_segment(&m.metric)
                 .map_err(|_| Error::Message(format!(
                     "unsupported metric label `{}` encountered for function {}::{} — unknown metrics cannot be derived into Tier A limit keys",
@@ -326,6 +322,10 @@ impl Derivation {
                     m.package,
                     m.function,
                 )))?;
+            let margin = match config.margin.for_metric(&m.metric) {
+                Some(m) => m,
+                None => continue,
+            };
             let limit_key = format!("{}::{}", m.package, m.function);
             let scaled = ceil_apply(m.value, margin);
             per_function
@@ -916,6 +916,14 @@ mod tests {
         assert_eq!(metric_to_env_segment("Read Bytes").unwrap(), "READ");
         assert_eq!(metric_to_env_segment("Write Bytes").unwrap(), "WRITE");
         assert!(metric_to_env_segment("WASM Bytes").is_err());
+    }
+
+    #[test]
+    fn test_metric_to_env_segment_unknown() {
+        let res = metric_to_env_segment("Unknown Metric");
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Unknown Metric"));
     }
 
     #[test]
