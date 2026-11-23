@@ -8,6 +8,58 @@ members = [
 ]
 resolver = "2"
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_official_org_urls() {
+        assert!(is_github_repo_url("https://github.com/Tollcraft/soroban-budget-assert"));
+        assert!(is_github_repo_url("https://github.com/tollcraft/repo"));
+        assert!(is_github_repo_url("https://github.com/TOLLCRAFT/repo/blob/main/README.md"));
+        assert!(is_github_repo_url("https://github.com/Tollcraft/repo?tab=readme#section"));
+        assert!(is_github_repo_url("https://GitHub.com/Tollcraft/repo"));
+    }
+
+    #[test]
+    fn rejects_org_in_query_string() {
+        assert!(!is_github_repo_url("https://github.com/attacker/repo?ref=/Tollcraft/"));
+    }
+
+    #[test]
+    fn rejects_org_in_fragment() {
+        assert!(!is_github_repo_url("https://github.com/attacker/repo#/Tollcraft/"));
+        assert!(!is_github_repo_url("https://github.com#/Tollcraft/repo"));
+        assert!(!is_github_repo_url("https://github.com?x=/Tollcraft/repo"));
+    }
+
+    #[test]
+    fn rejects_org_in_later_path_segment() {
+        assert!(!is_github_repo_url("https://github.com/other/Tollcraft/repo"));
+    }
+
+    #[test]
+    fn rejects_lookalike_org_names() {
+        assert!(!is_github_repo_url("https://github.com/Tollcraft-evil/repo"));
+        assert!(!is_github_repo_url("https://github.com/NotTollcraft/repo"));
+    }
+
+    #[test]
+    fn rejects_empty_first_segment() {
+        assert!(!is_github_repo_url("https://github.com//Tollcraft/repo"));
+        assert!(!is_github_repo_url("https://github.com/"));
+        assert!(!is_github_repo_url("https://github.com"));
+    }
+
+    #[test]
+    fn rejects_non_github_hosts() {
+        assert!(!is_github_repo_url("https://evil.com/Tollcraft/repo"));
+        assert!(!is_github_repo_url("https://github.com.evil.com/Tollcraft/repo"));
+        assert!(!is_github_repo_url("https://github.com@evil.com/Tollcraft/repo"));
+        assert!(!is_github_repo_url("https://github.com:8443/Tollcraft/repo"));
+    }
+}
+
 # Internal groundwork, deliberately unpublished (#827): no shipped artifact links
 # this crate yet. See the crate-level status note in `src/lib.rs`; taking it as a
 # normal dependency of any shipped crate is the signal to promote it.
