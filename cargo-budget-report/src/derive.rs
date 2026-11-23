@@ -314,6 +314,10 @@ impl Derivation {
         let mut raw_measurements: RawMetricMap = BTreeMap::new();
 
         for m in measurements {
+            let margin = match config.margin.for_metric(&m.metric) {
+                Some(m) => m,
+                None => continue,
+            };
             // Validate metric label explicitly via metric_to_env_segment first so unknown metrics fail
             metric_to_env_segment(&m.metric)
                 .map_err(|_| Error::Message(format!(
@@ -322,10 +326,6 @@ impl Derivation {
                     m.package,
                     m.function,
                 )))?;
-            let margin = match config.margin.for_metric(&m.metric) {
-                Some(m) => m,
-                None => continue,
-            };
             let limit_key = format!("{}::{}", m.package, m.function);
             let scaled = ceil_apply(m.value, margin);
             per_function
