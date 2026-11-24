@@ -37,7 +37,11 @@ fn summary_targets(summary: &str) -> Vec<PathBuf> {
 fn chapter_pages(docs_src: &Path) -> HashSet<PathBuf> {
     fs::read_dir(docs_src)
         .expect("docs/src should exist")
-        .map(|entry| entry.expect("documentation entry should be readable").path())
+        .map(|entry| {
+            entry
+                .expect("documentation entry should be readable")
+                .path()
+        })
         .filter(|path| {
             path.is_file()
                 && path.extension().and_then(|extension| extension.to_str()) == Some("md")
