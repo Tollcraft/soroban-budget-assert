@@ -134,7 +134,9 @@ Stellar's fees and metering documentation states: _"execution of Wasm instructio
 - **Tool display name**: `memory bytes` (used by `#[budget_mem_lt(N)]`)
 - **SDK field**: `env.cost_estimate().budget().memory_bytes_cost()`
 - **What it is**: The host's accounting of memory allocated during execution. Memory bytes are metered alongside CPU instructions during host and guest execution — but, unlike CPU instructions, memory usage is *not* included in fee computation. It is subject to a per-transaction cap (a resource limit) and exceeding it terminates the transaction.
-- **Measurement status**: **does not measure** — `cargo budget-report` does not report memory bytes. The `#[budget_mem_lt(N)]` macro asserts the *local* estimate during `cargo test`.
+- **Measurement status**: **measures** — `cargo budget-report` reads `result.cost.memBytes` from the Protocol 22+ `simulateTransaction` payload (which reports it as a JSON string, so both string and integer forms are accepted) and reports it as a `Memory Bytes` row in the table, `--json`, and CSV output. Older protocol responses that omit `memBytes` produce no row rather than a zero that would silently pass a check, and `[functions.<name>].mem_limit` turns the value into a `--check` limit. The `#[budget_mem_lt(N)]` macro independently asserts the *local* estimate during `cargo test`.
+
+**Measured figures**: [Measurements — Memory bytes](https://github.com/Tollcraft/soroban-budget-assert/blob/main/MEASUREMENTS.md#memory-bytes)
 
 **Stellar docs**: [Fees, Resource Limits, and Metering — Metering](https://developers.stellar.org/docs/learn/fundamentals/fees-resource-limits-metering#metering) ("memory usage is not included in the fee computation, it is nevertheless subject to the resource limits")
 
@@ -225,7 +227,7 @@ Stellar's fees and metering documentation states: _"execution of Wasm instructio
 
 ## Derivation summary
 
-The three metrics the tool **measures** — all extracted from `SorobanTransactionData` XDR:
+The three XDR-derived metrics the tool **measures** — all extracted from `SorobanTransactionData`:
 
 | Metric (tool name) | XDR field | Fee category | Stellar term |
 |---|---|---|---|
@@ -233,6 +235,6 @@ The three metrics the tool **measures** — all extracted from `SorobanTransacti
 | **Read Bytes** | `resources.disk_read_bytes` | Non-refundable | Bytes read from the ledger |
 | **Write Bytes** | `resources.write_bytes` | Non-refundable | Bytes written to the ledger |
 
-Memory bytes (`#[budget_mem_lt(N)]`) are metered by the host but reported only by the local macro, not by the CLI.
+**Memory Bytes** is the fourth reported metric, but it does not come from the XDR blob: it is read from the JSON-RPC `result.cost.memBytes` field, which Protocol 22+ simulation responses include. It appears as a `Memory Bytes` row in table, JSON, and CSV output just like the three above, and is additionally gated in Tier A by `#[budget_mem_lt(N)]` against the local estimate.
 
 All terms not in the table above — resource limits, footprint, TTL, rent, refundable fees, and ledger state — are **not measured** by this tool. They are either part of Stellar's fee derivation (rent, events structures) or environmental constraints the measurement runs within (limits, ledger state, TTL expiry behavior).

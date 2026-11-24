@@ -1337,7 +1337,7 @@ mod tests {
 
     #[test]
     fn test_rpc_url_is_not_validated_at_parse_time() {
-        // URL checking happens later (url_checks); clap only carries the string.
+        // URL checking happens later (live.rs); clap only carries the string.
         let args = parse_args(&["--rpc-url", "not a url", "--network-passphrase", "P"]).unwrap();
         assert_eq!(args.rpc_url.as_deref(), Some("not a url"));
     }

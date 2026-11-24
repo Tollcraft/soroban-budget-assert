@@ -13,6 +13,8 @@ The site is a lightweight, responsive static web application built with standard
 - `dashboard.html`: Cost-over-time dashboard that visualizes the budget history dataset across packages, functions, and metrics.
 - `assets/dashboard.css`: Dashboard-specific layout and styles for charts, controls, and selectors.
 - `assets/dashboard.js`: Client-side data fetching, metric filtering, series pivoting, and Chart.js rendering logic.
+- `scripts/validate.sh`: Pre-deployment validation script (invoked as `bash site/scripts/validate.sh`). It checks that every HTML file is well-formed, every JavaScript file parses, every internal `href`/`src`/CSS `url()` reference resolves to a file that exists, and — via `scripts/validate-anchors.sh` — that every in-page and cross-page fragment has a matching target. GitHub Actions runs it in the `validate` job of `.github/workflows/deploy-site.yml` before the site is published; run it locally after editing any dashboard HTML, CSS, or JS asset, or after renaming an element `id`. It requires Node.js (`node` on `PATH`).
+- `scripts/validate-anchors.sh`: Resolves `<a href="#fragment">` and `<a href="page.html#fragment">` links against `id` (and `<a name>`) attributes in the destination document, reporting the source file, line, fragment, and destination when a rename breaks navigation. It is invoked by `scripts/validate.sh` and can also be run directly (`bash site/scripts/validate-anchors.sh [SITE_DIR]`).
 - `README.md`: Directory overview, file inventory, local development instructions, and deployment details.
 
 ### Dashboard data source
@@ -46,7 +48,8 @@ Deployment workflow: [`.github/workflows/deploy-site.yml`](../.github/workflows/
 
 ### How the deployment pieces fit together
 
-1. **`budget.yml` (`record-history` job)**: On every push to `main`, verifies the uploaded report is a genuine network-measured measurement (placeholder or mocked reports are declined — the run still succeeds), purges any historical entries that fail the same check, and appends `{commit, timestamp, data}` entries to `history.json` on the `gh-pages` branch. Only real measurements ever reach the dashboard's charts.
-2. **`deploy-site.yml`**: Publishes the contents of `site/` to `gh-pages` using `peaceiris/actions-gh-pages` with `keep_files: true`, so `history.json` is never deleted or overwritten. Both workflows share the `gh-pages-deploy` concurrency group to prevent race conditions on the `gh-pages` branch.
-3. **Client-side Dashboard**: The dashboard page (`dashboard.html`) fetches `history.json` same-origin and pivots the data client-side into `package → function → metric` series — requiring no backend server or build-time data baking.
+1. **`deploy-site.yml` (`validate` job)**: Runs `bash site/scripts/validate.sh` first. It parses every HTML document, syntax-checks the JavaScript, resolves every internal link and asset reference, and checks link fragments against the destination `id` attributes (`scripts/validate-anchors.sh`), so broken navigation fails the run before anything is published.
+2. **`budget.yml` (`record-history` job)**: On every push to `main`, verifies the uploaded report is a genuine network-measured measurement (placeholder or mocked reports are declined — the run still succeeds), purges any historical entries that fail the same check, and appends `{commit, timestamp, data}` entries to `history.json` on the `gh-pages` branch. Only real measurements ever reach the dashboard's charts.
+3. **`deploy-site.yml` (`deploy` job)**: Publishes the contents of `site/` to `gh-pages` using `peaceiris/actions-gh-pages` with `keep_files: true`, so `history.json` is never deleted or overwritten. Both workflows share the `gh-pages-deploy` concurrency group to prevent race conditions on the `gh-pages` branch.
+4. **Client-side Dashboard**: The dashboard page (`dashboard.html`) fetches `history.json` same-origin and pivots the data client-side into `package → function → metric` series — requiring no backend server or build-time data baking.
 
