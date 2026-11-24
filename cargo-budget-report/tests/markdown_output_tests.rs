@@ -204,3 +204,106 @@ fn markdown_from_file_renders_check_columns_and_failed_stub() {
         "the --from path must not append a JSON dump either:\n{stdout}"
     );
 }
+
+/// #1105: assert that `NOT_MEASURED` ("N/A (testnet required)") is emitted
+/// only when a metric is unmeasured locally (normal mode without check metadata),
+/// and `NOT_MEASURED_CHECK` ("N/A (simulation failed)") is emitted only when
+/// check failure metadata is present.
+#[test]
+fn markdown_renders_distinct_sentinels_for_unmeasured_and_failed_checks() {
+    let workspace = tempfile::tempdir().expect("failed to create tempdir");
+
+    // 1. Normal mode (no check metadata): unmeasured metric renders as "N/A (testnet required)"
+    let normal_report = serde_json::json!([
+        {
+            "package": "mock-contract-a",
+            "function": "get_value",
+            "metric": "Read Bytes",
+            "value": null,
+            "limit": null,
+            "pass": null
+        }
+    ]);
+    let normal_file = workspace.path().join("normal_report.json");
+    fs::write(
+        &normal_file,
+        serde_json::to_string(&normal_report).expect("fixture serialises"),
+    )
+    .expect("failed to write normal report fixture");
+
+    let output_normal = budget_report_cmd(workspace.path(), false)
+        .args([
+            "budget-report",
+            "--markdown",
+            "--from",
+            "normal_report.json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout_normal = String::from_utf8_lossy(&output_normal.stdout).into_owned();
+
+    // Verify 4-column header in normal mode (no check columns)
+    assert!(
+        stdout_normal.contains("| Package | Function | Metric | Value |"),
+        "normal report must use 4-column header:\n{stdout_normal}"
+    );
+    assert!(
+        !stdout_normal.contains("| Limit | Status |"),
+        "normal report must not have Limit/Status columns:\n{stdout_normal}"
+    );
+    // Sentinel must be "N/A (testnet required)", NEVER "N/A (simulation failed)"
+    assert!(
+        stdout_normal
+            .contains("| mock-contract-a | get_value | Read Bytes | N/A (testnet required) |"),
+        "unmeasured local metric must render as N/A (testnet required):\n{stdout_normal}"
+    );
+    assert!(
+        !stdout_normal.contains("N/A (simulation failed)"),
+        "normal report must not contain simulation failed sentinel:\n{stdout_normal}"
+    );
+
+    // 2. Check mode (with limit/pass metadata): failed simulation stub renders as "N/A (simulation failed)"
+    let check_report = serde_json::json!([
+        {
+            "package": "mock-contract-a",
+            "function": "broken_sim",
+            "metric": "CPU Instructions",
+            "value": null,
+            "limit": 5_000_000,
+            "pass": false
+        }
+    ]);
+    let check_file = workspace.path().join("check_report.json");
+    fs::write(
+        &check_file,
+        serde_json::to_string(&check_report).expect("fixture serialises"),
+    )
+    .expect("failed to write check report fixture");
+
+    let output_check = budget_report_cmd(workspace.path(), false)
+        .args(["budget-report", "--markdown", "--from", "check_report.json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout_check = String::from_utf8_lossy(&output_check.stdout).into_owned();
+
+    // Verify 6-column header in check mode
+    assert!(
+        stdout_check.contains("| Package | Function | Metric | Value | Limit | Status |"),
+        "check report must use 6-column header with Limit/Status:\n{stdout_check}"
+    );
+    // Sentinel must be "N/A (simulation failed)", NEVER "N/A (testnet required)"
+    assert!(
+        stdout_check.contains(
+            "| mock-contract-a | broken_sim | CPU Instructions | N/A (simulation failed) | 5,000,000 | FAIL |"
+        ),
+        "failed check stub must render as N/A (simulation failed):\n{stdout_check}"
+    );
+    assert!(
+        !stdout_check.contains("N/A (testnet required)"),
+        "check report must not contain testnet required sentinel for failed simulation:\n{stdout_check}"
+    );
+}
