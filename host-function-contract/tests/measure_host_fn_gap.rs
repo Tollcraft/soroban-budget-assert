@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 #[cfg(test)]
 mod measure_host_fn_gap {
     use host_function_contract::HostFunctionBenchmarkClient;

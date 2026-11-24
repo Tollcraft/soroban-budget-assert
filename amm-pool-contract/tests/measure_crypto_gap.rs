@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 //! Local-vs-network cost-gap measurement for cryptographic host functions
 //! (issue #414).
 //!

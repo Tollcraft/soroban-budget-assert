@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 //! Local-vs-network cost-gap measurement for Soroban `Map` host operations
 //! (issue #715).
 //!

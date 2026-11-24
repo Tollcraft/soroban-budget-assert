@@ -388,48 +388,6 @@ mod tests {
     extern crate alloc;
     extern crate std;
 
-    fn crc32(data: &[u8]) -> u32 {
-        let mut crc: u32 = 0xFFFF_FFFF;
-        for &byte in data {
-            crc ^= byte as u32;
-            for _ in 0..8 {
-                let mask = (crc & 1).wrapping_neg();
-                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-            }
-        }
-        !crc
-    }
-
-    fn fnv1a(data: &[u8]) -> u32 {
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for &byte in data {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x0000_0100_0000_01B3);
-        }
-        (hash ^ (hash >> 32)) as u32
-    }
-
-    fn djb2(data: &[u8]) -> u32 {
-        let mut hash: u32 = 5381;
-        for &byte in data {
-            hash = hash
-                .wrapping_shl(5)
-                .wrapping_add(hash)
-                .wrapping_add(byte as u32);
-        }
-        hash
-    }
-
-    fn adler32(data: &[u8]) -> u32 {
-        let mut a: u32 = 1;
-        let mut b: u32 = 0;
-        for &byte in data {
-            a = (a + byte as u32) % 65521;
-            b = (b + a) % 65521;
-        }
-        (b << 16) | a
-    }
-
     fn xorshift(seed: u32, steps: u32) -> u32 {
         let mut x = seed | 1;
         let mut y = seed ^ 0x9E37_79B9;
@@ -611,69 +569,6 @@ mod tests {
             p += 1;
         }
         count
-    }
-
-    // ── CRC-32 ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn crc32_empty() {
-        assert_eq!(crc32(b""), 0x0000_0000);
-    }
-
-    #[test]
-    fn crc32_known() {
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-    }
-
-    #[test]
-    fn crc32_single_byte() {
-        assert_ne!(crc32(&[0x00]), 0);
-    }
-
-    // ── FNV-1a ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn fnv1a_empty() {
-        let hash: u64 = 0xcbf2_9ce4_8422_2325;
-        assert_eq!(fnv1a(b""), (hash ^ (hash >> 32)) as u32);
-    }
-
-    #[test]
-    fn fnv1a_deterministic() {
-        assert_eq!(fnv1a(b"test"), fnv1a(b"test"));
-    }
-
-    #[test]
-    fn fnv1a_different_inputs() {
-        assert_ne!(fnv1a(b"a"), fnv1a(b"b"));
-    }
-
-    // ── djb2 ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn djb2_empty() {
-        assert_eq!(djb2(b""), 5381);
-    }
-
-    #[test]
-    fn djb2_single_char() {
-        let expected = 5381u32
-            .wrapping_shl(5)
-            .wrapping_add(5381)
-            .wrapping_add(b'a' as u32);
-        assert_eq!(djb2(b"a"), expected);
-    }
-
-    // ── Adler-32 ───────────────────────────────────────────────────────
-
-    #[test]
-    fn adler32_empty() {
-        assert_eq!(adler32(b""), 0x0000_0001);
-    }
-
-    #[test]
-    fn adler32_wikipedia() {
-        assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
     }
 
     // ── xorshift ───────────────────────────────────────────────────────
