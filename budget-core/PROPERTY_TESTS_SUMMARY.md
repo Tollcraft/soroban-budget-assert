@@ -1,73 +1,62 @@
-# Property Tests Summary
+## Repository Context & Implementation Constraints
 
-## Overview
+Before proposing changes, modifying code, or extending this test suite, the repository's governing documents must be reviewed:
 
-The property tests for the hand-rolled attribute `Parse` impls live in
-`budget-macros/src/parser_props.rs`. The module covers the four spec types
-`StandaloneSpec`, `BudgetLimit`, `BudgetSpec`, and `ScalingConfig`, and is
-wired in as `#[cfg(test)] mod parser_props;` in `budget-macros/src/lib.rs`,
-so it compiles only during `cargo test`.
+- [README.md](https://github.com/Tollcraft/soroban-budget-assert/blob/main/README.md) — Understand the project's architecture, responsibilities of `budget-macros`, and intended behavior.
+- [CONTRIBUTING.md](https://github.com/Tollcraft/soroban-budget-assert/blob/main/CONTRIBUTING.md) — Follow the repository's contribution, testing, documentation, and development requirements.
+- [SECURITY.md](https://github.com/Tollcraft/soroban-budget-assert/blob/main/SECURITY.md) — Respect the project's security policy, particularly dependency auditing and responsible vulnerability disclosure.
 
-**Core property:** no input causes a panic. The parsers may reject any input
-they like — but as a `syn::Error`, never by unwinding. In a procedural
-macro an unwind surfaces as an opaque "proc macro panicked" error with
-nothing pointing at the offending attribute, so an unwind is always a bug
-even when the input is nonsense. The generators therefore build *plausible*
-attribute syntax — real keys, real shapes, deliberately broken values,
-reordered / duplicated / truncated forms — rather than random bytes.
+### Scope Restrictions
 
-## Configuration
+The property-testing work is specifically concerned with the hand-written attribute parsers in `budget-macros/src/parser_props.rs`.
 
-- **proptest version**: `1.5` (dev-dependency of `budget-macros`, declared in `budget-macros/Cargo.toml:30`)
-- **Test cases per property**: `600` (`ProptestConfig::with_cases(600)`, `budget-macros/src/parser_props.rs:200`)
-- **Location**: `budget-macros/src/parser_props.rs`, inside the `proptest!` block that starts at line 199
+The following constraints apply:
 
-## Coverage
+- Keep changes limited to parser property tests, their generators, and directly necessary parser-related fixes.
+- Do not introduce unrelated changes to the CLI, Soroban contracts, reporting infrastructure, or other workspace components.
+- Preserve the existing parser interfaces and intended attribute syntax.
+- Do not weaken existing validation or parser invariants simply to make generated cases pass.
+- Invalid input must produce a `syn::Error`, never a panic.
+- Any parser or diagnostic fixes discovered during property testing should be tracked under issue #394 (macro diagnostics + UI tests), rather than expanding this suite beyond its intended responsibility.
+- Any dependency changes must comply with the repository's security policy and dependency auditing requirements.
 
-Five property tests, all in the `proptest!` block:
+The property tests are intended to improve parser robustness, not redefine the macro specification.
 
-| Property test | Spec type | What it asserts |
-| :--- | :--- | :--- |
-| `standalone_spec_never_panics` | `StandaloneSpec` | Any generated standalone spec either parses or is rejected as a `syn::Error` — never a panic |
-| `budget_limit_never_panics` | `BudgetLimit` | Same property for generated limit sources (bare integers, `key = value` forms, broken values) |
-| `budget_spec_never_panics` | `BudgetSpec` | Same property for generated budget spec sources (`cpu` / `mem` clauses, baselines, unknown and duplicate keys) |
-| `scaling_config_parses_only_with_a_usable_shape` | `ScalingConfig` | Parsing never panics **and** any parsed config satisfies the parser's invariants: `sizes` has at least two elements, `tolerance` is finite |
-| `int_budget_limit_round_trips` | `BudgetLimit` | A bare `u64` that parses is re-emitted through `generate_limit_expr` and re-parses to an equal integer value |
+## Mandatory CI Verification
 
-**Total: 5 property tests.**
+Passing the focused property tests is necessary but does not, by itself, establish that the task is complete.
 
-## Companion regression tests
-
-The same file also keeps fixed inputs as ordinary deterministic tests in
-`mod regressions` (`budget-macros/src/parser_props.rs:271`). These are *not*
-property tests; they pin cases a property run found (or nearly found) so they
-stay covered independently of the random run:
-
-| Regression test | Pins |
-| :--- | :--- |
-| `pct_of_non_env_file_parses_without_parser_panic` | `pct = 50, of = <non-env_file>` parses cleanly at the parser level |
-| `overflowing_int_is_rejected_cleanly` | Numeric overflow in a limit literal is a `syn::Error`, not a panic |
-| `scaling_sizes_u32_overflow_is_rejected_cleanly` | `sizes` entries that overflow `u32` are a `syn::Error`, not a panic |
-
-Anything the properties surface that needs a parser or diagnostics fix
-belongs to #394 (macro diagnostics + ui tests), not to this suite.
-
-## Running the tests
-
-From the workspace root:
+Before marking the work as complete, all repository CI gates must be executed from the workspace root:
 
 ```bash
-cargo test -p budget-macros
+cargo fmt --all -- --check
+
+cargo clippy --workspace --all-targets -- -D warnings
+
+cargo test --workspace
+
+bash scripts/check-module-reachability.sh
+
+bash .github/scripts/check-cli-docs.sh
+
+bash .github/scripts/check-compatibility-docs.sh
 ```
 
-To run only the property tests and their companion regressions:
+### Completion Criteria
 
-```bash
-cargo test -p budget-macros parser_props
-```
+The task can only be marked complete when:
 
-To run a single property:
+1. All five property tests pass.
+2. All three deterministic regression tests pass.
+3. The complete workspace test suite passes.
+4. Formatting verification passes.
+5. Clippy completes without warnings.
+6. Module reachability verification passes.
+7. CLI documentation verification passes.
+8. Compatibility documentation verification passes.
+9. No unrelated changes or unintended behavioral regressions have been introduced.
 
-```bash
-cargo test -p budget-macros int_budget_limit_round_trips
-```
+**Verification reporting:** Report each CI command's actual result. Do not describe a command as passing unless it has been executed successfully. If any command fails, report the failure and its relevant output rather than marking the task complete.
+
+If a required check cannot be executed, explicitly identify it as unverified.
+
