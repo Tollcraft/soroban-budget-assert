@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 //! Local-vs-network cost-gap measurement for wasm size vs. deploy cost
 //! (issue #417).
 //!

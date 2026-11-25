@@ -1,3 +1,4 @@
+// @measure local  # discovered by scripts/regenerate-measurements.sh
 //! Local-vs-network cost-gap measurement for token transfers (issue #415).
 //!
 //! A token transfer is the single most common expensive operation in deployed
