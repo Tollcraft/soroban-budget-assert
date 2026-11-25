@@ -26,6 +26,7 @@ fn every_measurement_harness_has_a_valid_marker() {
         let name = relative.rsplit('/').next().unwrap_or_default();
         if !(name.starts_with("calibrate_") || name.starts_with("measure_"))
             || name == "measure_marker_coverage.rs"
+            || name == "measure_marker_parsing.rs"
         {
             continue;
         }
