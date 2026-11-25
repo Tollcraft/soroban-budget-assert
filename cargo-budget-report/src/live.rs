@@ -1,6 +1,7 @@
 use crate::transport::Transport;
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::fmt;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -24,6 +25,236 @@ pub struct NetworkOverride {
     pub rpc_url: String,
     /// Network passphrase paired with [`Self::rpc_url`].
     pub network_passphrase: String,
+}
+
+impl NetworkOverride {
+    /// Validates the custom endpoint and returns it with surrounding
+    /// whitespace removed.
+    ///
+    /// `--rpc-url` is handed verbatim to `curl` and to the Stellar CLI, so an
+    /// unchecked value either fails late with an opaque transport error or —
+    /// worse — sends the signed transaction envelope over an unencrypted
+    /// `http://` connection to a remote host. Every live path resolves its
+    /// endpoint through this method, so `simulateTransaction`, `stellar
+    /// contract deploy`, and `stellar contract invoke --build-only` all agree
+    /// on what is acceptable.
+    ///
+    /// The accepted shape is documented on [`validate_rpc_endpoint`].
+    fn validated_rpc_url(&self) -> Result<&str> {
+        validate_rpc_endpoint(&self.rpc_url)
+            .map_err(|e| anyhow::anyhow!("invalid --rpc-url {:?}: {}", self.rpc_url, e))
+    }
+}
+
+/// Hosts treated as loopback: traffic never leaves the machine, so plaintext
+/// `http://` exposes nothing on the wire.
+const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// Why a user-supplied `--rpc-url` value was rejected.
+///
+/// Each variant carries enough context (the offending scheme, host, port, or
+/// authority) for the CLI to name the exact problem. Keeping this a typed
+/// enum rather than a formatted string lets the unit tests pin each rule
+/// without matching on prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcUrlError {
+    /// The value was empty or whitespace-only.
+    Empty,
+    /// No `scheme://` prefix at all, e.g. `rpc.example.com/soroban/rpc`.
+    MissingScheme,
+    /// A scheme other than `http` / `https` (includes `HTTPS` only after
+    /// case-folding, which is what the matcher does).
+    UnsupportedScheme(String),
+    /// A scheme with no authority, e.g. `https:///rpc`.
+    MissingHost,
+    /// Userinfo (`user[:password]@`) embedded in the authority.
+    EmbeddedCredentials,
+    /// Plaintext `http://` aimed at a host that is not loopback.
+    RemotePlaintext(String),
+    /// An authority that is not a well-formed `host[:port]`.
+    InvalidAuthority(String),
+    /// A port that is not an integer in `1..=65535`.
+    InvalidPort(String),
+}
+
+impl fmt::Display for RpcUrlError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "the URL is empty"),
+            Self::MissingScheme => write!(
+                f,
+                "missing URI scheme; expected `https://host/...` (or `http://` for a loopback host)"
+            ),
+            Self::UnsupportedScheme(scheme) => write!(
+                f,
+                "unsupported scheme `{scheme}`; only `https` is accepted for remote endpoints (`http` is allowed for loopback hosts)"
+            ),
+            Self::MissingHost => write!(f, "missing host after the scheme"),
+            Self::EmbeddedCredentials => write!(
+                f,
+                "embedded credentials (`user[:password]@host`) are not allowed; pass the endpoint without userinfo"
+            ),
+            Self::RemotePlaintext(host) => write!(
+                f,
+                "unencrypted `http://` is only allowed for loopback hosts (localhost, 127.0.0.1, [::1]), not `{host}`; use `https://`"
+            ),
+            Self::InvalidAuthority(authority) => {
+                write!(f, "`{authority}` is not a valid host[:port] authority")
+            }
+            Self::InvalidPort(port) => write!(
+                f,
+                "invalid port `{port}`; expected an integer between 1 and 65535"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RpcUrlError {}
+
+/// Returns `true` for hosts whose traffic cannot leave the machine.
+///
+/// Matching is case-insensitive and tolerates a trailing dot (the FQDN
+/// spelling of `localhost.`). Only the literal loopback spellings are
+/// accepted: `0.0.0.0` is a bind address, not a loopback destination, and
+/// the rest of `127.0.0.0/8` is not treated as local by this tool.
+fn is_loopback_host(host: &str) -> bool {
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    LOOPBACK_HOSTS.contains(&normalized.as_str())
+}
+
+/// Splits an authority into its host and optional port, accepting a
+/// bracketed IPv6 literal.
+///
+/// An unbracketed authority containing `:` is rejected rather than guessed
+/// at: `::1` is ambiguous with a `host:port` pair, and RFC 3986 requires
+/// brackets around IPv6 literals anyway.
+fn split_authority(authority: &str) -> Result<(&str, Option<&str>), RpcUrlError> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some(close) = rest.find(']') else {
+            return Err(RpcUrlError::InvalidAuthority(authority.to_string()));
+        };
+        let host = &rest[..close];
+        if host.is_empty() {
+            return Err(RpcUrlError::InvalidAuthority(authority.to_string()));
+        }
+        let after = &rest[close + 1..];
+        if after.is_empty() {
+            return Ok((host, None));
+        }
+        let Some(port) = after.strip_prefix(':') else {
+            return Err(RpcUrlError::InvalidAuthority(authority.to_string()));
+        };
+        return Ok((host, Some(port)));
+    }
+
+    match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            // A second `:` means an unbracketed IPv6 literal (or something
+            // equally malformed), not a port separator.
+            if host.is_empty() || host.contains(':') {
+                return Err(RpcUrlError::InvalidAuthority(authority.to_string()));
+            }
+            Ok((host, Some(port)))
+        }
+        None => Ok((authority, None)),
+    }
+}
+
+/// Returns `true` when `host` only contains characters allowed in an RFC 3986
+/// reg-name (`ALPHA` / `DIGIT` / `-` / `.` / `_` / `~`) or in an IPv6 literal
+/// (`:`). Rejecting everything else keeps whitespace, globs, and shell
+/// metacharacters out of a value that is handed to `curl` and `stellar`.
+fn is_valid_host(host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    for c in host.chars() {
+        let allowed = c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~' | ':');
+        if !allowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// Validates a custom `--rpc-url` and returns it trimmed of surrounding
+/// whitespace.
+///
+/// The rules mirror what the live transport actually needs:
+///
+/// * A `scheme://` prefix is mandatory, and the scheme must be `https` —
+///   except for loopback hosts (`localhost`, `127.0.0.1`, `[::1]`), where
+///   `http://` is allowed because the transaction envelope never leaves the
+///   machine.
+/// * Userinfo (`user:password@host`) is rejected outright: `curl` would send
+///   it as a basic-auth header, and it usually ends up in shell history and
+///   logs.
+/// * The authority must be a non-empty, well-formed `host[:port]`; a port
+///   must be a number in `1..=65535`.
+///
+/// The value is returned with only surrounding whitespace removed; no other
+/// rewriting happens, so the URL the user supplied is the URL that is used.
+///
+/// # Examples
+///
+/// ```text
+/// https://soroban-testnet.stellar.org:443  -> Ok
+/// http://localhost:8000/soroban/rpc        -> Ok (loopback)
+/// http://rpc.example.com/soroban/rpc       -> Err(RemotePlaintext)
+/// https://user:pass@rpc.example.com        -> Err(EmbeddedCredentials)
+/// rpc.example.com/soroban/rpc              -> Err(MissingScheme)
+/// ```
+fn validate_rpc_endpoint(url: &str) -> Result<&str, RpcUrlError> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err(RpcUrlError::Empty);
+    }
+
+    // Split on the first `://` so a path containing `://` cannot be mistaken
+    // for the scheme separator. `split_once` also rejects bare schemes
+    // (`https:example.com`) rather than treating the whole value as a host.
+    let Some((scheme, rest)) = trimmed.split_once("://") else {
+        return Err(RpcUrlError::MissingScheme);
+    };
+    let https = match scheme.to_ascii_lowercase().as_str() {
+        "https" => true,
+        "http" => false,
+        other => return Err(RpcUrlError::UnsupportedScheme(other.to_string())),
+    };
+
+    // The authority ends at the first path, query, or fragment marker.
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() {
+        return Err(RpcUrlError::MissingHost);
+    }
+    // Checked before host/port parsing so `https://user:pass@host` reports
+    // the credential problem, not a malformed port.
+    if authority.contains('@') {
+        return Err(RpcUrlError::EmbeddedCredentials);
+    }
+
+    let (host, port) = split_authority(authority)?;
+    if !is_valid_host(host) {
+        return Err(RpcUrlError::InvalidAuthority(authority.to_string()));
+    }
+    if let Some(port) = port {
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(RpcUrlError::InvalidPort(port.to_string()));
+        }
+        // `u16` parsing rejects anything above 65535; `0` is not a usable
+        // endpoint port either.
+        match port.parse::<u16>() {
+            Ok(n) if n > 0 => {}
+            _ => return Err(RpcUrlError::InvalidPort(port.to_string())),
+        }
+    }
+
+    if !https && !is_loopback_host(host) {
+        return Err(RpcUrlError::RemotePlaintext(host.to_string()));
+    }
+
+    Ok(trimmed)
 }
 
 /// The production transport: runs `stellar` and `curl` against the real
@@ -168,15 +399,15 @@ impl LiveTransport {
 
     /// `["--rpc-url", url, "--network-passphrase", phrase]` for a custom
     /// network, or `["--network", alias]` for a built-in one.
-    fn network_cli_args<'a>(&'a self, network: &'a str) -> Vec<&'a str> {
+    fn network_cli_args<'a>(&'a self, network: &'a str) -> Result<Vec<&'a str>> {
         match &self.net_override {
-            Some(o) => vec![
+            Some(o) => Ok(vec![
                 "--rpc-url",
-                &o.rpc_url,
+                o.validated_rpc_url()?,
                 "--network-passphrase",
                 &o.network_passphrase,
-            ],
-            None => vec!["--network", network],
+            ]),
+            None => Ok(vec!["--network", network]),
         }
     }
 
@@ -188,7 +419,11 @@ impl LiveTransport {
 
 pub fn resolve_rpc_url(network: &str, net_override: Option<&NetworkOverride>) -> Result<String> {
     if let Some(override_) = net_override {
-        return Ok(override_.rpc_url.clone());
+        // A user-supplied endpoint is validated before it is returned: this
+        // is the earliest point every caller (simulation, watch mode, deploy)
+        // passes through, and the error carries the offending URL so the CLI
+        // can say exactly which value to fix.
+        return Ok(override_.validated_rpc_url()?.to_string());
     }
 
     match network.trim().to_ascii_lowercase().as_str() {
@@ -217,7 +452,7 @@ impl Transport for LiveTransport {
             .context("wasm path is not valid UTF-8")?
             .to_string();
         let net_args: Vec<String> = self
-            .network_cli_args(network)
+            .network_cli_args(network)?
             .into_iter()
             .map(String::from)
             .collect();
@@ -257,10 +492,10 @@ impl Transport for LiveTransport {
         func_args: &[String],
         _package: &str,
     ) -> Result<String> {
-        let rpc_override = self
-            .net_override
-            .as_ref()
-            .map(|o| (o.rpc_url.as_str(), o.network_passphrase.as_str()));
+        let rpc_override = match self.net_override.as_ref() {
+            Some(o) => Some((o.validated_rpc_url()?, o.network_passphrase.as_str())),
+            None => None,
+        };
         let invoke_args = crate::build_invoke_args(
             contract_id,
             source,
@@ -323,13 +558,64 @@ mod tests {
     #[test]
     fn custom_rpc_override_has_precedence() {
         let override_ = NetworkOverride {
-            rpc_url: "http://example.test/rpc".into(),
+            rpc_url: "https://example.test/rpc".into(),
             network_passphrase: "custom".into(),
         };
         assert_eq!(
             resolve_rpc_url("futurenet", Some(&override_)).unwrap(),
-            "http://example.test/rpc"
+            "https://example.test/rpc"
         );
+    }
+
+    #[test]
+    fn custom_rpc_override_is_trimmed_before_use() {
+        let override_ = NetworkOverride {
+            rpc_url: "  https://example.test/rpc\n".into(),
+            network_passphrase: "custom".into(),
+        };
+        assert_eq!(
+            resolve_rpc_url("testnet", Some(&override_)).unwrap(),
+            "https://example.test/rpc"
+        );
+    }
+
+    #[test]
+    fn custom_rpc_override_rejects_plaintext_remote_endpoint() {
+        let override_ = NetworkOverride {
+            rpc_url: "http://example.test/rpc".into(),
+            network_passphrase: "custom".into(),
+        };
+        let error = resolve_rpc_url("testnet", Some(&override_))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid --rpc-url"), "{error}");
+        assert!(error.contains("http://example.test/rpc"), "{error}");
+        assert!(error.contains("https://"), "{error}");
+    }
+
+    #[test]
+    fn custom_rpc_override_allows_plaintext_loopback_endpoint() {
+        let override_ = NetworkOverride {
+            rpc_url: "http://127.0.0.1:8000/soroban/rpc".into(),
+            network_passphrase: "custom".into(),
+        };
+        assert_eq!(
+            resolve_rpc_url("testnet", Some(&override_)).unwrap(),
+            "http://127.0.0.1:8000/soroban/rpc"
+        );
+    }
+
+    #[test]
+    fn custom_rpc_override_rejects_embedded_credentials() {
+        let override_ = NetworkOverride {
+            rpc_url: "https://user:secret@example.test/rpc".into(),
+            network_passphrase: "custom".into(),
+        };
+        let error = resolve_rpc_url("testnet", Some(&override_))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid --rpc-url"), "{error}");
+        assert!(error.contains("embedded credentials"), "{error}");
     }
 
     #[test]
@@ -397,6 +683,179 @@ mod tests {
                 panic!("a timeout must be retryable, but it was classified permanent: {message}")
             }
             Ok(value) => panic!("a silent endpoint must not yield a response: {value}"),
+        }
+    }
+
+    mod rpc_endpoint {
+        use super::*;
+
+        #[test]
+        fn accepts_https_remote_endpoints() {
+            let url = "https://soroban-testnet.stellar.org:443";
+            assert_eq!(validate_rpc_endpoint(url), Ok(url));
+        }
+
+        #[test]
+        fn accepts_the_built_in_default_endpoints() {
+            // `LOCAL_RPC_URL` is plaintext over loopback, so it must keep
+            // passing: rejecting the built-in `local` alias would be a
+            // regression in the local-testing workflow.
+            for url in [
+                "https://soroban-testnet.stellar.org:443",
+                "https://rpc-futurenet.stellar.org:443",
+                "https://soroban.stellar.org:443",
+                "http://localhost:8000/soroban/rpc",
+            ] {
+                assert_eq!(validate_rpc_endpoint(url), Ok(url), "{url}");
+            }
+        }
+
+        #[test]
+        fn accepts_plaintext_loopback_hosts() {
+            for url in [
+                "http://localhost:8000/soroban/rpc",
+                "http://LOCALHOST/soroban/rpc",
+                "http://localhost./soroban/rpc",
+                "http://127.0.0.1:8000/soroban/rpc",
+                "http://[::1]:8000/soroban/rpc",
+            ] {
+                assert!(validate_rpc_endpoint(url).is_ok(), "{url}");
+            }
+        }
+
+        #[test]
+        fn rejects_plaintext_remote_hosts() {
+            assert_eq!(
+                validate_rpc_endpoint("http://rpc.example.test/soroban/rpc"),
+                Err(RpcUrlError::RemotePlaintext("rpc.example.test".into()))
+            );
+            // A bind address is not a loopback destination.
+            assert_eq!(
+                validate_rpc_endpoint("http://0.0.0.0:8000/soroban/rpc"),
+                Err(RpcUrlError::RemotePlaintext("0.0.0.0".into()))
+            );
+        }
+
+        #[test]
+        fn rejects_embedded_credentials_even_over_https_and_loopback() {
+            for url in [
+                "https://user:pass@rpc.example.test/soroban/rpc",
+                "https://user@rpc.example.test/soroban/rpc",
+                "http://user:pass@localhost:8000/soroban/rpc",
+            ] {
+                assert_eq!(
+                    validate_rpc_endpoint(url),
+                    Err(RpcUrlError::EmbeddedCredentials),
+                    "{url}"
+                );
+            }
+        }
+
+        #[test]
+        fn rejects_empty_values() {
+            for url in ["", "   ", "\n\t"] {
+                assert_eq!(
+                    validate_rpc_endpoint(url),
+                    Err(RpcUrlError::Empty),
+                    "{url:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn rejects_values_without_a_recognisable_scheme() {
+            assert_eq!(
+                validate_rpc_endpoint("rpc.example.test"),
+                Err(RpcUrlError::MissingScheme)
+            );
+            assert_eq!(
+                validate_rpc_endpoint("rpc.example.test:443/soroban/rpc"),
+                Err(RpcUrlError::MissingScheme)
+            );
+            assert_eq!(
+                validate_rpc_endpoint("https:/rpc.example.test"),
+                Err(RpcUrlError::MissingScheme)
+            );
+        }
+
+        #[test]
+        fn rejects_other_schemes() {
+            assert_eq!(
+                validate_rpc_endpoint("ftp://rpc.example.test/rpc"),
+                Err(RpcUrlError::UnsupportedScheme("ftp".into()))
+            );
+            assert_eq!(
+                validate_rpc_endpoint("ws://localhost:8000/soroban/rpc"),
+                Err(RpcUrlError::UnsupportedScheme("ws".into()))
+            );
+        }
+
+        #[test]
+        fn scheme_matching_is_case_insensitive() {
+            assert!(validate_rpc_endpoint("HTTPS://rpc.example.test/rpc").is_ok());
+            assert!(validate_rpc_endpoint("Http://localhost:8000/rpc").is_ok());
+        }
+
+        #[test]
+        fn rejects_a_missing_host() {
+            assert_eq!(
+                validate_rpc_endpoint("https://"),
+                Err(RpcUrlError::MissingHost)
+            );
+            assert_eq!(
+                validate_rpc_endpoint("https:///soroban/rpc"),
+                Err(RpcUrlError::MissingHost)
+            );
+        }
+
+        #[test]
+        fn rejects_malformed_authorities() {
+            let cases = [
+                ("https://rpc example.test/rpc", "rpc example.test"),
+                ("https://[::1/soroban/rpc", "[::1"),
+                ("https://:8000/soroban/rpc", ":8000"),
+                ("https://::1/soroban/rpc", "::1"),
+            ];
+            for (url, authority) in cases {
+                assert_eq!(
+                    validate_rpc_endpoint(url),
+                    Err(RpcUrlError::InvalidAuthority(authority.to_string())),
+                    "{url}"
+                );
+            }
+        }
+
+        #[test]
+        fn rejects_unusable_ports() {
+            let cases = [
+                ("https://rpc.example.test:/soroban/rpc", ""),
+                ("https://rpc.example.test:notaport/soroban/rpc", "notaport"),
+                ("https://rpc.example.test:0/soroban/rpc", "0"),
+                ("https://rpc.example.test:65536/soroban/rpc", "65536"),
+            ];
+            for (url, port) in cases {
+                assert_eq!(
+                    validate_rpc_endpoint(url),
+                    Err(RpcUrlError::InvalidPort(port.to_string())),
+                    "{url}"
+                );
+            }
+        }
+
+        #[test]
+        fn trims_surrounding_whitespace() {
+            assert_eq!(
+                validate_rpc_endpoint("  https://rpc.example.test/rpc  "),
+                Ok("https://rpc.example.test/rpc")
+            );
+        }
+
+        #[test]
+        fn remote_plaintext_message_names_the_host_and_https() {
+            let message = RpcUrlError::RemotePlaintext("rpc.example.test".into()).to_string();
+            assert!(message.contains("rpc.example.test"), "{message}");
+            assert!(message.contains("https://"), "{message}");
+            assert!(message.contains("loopback"), "{message}");
         }
     }
 }

@@ -135,8 +135,6 @@ let caller_address: Address = env.register(caller_wasm.as_slice(), ());
 
 ## Budget report for cross-contract contracts
 
-## Budget report for cross-contract contracts
-
 The `cargo budget-report` CLI discovers every contract in the workspace automatically. For workspaces with interdependent contracts, two mechanisms are available:
 
 ### Deployment ordering

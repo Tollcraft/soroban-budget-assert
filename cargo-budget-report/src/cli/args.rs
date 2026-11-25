@@ -310,6 +310,11 @@ pub struct BudgetReportArgs {
     /// Docker quickstart image) can be targeted to avoid public-network rate
     /// limits or to exercise custom fee settings. `--network-passphrase` is
     /// required whenever this is set.
+    ///
+    /// The URL is validated before anything is built or deployed: `https://`
+    /// is required unless the host is loopback (`localhost`, `127.0.0.1`,
+    /// `[::1]`), embedded `user:password@` credentials are rejected, and the
+    /// port must be in `1..=65535`.
     /// `requires` names the *field*, not the flag: clap maps it back to
     /// `--network-passphrase`, so a custom endpoint without a passphrase is
     /// rejected at parse time rather than failing mid-run.
