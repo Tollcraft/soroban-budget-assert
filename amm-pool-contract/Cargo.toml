@@ -8,10 +8,10 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = "29.0.1"
+soroban-sdk = "30.0.0"
 
 [dev-dependencies]
-soroban-sdk = { version = "29.0.1", features = ["testutils"] }
+soroban-sdk = { version = "30.0.0", features = ["testutils"] }
 budget-macros = { path = "../budget-macros" }
 
 [features]
